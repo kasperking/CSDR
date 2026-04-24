@@ -1,0 +1,7 @@
+../BSP/Src/wm8731.c:57:26:WM8731_WriteReg	1
+../BSP/Src/wm8731.c:76:19:WM8731_Reset	1
+../BSP/Src/wm8731.c:90:19:WM8731_Init	10
+../BSP/Src/wm8731.c:170:19:WM8731_SetVolume	1
+../BSP/Src/wm8731.c:187:19:WM8731_SetMute	1
+../BSP/Src/wm8731.c:202:19:WM8731_SetInputGain	1
+../BSP/Src/wm8731.c:216:19:WM8731_PowerDown	2

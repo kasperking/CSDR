@@ -1,0 +1,5 @@
+../BSP/Src/encoder.c:44:6:Encoder_Init	16	static
+../BSP/Src/encoder.c:71:6:Encoder_Poll	16	static
+../BSP/Src/encoder.c:140:9:Encoder_GetDelta	0	static
+../BSP/Src/encoder.c:152:6:Encoder_GetButton	0	static
+../BSP/Src/encoder.c:163:6:Encoder_GetLongPress	0	static

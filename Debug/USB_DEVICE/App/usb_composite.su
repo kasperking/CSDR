@@ -1,0 +1,14 @@
+../USB_DEVICE/App/usb_composite.c:245:17:Comp_GetCfg	0	static
+../USB_DEVICE/App/usb_composite.c:251:17:Comp_GetDev	0	static
+../USB_DEVICE/App/usb_composite.c:368:16:Comp_EP0_RxReady	0	static
+../USB_DEVICE/App/usb_composite.c:575:16:Comp_IsoInInc	0	static
+../USB_DEVICE/App/usb_composite.c:584:16:Comp_IsoOutInc	0	static
+../USB_DEVICE/App/usb_composite.c:382:16:Comp_Init	16	static
+../USB_DEVICE/App/usb_composite.c:391:16:Comp_DeInit	16	static
+../USB_DEVICE/App/usb_composite.c:561:16:Comp_SOF	16	static
+../USB_DEVICE/App/usb_composite.c:503:16:Comp_DataIn	24	static
+../USB_DEVICE/App/usb_composite.c:534:16:Comp_DataOut	24	static
+../USB_DEVICE/App/usb_composite.c:451:16:Comp_Setup	32	static
+../USB_DEVICE/App/usb_composite.c:591:9:Composite_CDC_Transmit	16	static
+../USB_DEVICE/App/usb_composite.c:606:9:Composite_AudioIN_IsStreaming	0	static
+../USB_DEVICE/App/usb_composite.c:607:9:Composite_AudioOUT_IsStreaming	0	static

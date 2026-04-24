@@ -1,0 +1,7 @@
+../BSP/Src/pe4302.c:28:13:pe4302_write	3
+../BSP/Src/pe4302.c:49:6:PE4302_Init	1
+../BSP/Src/pe4302.c:64:6:PE4302_SetAttn_Raw	1
+../BSP/Src/pe4302.c:74:6:PE4302_SetAttn_dB	1
+../BSP/Src/pe4302.c:82:6:PE4302_IncAttn	1
+../BSP/Src/pe4302.c:91:6:PE4302_DecAttn	2
+../BSP/Src/pe4302.c:99:6:PE4302_Bypass	1
