@@ -8,22 +8,25 @@
   *  Protocol: Kenwood TS-2000 CAT commands (ASCII, semicolon terminated)
   *
   *  Lệnh hỗ trợ:
-  *   FA;          → Đọc tần số VFO A       FA07100000;
-  *   FA<10d>;     → Đặt tần số VFO A       FA00007100000;
-  *   MD;          → Đọc mode              MD2;
-  *   MD<1d>;      → Đặt mode              MD2; (1=LSB,2=USB,3=CW,4=FM,5=AM)
-  *   TX;          → Đặt TX                TX1; (0=RX, 1=TX)
-  *   RX;          → Đặt RX
-  *   IF;          → Info (frequency+mode+etc)
-  *   AI<1d>;      → Auto Info on/off
-  *   SM<1d>;      → Đọc S-meter          SM00012;
-  *   RA<02d>;     → RX attenuator        RA00; (0=off, 1=6dB, 2=12dB, 3=18dB)
-  *   ID;          → Device ID             ID019; (TS-2000)
-  *   PS;          → Power status          PS1;
-  *   PC<3d>;      → TX power control (not impl – ACK only)
-  *   ?;           → Error response        ?;
+  *   FA/FB;        → Đọc/đặt tần số VFO A/B   FA00007100000;
+  *   MD;           → Đọc/đặt mode             MD2; (1=LSB,2=USB,3=CW,4=FM,5=AM)
+  *   TX/RX;        → Đặt TX/RX mode
+  *   IF;           → Info frame (freq+mode+…)
+  *   AI<0-2>;      → Auto Info: 0=off, 1=AI1, 2=AI2
+  *   AG0<3d>;      → Audio gain 000-255        AG0127;
+  *   NR<0-1>;      → Noise reduction on/off
+  *   NB<0-1>;      → Noise blanker on/off
+  *   FW<4d>;       → Filter width Hz           FW3000;
+  *   GT0<0-2>;     → AGC: 0=fast,1=slow,2=off  GT00;
+  *   SQ0<3d>;      → Squelch 000-255           SQ0000;
+  *   SM0;          → Đọc S-meter              SM00012;
+  *   RA<02d>;      → RX attenuator            RA00; (0=off,1=6dB,2=12dB,3=18dB)
+  *   ID;           → Device ID                ID019; (TS-2000)
+  *   PS;           → Power status             PS1;
+  *   PC<3d>;       → TX power (ACK only)
+  *   ?;            → Error response
   *
-  *  Auto Info (AI1):
+  *  Auto Info (AI1/AI2):
   *   Khi tần số/mode thay đổi, device tự gửi IF; response.
   ******************************************************************************
   */
@@ -60,25 +63,40 @@ extern "C" {
 
 /** Callback set: CAT driver calls these to apply commands to SDR state */
 typedef struct {
-  void (*set_freq)(uint32_t freq_hz);      /*!< Đặt tần số      */
-  void (*set_mode)(uint8_t cat_mode);      /*!< Đặt mode        */
-  void (*set_tx)(bool tx_on);              /*!< TX/RX switch    */
-  void (*set_att)(uint8_t level_0_3);      /*!< Attenuator 0-3  */
-  uint32_t (*get_freq)(void);              /*!< Đọc tần số      */
-  uint8_t  (*get_mode)(void);              /*!< Đọc mode        */
-  bool     (*get_tx)(void);               /*!< Đọc TX state    */
-  float    (*get_signal_db)(void);         /*!< Đọc S-meter dBFS*/
-  uint8_t  (*get_att)(void);              /*!< Đọc attenuation */
+  /* Setters */
+  void (*set_freq)(uint32_t freq_hz);
+  void (*set_mode)(uint8_t sdr_mode);
+  void (*set_tx)(bool tx_on);
+  void (*set_att)(uint8_t level_0_3);
+  void (*set_volume)(uint8_t vol);         /*!< AG: 0-255       */
+  void (*set_nr)(bool on);                 /*!< NR on/off       */
+  void (*set_nb)(bool on);                 /*!< NB on/off       */
+  void (*set_bw)(uint32_t hz);             /*!< FW: Hz          */
+  void (*set_agc_fast)(bool fast);         /*!< GT: fast/slow   */
+  void (*set_squelch)(uint8_t sq);         /*!< SQ: 0-255       */
+  /* Getters */
+  uint32_t (*get_freq)(void);
+  uint8_t  (*get_mode)(void);
+  bool     (*get_tx)(void);
+  float    (*get_signal_db)(void);
+  uint8_t  (*get_att)(void);
+  uint8_t  (*get_volume)(void);
+  bool     (*get_nr)(void);
+  bool     (*get_nb)(void);
+  uint32_t (*get_bw)(void);
+  bool     (*get_agc_fast)(void);
+  uint8_t  (*get_squelch)(void);
 } CAT_Callbacks_t;
 
 /** CAT driver state */
 typedef struct {
-  char     rx_buf[CAT_BUF_SIZE];   /*!< Accumulate incoming bytes */
-  uint16_t rx_len;                  /*!< Current command length    */
-  char     tx_buf[CAT_TX_BUF_SIZE]; /*!< Response to send          */
-  bool     auto_info;               /*!< AI mode active            */
-  uint32_t last_freq;               /*!< For change detection (AI) */
-  uint8_t  last_mode;               /*!< For change detection (AI) */
+  char     rx_buf[CAT_BUF_SIZE];
+  uint16_t rx_len;
+  char     tx_buf[CAT_TX_BUF_SIZE];
+  uint8_t  ai_level;               /*!< 0=off, 1=AI1, 2=AI2      */
+  uint32_t last_freq;
+  uint8_t  last_mode;
+  bool     last_tx;                /*!< TX state tracked for AI unsolicited IF */
   CAT_Callbacks_t cb;
   bool     initialized;
 } CAT_Handle_t;

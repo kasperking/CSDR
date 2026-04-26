@@ -49,6 +49,11 @@ static volatile uint8_t s_as_out_alt = 0U;
 static volatile uint8_t s_as_in_alt  = 0U;
 static volatile uint8_t s_audio_in_tx_pending = 0U;
 
+/* Debug: watch these in Live Expressions to verify interface activation */
+volatile uint8_t dbg_as_out_alt = 0U;
+volatile uint8_t dbg_as_in_alt  = 0U;
+volatile uint32_t dbg_iso_out_inc = 0U;
+
 static __ALIGN_BEGIN uint8_t s_audio_out_buf[COMP_EP_AUDIO_SIZE] __ALIGN_END;
 static __ALIGN_BEGIN uint8_t s_audio_in_buf [COMP_EP_AUDIO_SIZE] __ALIGN_END;
 static __ALIGN_BEGIN uint8_t s_ac_scratch   [8]                  __ALIGN_END;
@@ -414,20 +419,26 @@ static uint8_t Comp_AS_SetInterface(USBD_HandleTypeDef *pdev,
       USBD_LL_OpenEP(pdev, COMP_EP_AUDIO_OUT,
                       USBD_EP_TYPE_ISOC, COMP_EP_AUDIO_SIZE);
       pdev->ep_out[COMP_EP_AUDIO_OUT & 0x0FU].is_used = 1U;
+      /* ISO OUT uses hardware double-buffering: arm BOTH banks at open */
       USBD_LL_PrepareReceive(pdev, COMP_EP_AUDIO_OUT,
                               s_audio_out_buf, COMP_EP_AUDIO_SIZE);
-      s_as_out_alt = 1U;
+      USBD_LL_PrepareReceive(pdev, COMP_EP_AUDIO_OUT,
+                              s_audio_out_buf, COMP_EP_AUDIO_SIZE);
+      s_as_out_alt     = 1U;
+      dbg_as_out_alt   = 1U;
     } else if (alt == COMP_AS_ALT_ZERO && s_as_out_alt == 1U) {
       USBD_LL_CloseEP(pdev, COMP_EP_AUDIO_OUT);
       pdev->ep_out[COMP_EP_AUDIO_OUT & 0x0FU].is_used = 0U;
-      s_as_out_alt = 0U;
+      s_as_out_alt   = 0U;
+      dbg_as_out_alt = 0U;
     }
   } else if (ifnum == COMP_IF_AS_IN) {
     if (alt == COMP_AS_ALT_ACTIVE && s_as_in_alt == 0U) {
       USBD_LL_OpenEP(pdev, COMP_EP_AUDIO_IN,
                       USBD_EP_TYPE_ISOC, COMP_EP_AUDIO_SIZE);
       pdev->ep_in[COMP_EP_AUDIO_IN & 0x0FU].is_used = 1U;
-      s_as_in_alt = 1U;
+      s_as_in_alt   = 1U;
+      dbg_as_in_alt = 1U;
       /* Kick-start: try transmit first packet synchronously. If it fails
        * (EP not ready), SOF callback will retry next frame. */
       (void)USB_Audio_ReadRXPacket(&g_usb_audio, s_audio_in_buf);
@@ -440,7 +451,8 @@ static uint8_t Comp_AS_SetInterface(USBD_HandleTypeDef *pdev,
     } else if (alt == COMP_AS_ALT_ZERO && s_as_in_alt == 1U) {
       USBD_LL_CloseEP(pdev, COMP_EP_AUDIO_IN);
       pdev->ep_in[COMP_EP_AUDIO_IN & 0x0FU].is_used = 0U;
-      s_as_in_alt = 0U;
+      s_as_in_alt           = 0U;
+      dbg_as_in_alt         = 0U;
       s_audio_in_tx_pending = 0U;
     }
   }
@@ -582,7 +594,17 @@ static uint8_t Comp_IsoInInc (USBD_HandleTypeDef *pdev, uint8_t epnum)
 }
 
 static uint8_t Comp_IsoOutInc(USBD_HandleTypeDef *pdev, uint8_t epnum)
-{ (void)pdev; (void)epnum; return USBD_OK; }
+{
+  /* ISO OUT incomplete (host sent nothing this frame). Re-arm so the
+   * double-buffer stays primed and DataOut fires on the next SOF. */
+  (void)epnum;
+  if (s_as_out_alt) {
+    USBD_LL_PrepareReceive(pdev, COMP_EP_AUDIO_OUT,
+                            s_audio_out_buf, COMP_EP_AUDIO_SIZE);
+  }
+  dbg_iso_out_inc++;
+  return USBD_OK;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Public API

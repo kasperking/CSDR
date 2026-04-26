@@ -1,7 +1,7 @@
 ../BSP/Src/usb_audio.c:17:6:USB_Audio_Init	0	static
 ../BSP/Src/usb_audio.c:24:6:USB_Audio_SetStreaming	0	static
 ../BSP/Src/usb_audio.c:45:6:USB_Audio_WriteRX	36	static
-../BSP/Src/usb_audio.c:87:10:USB_Audio_ReadRXPacket	16	static
-../BSP/Src/usb_audio.c:112:6:USB_Audio_WriteTX	20	static
-../BSP/Src/usb_audio.c:136:6:USB_Audio_ReadTX	48	static
-../BSP/Src/usb_audio.c:172:6:USB_Audio_Process	12	static
+../BSP/Src/usb_audio.c:85:10:USB_Audio_ReadRXPacket	16	static
+../BSP/Src/usb_audio.c:110:6:USB_Audio_WriteTX	20	static
+../BSP/Src/usb_audio.c:134:6:USB_Audio_ReadTX	36	static
+../BSP/Src/usb_audio.c:170:6:USB_Audio_Process	12	static

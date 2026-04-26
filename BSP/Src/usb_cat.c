@@ -95,9 +95,10 @@ void CAT_Init(CAT_Handle_t *cat, const CAT_Callbacks_t *cb)
 {
   memset(cat, 0, sizeof(*cat));
   cat->cb          = *cb;
-  cat->auto_info   = false;
+  cat->ai_level    = 0U;
   cat->last_freq   = 0U;
   cat->last_mode   = 0xFFU;
+  cat->last_tx     = false;
   cat->initialized = true;
   s_rx_head = 0U; s_rx_tail = 0U;
   s_tx_head = 0U; s_tx_tail = 0U;
@@ -156,7 +157,7 @@ static void cat_execute(CAT_Handle_t *cat, const char *cmd, uint16_t len)
   resp[0] = '\0';
   if (len < 2U) { tx_enqueue("?;"); return; }
 
-  /* FA: VFO A */
+  /* FA: VFO A frequency */
   if (cmd[0]=='F' && cmd[1]=='A') {
     if (len == 2U) {
       uint32_t f = cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL;
@@ -168,7 +169,7 @@ static void cat_execute(CAT_Handle_t *cat, const char *cmd, uint16_t len)
     } else { tx_enqueue("?;"); }
   }
 
-  /* FB: VFO B = same */
+  /* FB: VFO B (mirrors VFO A on single-VFO radio) */
   else if (cmd[0]=='F' && cmd[1]=='B') {
     if (len == 2U) {
       uint32_t f = cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL;
@@ -193,31 +194,117 @@ static void cat_execute(CAT_Handle_t *cat, const char *cmd, uint16_t len)
     } else { tx_enqueue("?;"); }
   }
 
-  /* TX: Kenwood TS-2000 standard — "TX;" sets TX mode regardless of length.
-   *     "TX0;" = main TX, "TX1;" = sub TX. No query form - radio switches to TX. */
+  /* TX: len==2 = QUERY (TS-2000 spec), returns current TX state.
+   *     len==3 = SET (TX0; TX1;), activates TX mode. */
   else if (cmd[0]=='T' && cmd[1]=='X') {
-    if (cat->cb.set_tx) cat->cb.set_tx(true);
+    if (len == 2U) {
+      bool tx = cat->cb.get_tx ? cat->cb.get_tx() : false;
+      char *p = resp;
+      p = cat_str(p, "TX"); *p++ = tx ? '1' : '0'; *p++ = ';'; *p = 0;
+    } else {
+      if (cat->cb.set_tx) cat->cb.set_tx(true);
+      cat->last_tx = true;
+      if (cat->ai_level > 0U) CAT_BuildIF(cat, resp);
+    }
   }
-
-  /* RX: Kenwood TS-2000 standard — "RX;" sets RX mode (release PTT). */
+  /* RX: always a SET command (no query form in TS-2000) */
   else if (cmd[0]=='R' && cmd[1]=='X') {
     if (cat->cb.set_tx) cat->cb.set_tx(false);
+    cat->last_tx = false;
+    if (cat->ai_level > 0U) CAT_BuildIF(cat, resp);
   }
 
-  /* IF */
+  /* IF: information frame */
   else if (cmd[0]=='I' && cmd[1]=='F') { CAT_BuildIF(cat, resp); }
 
-  /* AI */
+  /* AI: Auto Information  AI0=off  AI1=on  AI2=on (immediate IF + unsolicited) */
   else if (cmd[0]=='A' && cmd[1]=='I') {
     if (len == 2U) {
-      char *p = resp; p = cat_str(p, "AI"); *p++ = cat->auto_info ? '1' : '0'; *p++ = ';'; *p = 0;
+      char *p = resp;
+      p = cat_str(p, "AI"); *p++ = (char)('0' + cat->ai_level); *p++ = ';'; *p = 0;
     } else if (len == 3U) {
-      cat->auto_info = (cmd[2] == '1');
-      char *p = resp; p = cat_str(p, "AI"); *p++ = cat->auto_info ? '1' : '0'; *p++ = ';'; *p = 0;
+      uint8_t lv = (uint8_t)(cmd[2] - '0');
+      cat->ai_level = (lv <= 2U) ? lv : 0U;
+      /* Send AIx; echo immediately */
+      char ai_echo[8];
+      char *p = ai_echo;
+      p = cat_str(p, "AI"); *p++ = (char)('0' + cat->ai_level); *p++ = ';'; *p = 0;
+      tx_enqueue(ai_echo);
+      /* If AI enabled, flrig expects an immediate IF frame for initial state */
+      if (cat->ai_level > 0U) {
+        CAT_BuildIF(cat, resp);
+        cat->last_freq = cat->cb.get_freq ? cat->cb.get_freq() : 0U;
+        cat->last_mode = cat->cb.get_mode ? cat->cb.get_mode() : 0xFFU;
+        cat->last_tx   = cat->cb.get_tx   ? cat->cb.get_tx()   : false;
+      }
+      /* resp is empty if ai_level==0, IF frame if >0 — enqueued at bottom */
     }
   }
 
-  /* SM: S-meter */
+  /* AG: Audio Gain  AG0;=query  AG0nnn;=set (000-255) */
+  else if (cmd[0]=='A' && cmd[1]=='G') {
+    if (len == 3U && cmd[2] == '0') {
+      uint8_t v = cat->cb.get_volume ? cat->cb.get_volume() : 127U;
+      char *p = resp; p = cat_str(p, "AG0"); p = cat_u32(p, v, 3U); *p++ = ';'; *p = 0;
+    } else if (len == 6U && cmd[2] == '0') {
+      uint8_t v = (uint8_t)cat_parse_u(&cmd[3], 3U);
+      if (cat->cb.set_volume) cat->cb.set_volume(v);
+    }
+  }
+
+  /* NR: Noise Reduction  NR;=query  NR0/NR1=set */
+  else if (cmd[0]=='N' && cmd[1]=='R') {
+    if (len == 2U) {
+      bool on = cat->cb.get_nr ? cat->cb.get_nr() : false;
+      char *p = resp; p = cat_str(p, "NR"); *p++ = on ? '1' : '0'; *p++ = ';'; *p = 0;
+    } else if (len == 3U) {
+      if (cat->cb.set_nr) cat->cb.set_nr(cmd[2] == '1');
+    }
+  }
+
+  /* NB: Noise Blanker  NB;=query  NB0/NB1=set */
+  else if (cmd[0]=='N' && cmd[1]=='B') {
+    if (len == 2U) {
+      bool on = cat->cb.get_nb ? cat->cb.get_nb() : false;
+      char *p = resp; p = cat_str(p, "NB"); *p++ = on ? '1' : '0'; *p++ = ';'; *p = 0;
+    } else if (len == 3U) {
+      if (cat->cb.set_nb) cat->cb.set_nb(cmd[2] == '1');
+    }
+  }
+
+  /* FW: Filter Width (Hz)  FW;=query  FWnnnn;=set (4 digits, 0100-9999 Hz) */
+  else if (cmd[0]=='F' && cmd[1]=='W') {
+    if (len == 2U) {
+      uint32_t bw = cat->cb.get_bw ? cat->cb.get_bw() : 3000U;
+      char *p = resp; p = cat_str(p, "FW"); p = cat_u32(p, bw, 4U); *p++ = ';'; *p = 0;
+    } else if (len == 6U) {
+      uint32_t bw = cat_parse_u(&cmd[2], 4U);
+      if (cat->cb.set_bw) cat->cb.set_bw(bw);
+    }
+  }
+
+  /* GT: AGC Speed  GT;=query  GT00=fast  GT01=slow  GT02=off */
+  else if (cmd[0]=='G' && cmd[1]=='T') {
+    if (len == 2U) {
+      bool fast = cat->cb.get_agc_fast ? cat->cb.get_agc_fast() : true;
+      char *p = resp; p = cat_str(p, "GT0"); *p++ = fast ? '0' : '1'; *p++ = ';'; *p = 0;
+    } else if (len == 4U && cmd[2] == '0') {
+      if (cat->cb.set_agc_fast) cat->cb.set_agc_fast(cmd[3] == '0');
+    }
+  }
+
+  /* SQ: Squelch  SQ0;=query  SQ0nnn;=set (000-255) */
+  else if (cmd[0]=='S' && cmd[1]=='Q') {
+    if (len == 3U && cmd[2] == '0') {
+      uint8_t sq = cat->cb.get_squelch ? cat->cb.get_squelch() : 0U;
+      char *p = resp; p = cat_str(p, "SQ0"); p = cat_u32(p, sq, 3U); *p++ = ';'; *p = 0;
+    } else if (len == 6U && cmd[2] == '0') {
+      uint8_t sq = (uint8_t)cat_parse_u(&cmd[3], 3U);
+      if (cat->cb.set_squelch) cat->cb.set_squelch(sq);
+    }
+  }
+
+  /* SM: S-meter (read-only) */
   else if (cmd[0]=='S' && cmd[1]=='M') {
     float db = cat->cb.get_signal_db ? cat->cb.get_signal_db() : -80.0f;
     int32_t su = (int32_t)((db + 73.0f) * 3.0f);
@@ -238,23 +325,15 @@ static void cat_execute(CAT_Handle_t *cat, const char *cmd, uint16_t len)
     }
   }
 
-  /* ID */
+  /* ID / PS */
   else if (cmd[0]=='I' && cmd[1]=='D') {
     char *p = resp; p = cat_str(p, "ID019;"); *p = 0;
   }
-
-  /* PS */
   else if (cmd[0]=='P' && cmd[1]=='S') {
     if (len == 2U) { char *p = resp; p = cat_str(p, "PS1;"); *p = 0; }
   }
 
-  /* NR / NB / VX / FR / FT / PC: stub responses */
-  else if (cmd[0]=='N' && cmd[1]=='R') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "NR0;"); *p = 0; }
-  }
-  else if (cmd[0]=='N' && cmd[1]=='B') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "NB0;"); *p = 0; }
-  }
+  /* ACK-only commands */
   else if (cmd[0]=='F' && (cmd[1]=='R' || cmd[1]=='T')) { /* ACK */ }
   else if (cmd[0]=='P' && cmd[1]=='C') { /* ACK */ }
   else if (cmd[0]=='V' && cmd[1]=='X') { /* ACK */ }
@@ -298,13 +377,15 @@ void CAT_Process(CAT_Handle_t *cat)
     }
   }
 
-  /* 2. Auto-info */
-  if (cat->auto_info) {
-    uint32_t f = cat->cb.get_freq ? cat->cb.get_freq() : 0U;
-    uint8_t  m = cat->cb.get_mode ? cat->cb.get_mode() : 0xFFU;
-    if (f != cat->last_freq || m != cat->last_mode) {
+  /* 2. Auto-info (AI1 / AI2): send IF on freq, mode, or TX state change */
+  if (cat->ai_level > 0U) {
+    uint32_t f  = cat->cb.get_freq ? cat->cb.get_freq() : 0U;
+    uint8_t  m  = cat->cb.get_mode ? cat->cb.get_mode() : 0xFFU;
+    bool     tx = cat->cb.get_tx   ? cat->cb.get_tx()   : false;
+    if (f != cat->last_freq || m != cat->last_mode || tx != cat->last_tx) {
       cat->last_freq = f;
       cat->last_mode = m;
+      cat->last_tx   = tx;
       char buf[100];
       CAT_BuildIF(cat, buf);
       tx_enqueue(buf);

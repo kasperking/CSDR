@@ -58,11 +58,9 @@ void USB_Audio_WriteRX(USB_Audio_Handle_t *au,
   /* Pack SAI int32 → USB int16 little-endian */
   for (uint16_t i = 0U; i < samples; i++)
   {
-    /* Left = I channel, Right = Q channel.
-     * SAI format: int32_t với data 16-bit LSB-aligned (STM32H7 SAI
-     * với SlotSize=32, DataSize=16 right-aligns data in slot). */
-    int16_t i_samp = (int16_t)src[i * 2U];
-    int16_t q_samp = (int16_t)src[i * 2U + 1U];
+    /* SAI RX: 16-bit sample right-justified in bits[15:0]. */
+    int16_t i_samp = (int16_t)(uint16_t)src[i * 2U];
+    int16_t q_samp = (int16_t)(uint16_t)src[i * 2U + 1U];
 
     /* Write I */
     uint16_t pos = au->rx_wr;
@@ -161,9 +159,9 @@ void USB_Audio_ReadTX(USB_Audio_Handle_t *au,
     au->tx_rd = (uint16_t)((au->tx_rd + 1U) % USB_AUDIO_RING_SIZE);
     int16_t q_samp = (int16_t)((uint16_t)hi << 8U | lo);
 
-    /* SAI: int32 with 16-bit data LSB-aligned (match SAI H7 format) */
-    dst[i * 2U]       = (int32_t)((uint32_t)(uint16_t)i_samp & 0x0000FFFFU);
-    dst[i * 2U + 1U]  = (int32_t)((uint32_t)(uint16_t)q_samp & 0x0000FFFFU);
+    /* SAI TX: 16-bit data right-justified in bits[15:0]. */
+    dst[i * 2U]       = (int32_t)(int16_t)i_samp;
+    dst[i * 2U + 1U]  = (int32_t)(int16_t)q_samp;
   }
   au->tx_count = (uint16_t)(au->tx_count - bytes);
   /* USER CODE END USB_Audio_ReadTX_0 */

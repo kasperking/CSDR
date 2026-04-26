@@ -98,6 +98,8 @@ typedef struct {
   IIR_Biquad_t dc_block_i;
   IIR_Biquad_t dc_block_q;
   IIR_Biquad_t dc_block_audio;
+  IIR_Biquad_t dc_postmix_i;   /*!< Post-mix DC removal (LO leakage) */
+  IIR_Biquad_t dc_postmix_q;
   FM_Demod_t   fm;
   AGC_t        agc;
 
@@ -126,6 +128,7 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate);
 void DSP_SetFrequency(DSP_State_t *dsp, uint32_t freq_hz,
                        uint32_t if_hz, uint32_t sample_rate);
 void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate);
+void DSP_SetBW(DSP_State_t *dsp, float bw_hz);
 void DSP_Process(DSP_State_t *dsp,
                   const int32_t *iq_in,
                   int32_t       *audio_out,
