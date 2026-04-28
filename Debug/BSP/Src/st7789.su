@@ -20,9 +20,9 @@
 ../BSP/Src/st7789.c:578:6:McHF_UpdateSMeter_SetTX	0	static
 ../BSP/Src/st7789.c:585:6:McHF_UpdateSMeter	80	static
 ../BSP/Src/st7789.c:658:6:McHF_DrawStatusPanel	80	static
-../BSP/Src/st7789.c:711:6:McHF_DrawSpectrum	560	static
-../BSP/Src/st7789.c:819:6:McHF_DrawWaterfall	32	static
-../BSP/Src/st7789.c:845:6:McHF_DrawFuncBar	0	static
-../BSP/Src/st7789.c:850:6:dma_wait_pub	0	static
-../BSP/Src/st7789.c:851:6:cs_high_pub	0	static
-../BSP/Src/st7789.c:854:11:ST7789_GetLineBuf	0	static
+../BSP/Src/st7789.c:714:6:McHF_DrawSpectrum	560	static
+../BSP/Src/st7789.c:822:6:McHF_DrawWaterfall	32	static
+../BSP/Src/st7789.c:848:6:McHF_DrawFuncBar	0	static
+../BSP/Src/st7789.c:853:6:dma_wait_pub	0	static
+../BSP/Src/st7789.c:854:6:cs_high_pub	0	static
+../BSP/Src/st7789.c:857:11:ST7789_GetLineBuf	0	static

@@ -99,6 +99,8 @@ static void     cat_set_nb(bool on);
 static void     cat_set_bw(uint32_t hz);
 static void     cat_set_agc_fast(bool fast);
 static void     cat_set_squelch(uint8_t sq);
+static void     cat_set_rit_hz(int32_t hz);
+static void     cat_set_step(uint32_t hz);
 static uint32_t cat_get_freq(void);
 static uint8_t  cat_get_mode(void);
 static bool     cat_get_tx(void);
@@ -110,6 +112,8 @@ static bool     cat_get_nb(void);
 static uint32_t cat_get_bw(void);
 static bool     cat_get_agc_fast(void);
 static uint8_t  cat_get_squelch(void);
+static int32_t  cat_get_rit_hz(void);
+static uint32_t cat_get_step(void);
 
 static void csdr_apply_band(uint8_t band);
 static void csdr_handle_encoder(void);
@@ -228,6 +232,8 @@ void CSDR_Init(void)
     .set_bw        = cat_set_bw,
     .set_agc_fast  = cat_set_agc_fast,
     .set_squelch   = cat_set_squelch,
+    .set_rit_hz    = cat_set_rit_hz,
+    .set_step      = cat_set_step,
     .get_freq      = cat_get_freq,
     .get_mode      = cat_get_mode,
     .get_tx        = cat_get_tx,
@@ -239,6 +245,8 @@ void CSDR_Init(void)
     .get_bw        = cat_get_bw,
     .get_agc_fast  = cat_get_agc_fast,
     .get_squelch   = cat_get_squelch,
+    .get_rit_hz    = cat_get_rit_hz,
+    .get_step      = cat_get_step,
   };
   CAT_Init(&g_cat, &cb);
 
@@ -253,7 +261,7 @@ void CSDR_Init(void)
   ui.freq_hz = g_sdr.freq_hz; ui.mode = (uint8_t)g_sdr.mode;
   ui.band_idx = g_sdr.band_idx; ui.volume = g_sdr.volume;
   ui.step = (uint32_t)g_sdr.step; ui.agc_fast = g_sdr.agc_fast;
-  ui.si5351_ok = g_sdr.si5351_ok;
+  ui.si5351_ok = g_sdr.si5351_ok; ui.bw_hz = (uint32_t)g_dsp.bw_hz;
   McHF_DrawTopBar(&g_lcd, &ui);
   McHF_DrawStatusPanel(&g_lcd, &ui);
 
@@ -647,6 +655,7 @@ static void csdr_refresh_display(void)
     ui.nr_on    = g_sdr.nr_on;    ui.rit_hz     = g_sdr.rit_hz;
     ui.tx_mode  = g_sdr.tx_mode;  ui.si5351_ok  = g_sdr.si5351_ok;
     ui.qse_on   = g_sdr.qse_on;   ui.signal_db  = g_dsp.signal_power_db;
+    ui.bw_hz    = (uint32_t)g_dsp.bw_hz;
 
     /* TopBar (y=0..61) luôn cập nhật */
     McHF_DrawTopBar(&g_lcd, &ui);
@@ -746,6 +755,28 @@ static bool     cat_get_nb(void)          { return g_sdr.nb_on; }
 static uint32_t cat_get_bw(void)          { return (uint32_t)g_dsp.bw_hz; }
 static bool     cat_get_agc_fast(void)    { return g_sdr.agc_fast; }
 static uint8_t  cat_get_squelch(void)     { return g_sdr.squelch; }
+static int32_t  cat_get_rit_hz(void)      { return (int32_t)g_sdr.rit_hz; }
+static uint32_t cat_get_step(void)        { return (uint32_t)g_sdr.step; }
+static void cat_set_rit_hz(int32_t hz)
+{
+  if (hz > 9999)  hz = 9999;
+  if (hz < -9999) hz = -9999;
+  g_sdr.rit_hz = (int16_t)hz;
+  g_sdr.display_dirty = true;
+}
+static void cat_set_step(uint32_t hz)
+{
+  /* Map to nearest valid FreqStep_t value */
+  FreqStep_t st;
+  if      (hz >= 100000U) st = STEP_100K;
+  else if (hz >=  10000U) st = STEP_10K;
+  else if (hz >=   1000U) st = STEP_1K;
+  else if (hz >=    100U) st = STEP_100;
+  else if (hz >=     10U) st = STEP_10;
+  else                    st = STEP_1;
+  g_sdr.step = st;
+  g_sdr.display_dirty = true;
+}
 /* ── Audio buffer accessors (expose main.c static buffers) ── */
 extern int32_t tx_buf[];
 extern int32_t rx_buf[];

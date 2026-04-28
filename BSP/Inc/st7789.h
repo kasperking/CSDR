@@ -205,6 +205,7 @@ typedef struct {
   bool       si5351_ok;        /* SI5351 hoạt động            */
   bool       qse_on;           /* QSE TX đang bật             */
   uint8_t    active_btn;       /* Nút function đang chọn 0-6  */
+  uint32_t   bw_hz;            /* Filter bandwidth Hz         */
 } McHF_UI_State_t;
 
 /* ── Font types ─────────────────────────────────────── */

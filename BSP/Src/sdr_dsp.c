@@ -456,11 +456,14 @@ void DSP_Process(DSP_State_t *dsp,
         float peak;
         FFT_Radix2(dsp->fft_buf, DSP_FFT_SIZE);
         FFT_ComputeMag_dB(dsp->fft_buf, dsp->fft_mag_db, DSP_FFT_SIZE, &peak);
-        /* Null center ±1 bin: suppress LO-leakage DC spike in display.
-         * After fftshift: mag_db[N/2] = 0 Hz, [N/2-1] = -187 Hz, [N/2+1] = +187 Hz */
-        dsp->fft_mag_db[DSP_FFT_SIZE / 2U - 1U] = -120.0f;
-        dsp->fft_mag_db[DSP_FFT_SIZE / 2U      ] = -120.0f;
-        dsp->fft_mag_db[DSP_FFT_SIZE / 2U + 1U] = -120.0f;
+        /* Interpolate center 3 bins từ lân cận để ẩn DC spike mà không tạo rãnh. */
+        {
+          float l = dsp->fft_mag_db[DSP_FFT_SIZE / 2U - 2U];
+          float r = dsp->fft_mag_db[DSP_FFT_SIZE / 2U + 2U];
+          dsp->fft_mag_db[DSP_FFT_SIZE / 2U - 1U] = l * 0.67f + r * 0.33f;
+          dsp->fft_mag_db[DSP_FFT_SIZE / 2U      ] = (l + r) * 0.5f;
+          dsp->fft_mag_db[DSP_FFT_SIZE / 2U + 1U] = l * 0.33f + r * 0.67f;
+        }
         dsp->fft_ready = true;
         dsp->fft_fill  = 0U;
       }

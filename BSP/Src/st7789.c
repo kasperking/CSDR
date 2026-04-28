@@ -696,8 +696,11 @@ void McHF_DrawStatusPanel(ST7789_Handle_t *lcd, const McHF_UI_State_t *ui)
   else if(st>=10U)     snprintf(buf,sizeof(buf)," 10Hz ");
   else                 snprintf(buf,sizeof(buf),"  1Hz ");
   PI(sep_step*6U,"STP",buf,MCH_FREQ_KHZ);
-  PI(sep_step*7U,"CLK",ui->si5351_ok?"OK ":"ERR",
-     ui->si5351_ok?MCH_STATUS_ON:MCH_STATUS_OFF);
+  if (ui->bw_hz >= 1000U)
+    snprintf(buf, sizeof(buf), "%2ukHz", (unsigned)(ui->bw_hz / 1000U));
+  else
+    snprintf(buf, sizeof(buf), "%3uHz", (unsigned)ui->bw_hz);
+  PI(sep_step*7U,"BW ",buf,MCH_FREQ_KHZ);
 #undef PI
 
   push_panel_block(lcd,ZONE_TOPBAR_Y2,(uint16_t)(ZONE_WF_Y2-1U),s_panel);

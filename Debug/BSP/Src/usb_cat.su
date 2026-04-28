@@ -4,9 +4,9 @@
 ../BSP/Src/usb_cat.c:66:13:tx_enqueue	20	static
 ../BSP/Src/usb_cat.c:76:6:CAT_FlushTX	16	static
 ../BSP/Src/usb_cat.c:94:6:CAT_Init	16	static
-../BSP/Src/usb_cat.c:107:6:CAT_SendResponse	0	static
-../BSP/Src/usb_cat.c:132:9:CAT_SDRModeToCat	0	static
-../BSP/Src/usb_cat.c:109:6:CAT_BuildIF	24	static
-../BSP/Src/usb_cat.c:140:9:CAT_CatModeToSDR	0	static
-../BSP/Src/usb_cat.c:348:6:CAT_Receive	20	static
-../BSP/Src/usb_cat.c:360:6:CAT_Process	168	static
+../BSP/Src/usb_cat.c:111:6:CAT_SendResponse	0	static
+../BSP/Src/usb_cat.c:149:9:CAT_SDRModeToCat	0	static
+../BSP/Src/usb_cat.c:113:6:CAT_BuildIF	32	static
+../BSP/Src/usb_cat.c:157:9:CAT_CatModeToSDR	0	static
+../BSP/Src/usb_cat.c:608:6:CAT_Receive	20	static
+../BSP/Src/usb_cat.c:620:6:CAT_Process	176	static

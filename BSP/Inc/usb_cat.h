@@ -74,6 +74,8 @@ typedef struct {
   void (*set_bw)(uint32_t hz);             /*!< FW: Hz          */
   void (*set_agc_fast)(bool fast);         /*!< GT: fast/slow   */
   void (*set_squelch)(uint8_t sq);         /*!< SQ: 0-255       */
+  void (*set_rit_hz)(int32_t hz);          /*!< RIT offset Hz   */
+  void (*set_step)(uint32_t hz);           /*!< Tuning step Hz  */
   /* Getters */
   uint32_t (*get_freq)(void);
   uint8_t  (*get_mode)(void);
@@ -86,6 +88,8 @@ typedef struct {
   uint32_t (*get_bw)(void);
   bool     (*get_agc_fast)(void);
   uint8_t  (*get_squelch)(void);
+  int32_t  (*get_rit_hz)(void);            /*!< RIT offset Hz   */
+  uint32_t (*get_step)(void);              /*!< Tuning step Hz  */
 } CAT_Callbacks_t;
 
 /** CAT driver state */
@@ -97,6 +101,12 @@ typedef struct {
   uint32_t last_freq;
   uint8_t  last_mode;
   bool     last_tx;                /*!< TX state tracked for AI unsolicited IF */
+  bool     rit_on;                 /*!< RIT on/off                */
+  int16_t  if_shift;               /*!< IS: IF shift Hz           */
+  uint32_t vfo_b_freq;             /*!< VFO B stored frequency    */
+  uint8_t  vfo_b_mode;             /*!< VFO B stored mode (CAT code) */
+  uint8_t  active_vfo;             /*!< 0=VFO_A, 1=VFO_B (VS cmd) */
+  bool     split_on;               /*!< Split: TX on VFO B        */
   CAT_Callbacks_t cb;
   bool     initialized;
 } CAT_Handle_t;
