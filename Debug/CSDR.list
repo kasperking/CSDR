@@ -35,17 +35,17 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING, OCTETS
  15 .debug_rnglists 00002f17  00000000  00000000  000849d8  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 16 .debug_macro  00043655  00000000  00000000  000878ef  2**0
+ 16 .debug_macro  00043641  00000000  00000000  000878ef  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 17 .debug_line   00045745  00000000  00000000  000caf44  2**0
+ 17 .debug_line   00045735  00000000  00000000  000caf30  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_str    00185103  00000000  00000000  00110689  2**0
+ 18 .debug_str    001850fb  00000000  00000000  00110665  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .comment      00000043  00000000  00000000  0029578c  2**0
+ 19 .comment      00000043  00000000  00000000  00295760  2**0
                   CONTENTS, READONLY
- 20 .debug_frame  00006ea8  00000000  00000000  002957d0  2**2
+ 20 .debug_frame  00006ea8  00000000  00000000  002957a4  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 21 .debug_line_str 00000036  00000000  00000000  0029c678  2**0
+ 21 .debug_line_str 00000036  00000000  00000000  0029c64c  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -7160,7 +7160,7 @@ void SDR_UI_Init(void)
 {
  80034a0:	e92d 41f0 	stmdb	sp!, {r4, r5, r6, r7, r8, lr}
   memset(s_spec_buf,  0, sizeof(s_spec_buf));
- 80034a4:	f64c 3258 	movw	r2, #52056	@ 0xcb58
+ 80034a4:	f24d 2218 	movw	r2, #53784	@ 0xd218
  80034a8:	2100      	movs	r1, #0
  80034aa:	487b      	ldr	r0, [pc, #492]	@ (8003698 <SDR_UI_Init+0x1f8>)
   mr[10]= sr[10]-sr[9];mg[10]= sg[10]-sg[9];mb[10]= sb[10]-sb[9];
@@ -7171,7 +7171,7 @@ void SDR_UI_Init(void)
   memset(s_spec_buf,  0, sizeof(s_spec_buf));
  80034b4:	f00c fa19 	bl	800f8ea <memset>
   memset(s_wf_buf,    0, sizeof(s_wf_buf));
- 80034b8:	f248 32cc 	movw	r2, #33740	@ 0x83cc
+ 80034b8:	f648 022c 	movw	r2, #34860	@ 0x882c
  80034bc:	2100      	movs	r1, #0
  80034be:	4877      	ldr	r0, [pc, #476]	@ (800369c <SDR_UI_Init+0x1fc>)
  80034c0:	f00c fa13 	bl	800f8ea <memset>
@@ -7375,7 +7375,7 @@ void SDR_UI_Init(void)
       s_wf_lut[i] = SWAP16((uint16_t)((31U<<11)|(63U<<5)|31U));
  8003692:	f64f 73ff 	movw	r3, #65535	@ 0xffff
  8003696:	e7f0      	b.n	800367a <SDR_UI_Init+0x1da>
- 8003698:	2400a3e0 	.word	0x2400a3e0
+ 8003698:	2400a840 	.word	0x2400a840
  800369c:	24002000 	.word	0x24002000
  80036a0:	200031f4 	.word	0x200031f4
  80036a4:	41b80000 	.word	0x41b80000
@@ -7438,7 +7438,7 @@ void SDR_UI_DrawFrame(ST7789_Handle_t *lcd)
     ST7789_PushWindow(lcd, 0, LCD_W - 1U, y, y, ln);
  800370c:	462b      	mov	r3, r5
     ln[PANEL_DIV_X] = SWAP16(UI_BORDER);
- 800370e:	f8a4 709c 	strh.w	r7, [r4, #156]	@ 0x9c
+ 800370e:	f8a4 708c 	strh.w	r7, [r4, #140]	@ 0x8c
     ST7789_PushWindow(lcd, 0, LCD_W - 1U, y, y, ln);
  8003712:	f240 123f 	movw	r2, #319	@ 0x13f
  8003716:	2100      	movs	r1, #0
@@ -8331,7 +8331,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
   const uint16_t H = (uint16_t)PANEL_H;
 
   for (uint32_t i = 0; i < (uint32_t)H * PANEL_W; i++) { s_panel[i] = SWAP16(UI_PANEL_BG); }
- 8003dd6:	f243 613c 	movw	r1, #13884	@ 0x363c
+ 8003dd6:	f243 01ac 	movw	r1, #12460	@ 0x30ac
 {
  8003dda:	461a      	mov	r2, r3
  8003ddc:	9006      	str	r0, [sp, #24]
@@ -8347,12 +8347,12 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
   for (uint16_t r = 0; r < H; r++) { s_panel[(uint32_t)r * PANEL_W + (PANEL_W - 1U)] = SWAP16(UI_BORDER); }
  8003df2:	49b1      	ldr	r1, [pc, #708]	@ (80040b8 <SDR_UI_DrawStatusPanel+0x2ec>)
  8003df4:	f244 5029 	movw	r0, #17705	@ 0x4529
- 8003df8:	f243 623c 	movw	r2, #13884	@ 0x363c
+ 8003df8:	f243 02ac 	movw	r2, #12460	@ 0x30ac
  8003dfc:	f821 0013 	strh.w	r0, [r1, r3, lsl #1]
- 8003e00:	334e      	adds	r3, #78	@ 0x4e
+ 8003e00:	3346      	adds	r3, #70	@ 0x46
  8003e02:	4293      	cmp	r3, r2
  8003e04:	d1fa      	bne.n	8003dfc <SDR_UI_DrawStatusPanel+0x30>
- 8003e06:	f240 62b4 	movw	r2, #1716	@ 0x6b4
+ 8003e06:	f240 6204 	movw	r2, #1540	@ 0x604
   uint16_t sep_step = (uint16_t)(H / 8U);
   for (uint8_t s = 1; s < 8U; s++) {
     uint16_t ry = (uint16_t)(s * sep_step);
@@ -8360,7 +8360,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
       for (uint16_t x = 0; x < PANEL_W - 1U; x++) { s_panel[(uint32_t)ry * PANEL_W + x] = SWAP16(UI_BORDER); }
  8003e0a:	f244 5429 	movw	r4, #17705	@ 0x4529
   for (uint8_t s = 1; s < 8U; s++) {
- 8003e0e:	f243 50a0 	movw	r0, #13728	@ 0x35a0
+ 8003e0e:	f243 0020 	movw	r0, #12320	@ 0x3020
       for (uint16_t x = 0; x < PANEL_W - 1U; x++) { s_panel[(uint32_t)ry * PANEL_W + x] = SWAP16(UI_BORDER); }
  8003e12:	9b05      	ldr	r3, [sp, #20]
  8003e14:	eb03 0142 	add.w	r1, r3, r2, lsl #1
@@ -8368,10 +8368,10 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  8003e1a:	3301      	adds	r3, #1
  8003e1c:	f821 4b02 	strh.w	r4, [r1], #2
  8003e20:	b29b      	uxth	r3, r3
- 8003e22:	2b4d      	cmp	r3, #77	@ 0x4d
+ 8003e22:	2b45      	cmp	r3, #69	@ 0x45
  8003e24:	d1f9      	bne.n	8003e1a <SDR_UI_DrawStatusPanel+0x4e>
   for (uint8_t s = 1; s < 8U; s++) {
- 8003e26:	f202 62b4 	addw	r2, r2, #1716	@ 0x6b4
+ 8003e26:	f202 6204 	addw	r2, r2, #1540	@ 0x604
  8003e2a:	4282      	cmp	r2, r0
  8003e2c:	d1f1      	bne.n	8003e12 <SDR_UI_DrawStatusPanel+0x46>
       uint16_t *_ln=s_panel+(uint32_t)_row*PANEL_W; \
@@ -8522,7 +8522,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
   for (uint16_t r = 0; r < H; r++) {
     ST7789_PushWindow(lcd, PANEL_X, PANEL_W - 1U,
  8003f56:	9b05      	ldr	r3, [sp, #20]
- 8003f58:	224d      	movs	r2, #77	@ 0x4d
+ 8003f58:	2245      	movs	r2, #69	@ 0x45
  8003f5a:	2100      	movs	r1, #0
  8003f5c:	9806      	ldr	r0, [sp, #24]
  8003f5e:	e9cd 4300 	strd	r4, r3, [sp]
@@ -8534,7 +8534,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
   for (uint16_t r = 0; r < H; r++) {
  8003f6a:	9b05      	ldr	r3, [sp, #20]
  8003f6c:	b2a4      	uxth	r4, r4
- 8003f6e:	339c      	adds	r3, #156	@ 0x9c
+ 8003f6e:	338c      	adds	r3, #140	@ 0x8c
  8003f70:	2cf0      	cmp	r4, #240	@ 0xf0
  8003f72:	9305      	str	r3, [sp, #20]
  8003f74:	d1ef      	bne.n	8003f56 <SDR_UI_DrawStatusPanel+0x18a>
@@ -8563,7 +8563,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  8003fa2:	4630      	mov	r0, r6
  8003fa4:	9400      	str	r4, [sp, #0]
  8003fa6:	f10a 0a01 	add.w	sl, sl, #1
- 8003faa:	369c      	adds	r6, #156	@ 0x9c
+ 8003faa:	368c      	adds	r6, #140	@ 0x8c
  8003fac:	e9cd 1b01 	strd	r1, fp, [sp, #4]
  8003fb0:	9904      	ldr	r1, [sp, #16]
  8003fb2:	f000 fe7d 	bl	8004cb0 <LCD_LineStr>
@@ -8589,7 +8589,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  8003fe4:	4630      	mov	r0, r6
  8003fe6:	9400      	str	r4, [sp, #0]
  8003fe8:	f109 0901 	add.w	r9, r9, #1
- 8003fec:	369c      	adds	r6, #156	@ 0x9c
+ 8003fec:	368c      	adds	r6, #140	@ 0x8c
  8003fee:	e9cd 1a01 	strd	r1, sl, [sp, #4]
  8003ff2:	4659      	mov	r1, fp
  8003ff4:	f000 fe5c 	bl	8004cb0 <LCD_LineStr>
@@ -8615,7 +8615,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  8004028:	4630      	mov	r0, r6
  800402a:	9400      	str	r4, [sp, #0]
  800402c:	f109 0901 	add.w	r9, r9, #1
- 8004030:	369c      	adds	r6, #156	@ 0x9c
+ 8004030:	368c      	adds	r6, #140	@ 0x8c
  8004032:	e9cd 1a01 	strd	r1, sl, [sp, #4]
  8004036:	4659      	mov	r1, fp
  8004038:	f000 fe3a 	bl	8004cb0 <LCD_LineStr>
@@ -8636,7 +8636,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  800405e:	f643 73e0 	movw	r3, #16352	@ 0x3fe0
  8004062:	4650      	mov	r0, sl
  8004064:	9a07      	ldr	r2, [sp, #28]
- 8004066:	f10a 0a9c 	add.w	sl, sl, #156	@ 0x9c
+ 8004066:	f10a 0a8c 	add.w	sl, sl, #140	@ 0x8c
  800406a:	2900      	cmp	r1, #0
  800406c:	bf08      	it	eq
  800406e:	464b      	moveq	r3, r9
@@ -8659,20 +8659,20 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  800409a:	4650      	mov	r0, sl
  800409c:	9a07      	ldr	r2, [sp, #28]
  800409e:	9904      	ldr	r1, [sp, #16]
- 80040a0:	f10a 0a9c 	add.w	sl, sl, #156	@ 0x9c
+ 80040a0:	f10a 0a8c 	add.w	sl, sl, #140	@ 0x8c
  80040a4:	9702      	str	r7, [sp, #8]
  80040a6:	e9cd 9300 	strd	r9, r3, [sp]
  80040aa:	ab09      	add	r3, sp, #36	@ 0x24
  80040ac:	f000 fe00 	bl	8004cb0 <LCD_LineStr>
  80040b0:	e70c      	b.n	8003ecc <SDR_UI_DrawStatusPanel+0x100>
  80040b2:	bf00      	nop
- 80040b4:	24016f40 	.word	0x24016f40
- 80040b8:	24016fda 	.word	0x24016fda
+ 80040b4:	24017a60 	.word	0x24017a60
+ 80040b8:	24017aea 	.word	0x24017aea
  80040bc:	08011674 	.word	0x08011674
- 80040c0:	2401724c 	.word	0x2401724c
- 80040c4:	24017fb4 	.word	0x24017fb4
+ 80040c0:	24017d1c 	.word	0x24017d1c
+ 80040c4:	24018924 	.word	0x24018924
  80040c8:	080113a9 	.word	0x080113a9
- 80040cc:	24018d1c 	.word	0x24018d1c
+ 80040cc:	2401952c 	.word	0x2401952c
  80040d0:	080113e0 	.word	0x080113e0
  80040d4:	080113e6 	.word	0x080113e6
  80040d8:	080113f0 	.word	0x080113f0
@@ -8687,11 +8687,11 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  80040fc:	0801133b 	.word	0x0801133b
  8004100:	080113ec 	.word	0x080113ec
  8004104:	080113f4 	.word	0x080113f4
- 8004108:	24019a84 	.word	0x24019a84
- 800410c:	2401a7ec 	.word	0x2401a7ec
- 8004110:	2401b554 	.word	0x2401b554
- 8004114:	2401c2bc 	.word	0x2401c2bc
- 8004118:	2401d024 	.word	0x2401d024
+ 8004108:	2401a134 	.word	0x2401a134
+ 800410c:	2401ad3c 	.word	0x2401ad3c
+ 8004110:	2401b944 	.word	0x2401b944
+ 8004114:	2401c54c 	.word	0x2401c54c
+ 8004118:	2401d154 	.word	0x2401d154
   PI(sep_step * 5U, "SQ",  buf, UI_STATUS_VAL);
  800411c:	f248 4310 	movw	r3, #33808	@ 0x8410
  8004120:	4650      	mov	r0, sl
@@ -8706,7 +8706,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  8004138:	9a07      	ldr	r2, [sp, #28]
  800413a:	4659      	mov	r1, fp
  800413c:	9702      	str	r7, [sp, #8]
- 800413e:	f10a 0a9c 	add.w	sl, sl, #156	@ 0x9c
+ 800413e:	f10a 0a8c 	add.w	sl, sl, #140	@ 0x8c
  8004142:	e9cd 9300 	strd	r9, r3, [sp]
  8004146:	ab09      	add	r3, sp, #36	@ 0x24
  8004148:	f000 fdb2 	bl	8004cb0 <LCD_LineStr>
@@ -8747,7 +8747,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  8004190:	4650      	mov	r0, sl
  8004192:	9a07      	ldr	r2, [sp, #28]
  8004194:	9904      	ldr	r1, [sp, #16]
- 8004196:	f10a 0a9c 	add.w	sl, sl, #156	@ 0x9c
+ 8004196:	f10a 0a8c 	add.w	sl, sl, #140	@ 0x8c
  800419a:	9702      	str	r7, [sp, #8]
  800419c:	e9cd 9300 	strd	r9, r3, [sp]
  80041a0:	ab09      	add	r3, sp, #36	@ 0x24
@@ -8769,7 +8769,7 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  80041c8:	4652      	mov	r2, sl
  80041ca:	4659      	mov	r1, fp
  80041cc:	9602      	str	r6, [sp, #8]
- 80041ce:	f109 099c 	add.w	r9, r9, #156	@ 0x9c
+ 80041ce:	f109 098c 	add.w	r9, r9, #140	@ 0x8c
  80041d2:	e9cd 4300 	strd	r4, r3, [sp]
  80041d6:	ab09      	add	r3, sp, #36	@ 0x24
  80041d8:	f000 fd6a 	bl	8004cb0 <LCD_LineStr>
@@ -8904,7 +8904,7 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
  80042dc:	ee67 7aa6 	vmul.f32	s15, s15, s13
   for (uint16_t x = 0U; x < W; x++) {
  80042e0:	3001      	adds	r0, #1
- 80042e2:	28f1      	cmp	r0, #241	@ 0xf1
+ 80042e2:	28f9      	cmp	r0, #249	@ 0xf9
     bar_h[x] = (uint16_t)(pwr_compress(fft_db[bi]) * (float)H);
  80042e4:	eefc 7ae7 	vcvt.u32.f32	s15, s15
  80042e8:	ee17 3a90 	vmov	r3, s15
@@ -8932,9 +8932,9 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
  8004318:	2b00      	cmp	r3, #0
  800431a:	f000 80c2 	beq.w	80044a2 <SDR_UI_DrawSpectrum+0x2a2>
     bw_lo_px = (cx_px > off) ? (uint16_t)(cx_px - off) : 0U;
- 800431e:	2b77      	cmp	r3, #119	@ 0x77
+ 800431e:	2b7b      	cmp	r3, #123	@ 0x7b
  8004320:	f200 80c1 	bhi.w	80044a6 <SDR_UI_DrawSpectrum+0x2a6>
- 8004324:	f1c3 0378 	rsb	r3, r3, #120	@ 0x78
+ 8004324:	f1c3 037c 	rsb	r3, r3, #124	@ 0x7c
  8004328:	b299      	uxth	r1, r3
   }
   if (bw_hi_valid) {
@@ -8952,12 +8952,12 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
  800434c:	2a00      	cmp	r2, #0
  800434e:	f000 80ae 	beq.w	80044ae <SDR_UI_DrawSpectrum+0x2ae>
     bw_hi_px = cx_px + off;
- 8004352:	3278      	adds	r2, #120	@ 0x78
+ 8004352:	327c      	adds	r2, #124	@ 0x7c
     if (bw_hi_px >= W) { bw_hi_px = W - 1U; }
  8004354:	b292      	uxth	r2, r2
- 8004356:	2af0      	cmp	r2, #240	@ 0xf0
+ 8004356:	2af8      	cmp	r2, #248	@ 0xf8
  8004358:	bf28      	it	cs
- 800435a:	22f0      	movcs	r2, #240	@ 0xf0
+ 800435a:	22f8      	movcs	r2, #248	@ 0xf8
   }
 
   for (uint16_t y = 0U; y < H; y++) {
@@ -8992,7 +8992,7 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
  800438a:	461f      	mov	r7, r3
     for (uint16_t x = 0U; x < W; x++) { row[x] = bg_sw; }
  800438c:	f1a0 0c02 	sub.w	ip, r0, #2
- 8004390:	f500 7ef0 	add.w	lr, r0, #480	@ 0x1e0
+ 8004390:	f500 7ef8 	add.w	lr, r0, #496	@ 0x1f0
  8004394:	f82c 7f02 	strh.w	r7, [ip, #2]!
  8004398:	45e6      	cmp	lr, ip
  800439a:	d1fb      	bne.n	8004394 <SDR_UI_DrawSpectrum+0x194>
@@ -9037,7 +9037,7 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
  80043ea:	f820 3012 	strhgt.w	r3, [r0, r2, lsl #1]
     if (cx_px < W)                   { row[cx_px]     = SWAP16(UI_SPEC_CENTER); }
  80043ee:	f641 73f8 	movw	r3, #8184	@ 0x1ff8
- 80043f2:	f8a0 30f0 	strh.w	r3, [r0, #240]	@ 0xf0
+ 80043f2:	f8a0 30f8 	strh.w	r3, [r0, #248]	@ 0xf8
     for (uint16_t x = 0U; x < W; x++) {
       if (bar_h[x] > 0U && y_from_bot < bar_h[x])
  80043f6:	f83e 3b02 	ldrh.w	r3, [lr], #2
@@ -9077,11 +9077,11 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
  800445a:	f820 301c 	strh.w	r3, [r0, ip, lsl #1]
     for (uint16_t x = 0U; x < W; x++) {
  800445e:	f10c 0c01 	add.w	ip, ip, #1
- 8004462:	f1bc 0ff1 	cmp.w	ip, #241	@ 0xf1
+ 8004462:	f1bc 0ff9 	cmp.w	ip, #249	@ 0xf9
  8004466:	d1c6      	bne.n	80043f6 <SDR_UI_DrawSpectrum+0x1f6>
   for (uint16_t y = 0U; y < H; y++) {
  8004468:	3601      	adds	r6, #1
- 800446a:	f500 70f1 	add.w	r0, r0, #482	@ 0x1e2
+ 800446a:	f500 70f9 	add.w	r0, r0, #498	@ 0x1f2
  800446e:	2e6c      	cmp	r6, #108	@ 0x6c
  8004470:	f47f af7f 	bne.w	8004372 <SDR_UI_DrawSpectrum+0x172>
  8004474:	263e      	movs	r6, #62	@ 0x3e
@@ -9092,7 +9092,7 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
     ST7789_PushWindow(lcd, DISP_X, LCD_W - 1U,
  8004476:	4633      	mov	r3, r6
  8004478:	f240 123f 	movw	r2, #319	@ 0x13f
- 800447c:	214f      	movs	r1, #79	@ 0x4f
+ 800447c:	2147      	movs	r1, #71	@ 0x47
  800447e:	4620      	mov	r0, r4
  8004480:	e9cd 6500 	strd	r6, r5, [sp]
   for (uint16_t y = 0U; y < H; y++) {
@@ -9100,7 +9100,7 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
     ST7789_PushWindow(lcd, DISP_X, LCD_W - 1U,
  8004486:	f000 fdf6 	bl	8005076 <ST7789_PushWindow>
   for (uint16_t y = 0U; y < H; y++) {
- 800448a:	f505 75f1 	add.w	r5, r5, #482	@ 0x1e2
+ 800448a:	f505 75f9 	add.w	r5, r5, #498	@ 0x1f2
  800448e:	b2b6      	uxth	r6, r6
  8004490:	2eaa      	cmp	r6, #170	@ 0xaa
  8004492:	d1f0      	bne.n	8004476 <SDR_UI_DrawSpectrum+0x276>
@@ -9124,7 +9124,7 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
  80044aa:	2200      	movs	r2, #0
  80044ac:	e756      	b.n	800435c <SDR_UI_DrawSpectrum+0x15c>
     bw_hi_px = cx_px + off;
- 80044ae:	2279      	movs	r2, #121	@ 0x79
+ 80044ae:	227d      	movs	r2, #125	@ 0x7d
  80044b0:	e754      	b.n	800435c <SDR_UI_DrawSpectrum+0x15c>
     bool is_grid = (y == g20 || y == g40 || y == g60);
  80044b2:	2301      	movs	r3, #1
@@ -9170,14 +9170,14 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
  8004530:	f89d 300c 	ldrb.w	r3, [sp, #12]
  8004534:	e78c      	b.n	8004450 <SDR_UI_DrawSpectrum+0x250>
  8004536:	bf00      	nop
- 8004538:	43710000 	.word	0x43710000
+ 8004538:	43790000 	.word	0x43790000
  800453c:	3089705f 	.word	0x3089705f
  8004540:	00000000 	.word	0x00000000
  8004544:	41d4cccd 	.word	0x41d4cccd
  8004548:	3d19fc26 	.word	0x3d19fc26
  800454c:	42d80000 	.word	0x42d80000
  8004550:	38d1b717 	.word	0x38d1b717
- 8004554:	2400a3e0 	.word	0x2400a3e0
+ 8004554:	2400a840 	.word	0x2400a840
  8004558:	3ecccccd 	.word	0x3ecccccd
  800455c:	427c0000 	.word	0x427c0000
  8004560:	3eb33333 	.word	0x3eb33333
@@ -9257,11 +9257,11 @@ void SDR_UI_DrawWaterfall(ST7789_Handle_t *lcd,
  80045ce:	f000 fd9b 	bl	8005108 <dma_wait_pub>
   memmove(&s_wf_buf[1][0], &s_wf_buf[0][0], (ZONE_WF_H - 1U) * DISP_W * 2U);
  80045d2:	4936      	ldr	r1, [pc, #216]	@ (80046ac <SDR_UI_DrawWaterfall+0x144>)
- 80045d4:	f248 12ea 	movw	r2, #33258	@ 0x81ea
+ 80045d4:	f248 623a 	movw	r2, #34362	@ 0x863a
     if (bi >= nb) { bi = nb - 1U; }
  80045d8:	fa1f fa8a 	uxth.w	sl, sl
   memmove(&s_wf_buf[1][0], &s_wf_buf[0][0], (ZONE_WF_H - 1U) * DISP_W * 2U);
- 80045dc:	f501 70f1 	add.w	r0, r1, #482	@ 0x1e2
+ 80045dc:	f501 70f9 	add.w	r0, r1, #498	@ 0x1f2
  80045e0:	f00b f96a 	bl	800f8b8 <memmove>
   const float xs = (float)DISP_W / (float)n_vis;
  80045e4:	ee07 4a90 	vmov	s15, r4
@@ -9305,7 +9305,7 @@ void SDR_UI_DrawWaterfall(ST7789_Handle_t *lcd,
  8004646:	ee77 7a87 	vadd.f32	s15, s15, s14
  800464a:	ed9f 7a1d 	vldr	s14, [pc, #116]	@ 80046c0 <SDR_UI_DrawWaterfall+0x158>
   for (uint16_t x = 0U; x < DISP_W; x++) {
- 800464e:	f1b9 0ff1 	cmp.w	r9, #241	@ 0xf1
+ 800464e:	f1b9 0ff9 	cmp.w	r9, #249	@ 0xf9
     int   idx = (int)((db - WF_MIN_DB) * WF_INV_RANGE);
  8004652:	ee67 7a87 	vmul.f32	s15, s15, s14
  8004656:	eefd 7ae7 	vcvt.s32.f32	s15, s15
@@ -9324,7 +9324,7 @@ void SDR_UI_DrawWaterfall(ST7789_Handle_t *lcd,
     ST7789_PushWindow(lcd, DISP_X, LCD_W - 1U,
  800466e:	4633      	mov	r3, r6
  8004670:	f240 123f 	movw	r2, #319	@ 0x13f
- 8004674:	214f      	movs	r1, #79	@ 0x4f
+ 8004674:	2147      	movs	r1, #71	@ 0x47
  8004676:	4628      	mov	r0, r5
  8004678:	e9cd 6400 	strd	r6, r4, [sp]
   for (uint16_t r = 0U; r < ZONE_WF_H; r++) {
@@ -9332,7 +9332,7 @@ void SDR_UI_DrawWaterfall(ST7789_Handle_t *lcd,
     ST7789_PushWindow(lcd, DISP_X, LCD_W - 1U,
  800467e:	f000 fcfa 	bl	8005076 <ST7789_PushWindow>
   for (uint16_t r = 0U; r < ZONE_WF_H; r++) {
- 8004682:	f504 74f1 	add.w	r4, r4, #482	@ 0x1e2
+ 8004682:	f504 74f9 	add.w	r4, r4, #498	@ 0x1f2
  8004686:	b2b6      	uxth	r6, r6
  8004688:	2ef0      	cmp	r6, #240	@ 0xf0
  800468a:	d1f0      	bne.n	800466e <SDR_UI_DrawWaterfall+0x106>
@@ -9352,7 +9352,7 @@ void SDR_UI_DrawWaterfall(ST7789_Handle_t *lcd,
  80046a4:	3f3851ec 	.word	0x3f3851ec
  80046a8:	0da24260 	.word	0x0da24260
  80046ac:	24002000 	.word	0x24002000
- 80046b0:	43710000 	.word	0x43710000
+ 80046b0:	43790000 	.word	0x43790000
  80046b4:	c2288f5c 	.word	0xc2288f5c
  80046b8:	42f00000 	.word	0x42f00000
  80046bc:	20002ff4 	.word	0x20002ff4

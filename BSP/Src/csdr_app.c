@@ -10,7 +10,7 @@
 
 #include "csdr_app.h"
 #include "wm8731.h"
-#include "ui.h"
+#include "sdr_ui.h"
 #include "sdr_dsp.h"
 #include "encoder.h"
 #include "si5351.h"

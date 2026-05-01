@@ -44,7 +44,7 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32h7xx_hal.h"
-#include "ui.h"
+#include "sdr_ui.h"
 #include <stdint.h>
 #include <stdbool.h>
 

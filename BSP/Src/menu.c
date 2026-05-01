@@ -6,7 +6,7 @@
 /* USER CODE END Header */
 
 #include "menu.h"
-#include "ui.h"
+#include "sdr_ui.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>

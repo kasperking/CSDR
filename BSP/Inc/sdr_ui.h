@@ -33,7 +33,7 @@ extern "C" {
 #include "st7789.h"
 
 /* ── Layout geometry ────────────────────────────────── */
-#define PANEL_W       78U
+#define PANEL_W       70U
 #define PANEL_X       0U
 #define PANEL_DIV_X   (PANEL_W)
 

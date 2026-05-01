@@ -4,7 +4,6 @@
 "./BSP/Src/diag.o"
 "./BSP/Src/encoder.o"
 "./BSP/Src/fsdr_analog.o"
-"./BSP/Src/mchf_ui.o"
 "./BSP/Src/menu.o"
 "./BSP/Src/pe4302.o"
 "./BSP/Src/sdr_dsp.o"
