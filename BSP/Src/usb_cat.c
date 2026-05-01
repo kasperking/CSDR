@@ -133,15 +133,20 @@ void CAT_FlushTX(CAT_Handle_t *cat)
     (void)cat;
     if (s_tx_head == s_tx_tail) return;
 
-    uint8_t out[64];
-    uint16_t n = 0U;
+    uint8_t  out[64];
+    uint16_t n    = 0U;
+    uint16_t tail = s_tx_tail;   /* work with a local copy — don't commit yet */
 
-    while (s_tx_tail != s_tx_head && n < sizeof(out)) {
-        out[n++] = (uint8_t)s_tx_fifo[s_tx_tail];
-        s_tx_tail = (uint16_t)((s_tx_tail + 1U) % CAT_TX_FIFO_SIZE);
+    while (tail != s_tx_head && n < sizeof(out)) {
+        out[n++] = (uint8_t)s_tx_fifo[tail];
+        tail = (uint16_t)((tail + 1U) % CAT_TX_FIFO_SIZE);
     }
 
-    (void)CDC_Transmit_FS(out, n);
+    /* Only advance the real tail when CDC actually accepts the transfer.
+     * On USBD_BUSY the data stays in the FIFO and is retried next call. */
+    if (CDC_Transmit_FS(out, n) == 0U) {  /* 0 = USBD_OK */
+        s_tx_tail = tail;
+    }
 }
 
 /* =========================================================
@@ -454,33 +459,22 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* TX; = poll TX/RX status (GET only, no state change)
-     * TX1;/TX2; = set TX ON — TX0; = set RX OFF — respond and flush immediately */
+    /* TX variants — all silent, no response:
+     *   TX;  / TX1; / TX2; → PTT on   (cmd[2] != '0')
+     *   TX0;              → PTT off  (alias for RX;) */
     else if (cmd[0] == 'T' && cmd[1] == 'X') {
-        if (cmd[2] == '\0') {
-            /* GET: return current state */
-            bool tx = cat->cb.get_tx ? cat->cb.get_tx() : false;
-            resp[0] = 'T'; resp[1] = 'X'; resp[2] = tx ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
-            cat_tx_enqueue(resp);
-            CAT_FlushTX(cat);
-            resp[0] = '\0';
-        } else {
-            /* SET: TX0=RX, TX1/TX2=TX — flush immediately */
-            bool on = (cmd[2] != '0');
-            if (cat->cb.set_tx) cat->cb.set_tx(on);
-            resp[0] = 'T'; resp[1] = 'X'; resp[2] = cmd[2]; resp[3] = ';'; resp[4] = '\0';
-            cat_tx_enqueue(resp);
-            CAT_FlushTX(cat);
-            resp[0] = '\0';
-        }
+        if (cat->cb.set_tx) cat->cb.set_tx(cmd[2] != '0');
     }
 
-    /* RX;/RX0; = set TX OFF — respond RX0; and flush immediately */
+    /* RX; = PTT off, silent */
     else if (cmd[0] == 'R' && cmd[1] == 'X') {
         if (cat->cb.set_tx) cat->cb.set_tx(false);
-        cat_tx_enqueue("RX0;");
-        CAT_FlushTX(cat);
-        /* resp stays '\0', caller skips enqueue */
+    }
+
+    /* TQ; = PTT state query — Hamlib uses this to verify PTT after TX;/RX; */
+    else if (cmd[0] == 'T' && cmd[1] == 'Q') {
+        bool tx = cat->cb.get_tx ? cat->cb.get_tx() : false;
+        resp[0] = 'T'; resp[1] = 'Q'; resp[2] = tx ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
     }
 
     /* IF */
@@ -653,48 +647,54 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         cat_build_BC(resp);
     }
 
-    /* VS - VFO select/query */
+    /* VS — GET returns active VFO; SET is ACK-only */
     else if (cmd[0] == 'V' && cmd[1] == 'S') {
         if (cmd[2] != '\0') {
             cat->active_vfo = cat_clamp_vfo((uint8_t)(cmd[2] - '0'));
+        } else {
+            cat_build_VS(cat, resp);
         }
-        cat_build_VS(cat, resp);
     }
 
-    /* DC - CTRL/PTT routing query (simplified: RX VFO + split bit) */
+    /* DC — GET returns VFO+split routing; SET is ACK-only */
     else if (cmd[0] == 'D' && cmd[1] == 'C') {
         if (cmd[2] != '\0') {
             cat->active_vfo = cat_clamp_vfo((uint8_t)(cmd[2] - '0'));
+            if (cmd[3] != '\0') cat->split_on = (cmd[3] == '1');
+        } else {
+            cat_build_DC(cat, resp);
         }
-        if (cmd[3] != '\0') {
-            cat->split_on = (cmd[3] == '1');
-        }
-        cat_build_DC(cat, resp);
     }
 
-    /* FR */
+    /* FR — GET returns current VFO; SET is ACK-only (Hamlib sends NULL expected) */
     else if (cmd[0] == 'F' && cmd[1] == 'R') {
         if (cmd[2] != '\0') {
             cat->active_vfo = cat_clamp_vfo((uint8_t)(cmd[2] - '0'));
+        } else {
+            resp[0] = 'F'; resp[1] = 'R';
+            resp[2] = cat_vfo_digit(cat->active_vfo); resp[3] = ';'; resp[4] = '\0';
         }
-        resp[0] = 'F'; resp[1] = 'R'; resp[2] = cat_vfo_digit(cat->active_vfo); resp[3] = ';'; resp[4] = '\0';
     }
 
-    /* FT */
+    /* FT — GET returns split TX VFO; SET is ACK-only */
     else if (cmd[0] == 'F' && cmd[1] == 'T') {
         if (cmd[2] != '\0') {
             cat->split_on = (cmd[2] == '1');
+        } else {
+            resp[0] = 'F'; resp[1] = 'T';
+            resp[2] = cat->split_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
         }
-        resp[0] = 'F'; resp[1] = 'T'; resp[2] = cat->split_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
     }
 
-    /* RT */
+    /* RT — GET returns RIT state; SET is ACK-only */
     else if (cmd[0] == 'R' && cmd[1] == 'T') {
         if (cmd[2] != '\0') {
             cat->rit_on = (cmd[2] == '1');
             if (!cat->rit_on && cat->cb.set_rit_hz) cat->cb.set_rit_hz(0);
+        } else {
+            resp[0] = 'R'; resp[1] = 'T';
+            resp[2] = cat->rit_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
         }
-        resp[0] = 'R'; resp[1] = 'T'; resp[2] = cat->rit_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
     }
 
     /* RC */
@@ -748,12 +748,14 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* SP */
+    /* SP — GET returns split state; SET is ACK-only */
     else if (cmd[0] == 'S' && cmd[1] == 'P') {
         if (cmd[2] != '\0') {
             cat->split_on = (cmd[2] == '1');
+        } else {
+            resp[0] = 'S'; resp[1] = 'P';
+            resp[2] = cat->split_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
         }
-        resp[0] = 'S'; resp[1] = 'P'; resp[2] = cat->split_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
     }
 
     /* TS */
@@ -843,17 +845,20 @@ void CAT_Process(CAT_Handle_t *cat)
 
             char resp[CAT_TX_BUF_SIZE];
             cat_exec(cat, cmd, resp);
-            if (resp[0] != '\0') {
-                cat_tx_enqueue(resp);
-                CAT_FlushTX(cat); /* flush every command immediately */
-            }
+            if (resp[0] != '\0') cat_tx_enqueue(resp);
+            /* No per-command flush — collect all responses first */
 
             len = 0U;
         }
     }
 
-    /* AI unsolicited IF — never inject immediately after PTT */
-    if (cat->ai_level > 0U && !skip_ai) {
+    /* Flush all queued responses in one CDC transfer. */
+    CAT_FlushTX(cat);
+
+    /* AI unsolicited IF — only when nothing is pending in the TX FIFO.
+     * Injecting here while responses are queued would interleave with
+     * command-response pairs and break kenwood_transaction verification. */
+    if (cat->ai_level > 0U && !skip_ai && (s_tx_head == s_tx_tail)) {
         uint32_t cur_freq = (cat->active_vfo == 1U)
                           ? cat->vfo_b_freq
                           : (cat->cb.get_freq ? cat->cb.get_freq() : 0U);
