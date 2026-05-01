@@ -32,9 +32,9 @@
 #ifndef __CSDR_APP_H
 #define __CSDR_APP_H
 
-/* LO offset: hardware QSD runs freq+LO_OFFSET, NCO corrects back to baseband.
- * DC spike (LO leakage) appears at +LO_OFFSET in spectrum → outside crop window. */
-#define LO_OFFSET  18000U
+/* Default LO offset used to initialise g_sdr.lo_offset_hz at boot.
+ * After calibration the runtime value g_sdr.lo_offset_hz is used everywhere. */
+#define LO_OFFSET_DEFAULT  18000U
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,10 +76,15 @@ typedef struct {
   bool        display_dirty;
   uint8_t     usb_mode;
   /* Calibration */
-  int32_t     xtal_ppm;        /*!< XTAL correction ±200 ppm       */
-  int16_t     iq_gain_tenth;   /*!< IQ gain balance ±200 = ±20.0%  */
-  int16_t     iq_phase_tenth;  /*!< IQ phase balance ±200 = ±20.0° */
-  int16_t     audio_cal_db;    /*!< Audio input level ±30 dB        */
+  int32_t     xtal_ppm;          /*!< XTAL correction -200..+200 ppm   */
+  int16_t     iq_gain;           /*!< IQ gain balance -50..+50          */
+  int16_t     iq_phase;          /*!< IQ phase balance -50..+50         */
+  int32_t     dc_i_offset;       /*!< ADC I DC offset -2048..+2048      */
+  int32_t     dc_q_offset;       /*!< ADC Q DC offset -2048..+2048      */
+  int16_t     audio_gain_db;     /*!< RX audio gain -20..+20 dB         */
+  int16_t     mic_gain;          /*!< TX mic gain 0..100                */
+  int16_t     smeter_offset_db;  /*!< S-meter offset -20..+20 dB        */
+  uint32_t    lo_offset_hz;      /*!< LO offset Hz (default 18000)      */
 } SDR_State_t;
 
 extern SDR_State_t g_sdr;

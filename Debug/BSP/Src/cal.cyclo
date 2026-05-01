@@ -1,1 +1,6 @@
-../BSP/Src/cal.c:16:6:Cal_Run	1
+../BSP/Src/cal.c:307:16:enc_read_delta	3
+../BSP/Src/cal.c:62:13:push_ln	1
+../BSP/Src/cal.c:166:13:render_header.constprop	4
+../BSP/Src/cal.c:318:13:render_sublevel	16
+../BSP/Src/cal.c:411:13:render_toplevel	14
+../BSP/Src/cal.c:424:6:Cal_Run	42

@@ -6,28 +6,46 @@ extern "C" {
 
 #include "st7789.h"
 #include <stdint.h>
+#include <stdbool.h>
 
-/* cal.h – Calibration screen
+/**
+ * @file  cal.h
+ * @brief Calibration parameter block and entry point.
  *
- *  Vào: chọn "Calibration" từ menu chính
- *  Ra:  F4 = lưu & thoát, MENU = thoát không lưu
- *
- *  Màn hình chia 4 tham số có thể chỉnh bằng encoder:
- *   1. XTAL correction (ppm): ±200ppm → bù drift tần số
- *   2. IQ Gain balance  (%):  ±20%    → cân bằng kênh I/Q
- *   3. IQ Phase balance (°):  ±20°    → loại bỏ image
- *   4. Audio level     (dB):  ±30dB   → điều chỉnh mức vào
+ *  Cal_Run() enters a two-level overlay menu that lets the user edit all
+ *  calibration parameters.  Returns true when the user chooses
+ *  "Save Settings"; caller is responsible for persisting to flash and
+ *  applying the new values.
  */
 
 typedef struct {
-  int32_t xtal_ppm;       /* XTAL correction */
-  int16_t iq_gain_tenth;  /* IQ gain ×10 (150 = +15.0%) */
-  int16_t iq_phase_tenth; /* IQ phase ×10 (0 = 0.0°) */
-  int16_t audio_cal_db;   /* Audio level dB */
+  /* Frequency */
+  int32_t  xtal_ppm;           /* XTAL correction   -200 .. +200 ppm   */
+
+  /* IQ */
+  int16_t  iq_gain;            /* IQ gain balance    -50 .. +50         */
+  int16_t  iq_phase;           /* IQ phase balance   -50 .. +50         */
+
+  /* DC */
+  int32_t  dc_i_offset;        /* ADC I DC offset  -2048 .. +2048       */
+  int32_t  dc_q_offset;        /* ADC Q DC offset  -2048 .. +2048       */
+
+  /* Audio */
+  int16_t  audio_gain_db;      /* RX audio gain      -20 .. +20 dB      */
+  int16_t  mic_gain;           /* TX mic gain          0 .. 100         */
+
+  /* RF / Display */
+  int16_t  smeter_offset_db;   /* S-meter offset     -20 .. +20 dB      */
+  uint32_t lo_offset_hz;       /* LO offset       10000 .. 25000 Hz     */
 } Cal_Params_t;
 
-/* Run calibration screen. Blocks until user exits.
- * params: current values (modified in-place if saved) */
+#define CAL_PARAMS_DEFAULT \
+  { 0, 0, 0, 0, 0, 0, 50, 0, 18000U }
+
+/* Run the calibration overlay.  Blocks until the user exits.
+ * Returns true  → user chose Save; caller should apply + persist params.
+ * Returns false → user cancelled; params may have been modified locally
+ *                 by Reset Default but should be discarded by caller. */
 bool Cal_Run(ST7789_Handle_t *lcd, Cal_Params_t *params);
 
 #ifdef __cplusplus

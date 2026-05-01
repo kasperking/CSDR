@@ -59,6 +59,8 @@ SDR_State_t g_sdr = {
   .step          = STEP_100,
   .agc_fast      = true,
   .display_dirty = true,
+  .lo_offset_hz  = LO_OFFSET_DEFAULT,
+  .mic_gain      = 50,
 };
 
 
@@ -89,6 +91,9 @@ static volatile uint8_t dbg_i2c_devices[128] = {0};
 static volatile uint8_t dbg_i2c_found_count  = 0;
 
 
+
+/* ── Function key state machines ── */
+static Key_t k_menu, k_f1, k_f2, k_f3, k_f4, k_band, k_mode, k_ptt;
 
 /* ── CAT callbacks ── */
 static void     cat_set_freq(uint32_t f);
@@ -208,7 +213,7 @@ void CSDR_Init(void)
   dbg_si5351_ok = (uint32_t)SI5351_Init(&g_si5351, &hi2c1, SI5351_I2C_ADDR, SI5351_XTAL_HZ);
   if (dbg_si5351_ok == HAL_OK) {
     g_sdr.si5351_ok = true;
-    SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + LO_OFFSET);
+    SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
   }
 
   /* PE4302 Attenuator */
@@ -221,11 +226,21 @@ void CSDR_Init(void)
 
   /* DSP */
   DSP_Init(&g_dsp, CSDR_AUDIO_SAMPLE_RATE);
-  DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
 
   /* Encoder */
   Encoder_Init(&g_encoder, &htim2);
+
+  /* Function keys */
+  Key_Init(&k_menu, MENU_KEY_GPIO_Port, MENU_KEY_Pin);
+  Key_Init(&k_f1,   F1_KEY_GPIO_Port,   F1_KEY_Pin);
+  Key_Init(&k_f2,   F2_KEY_GPIO_Port,   F2_KEY_Pin);
+  Key_Init(&k_f3,   F3_KEY_GPIO_Port,   F3_KEY_Pin);
+  Key_Init(&k_f4,   F4_KEY_GPIO_Port,   F4_KEY_Pin);
+  Key_Init(&k_band, BAND_KEY_GPIO_Port, BAND_KEY_Pin);
+  Key_Init(&k_mode, MODE_KEY_GPIO_Port, MODE_KEY_Pin);
+  Key_Init(&k_ptt,  PTT_GPIO_Port,      PTT_Pin);
 
   /* Analog subsystem */
   Analog_Init();
@@ -460,8 +475,8 @@ static void csdr_apply_band(uint8_t band)
   BPF_SetBand(band); LPF_SetBand(band);
   uint32_t f = BPF_BandToFreq(band);
   g_sdr.freq_hz = f; g_sdr.band_idx = band;
-  DSP_SetFrequency(&g_dsp, csdr_nco_freq(), f, CSDR_AUDIO_SAMPLE_RATE);
-  if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, f + LO_OFFSET);
+  DSP_SetFrequency(&g_dsp, csdr_nco_freq(), f, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+  if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, f + g_sdr.lo_offset_hz);
   g_sdr.display_dirty = true;
 }
 
@@ -474,8 +489,8 @@ static void csdr_handle_encoder(void)
     if (f < CSDR_FREQ_MIN_HZ) f = CSDR_FREQ_MIN_HZ;
     if (f > CSDR_FREQ_MAX_HZ) f = CSDR_FREQ_MAX_HZ;
     g_sdr.freq_hz = (uint32_t)f;
-    DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, CSDR_AUDIO_SAMPLE_RATE);
-    if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + LO_OFFSET);
+    DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+    if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
     uint8_t b = BPF_FreqToBand(g_sdr.freq_hz);
     if (b != 0xFFU && b != g_sdr.band_idx) { BPF_SetBand(b); g_sdr.band_idx = b; }
     g_sdr.display_dirty = true;
@@ -492,21 +507,30 @@ static void csdr_handle_encoder(void)
           Diag_Run(&g_lcd);
         } else if (strcmp(name, "Calibration") == 0) {
           Cal_Params_t cp = {
-            .xtal_ppm       = g_sdr.xtal_ppm,
-            .iq_gain_tenth  = g_sdr.iq_gain_tenth,
-            .iq_phase_tenth = g_sdr.iq_phase_tenth,
-            .audio_cal_db   = g_sdr.audio_cal_db,
+            .xtal_ppm        = g_sdr.xtal_ppm,
+            .iq_gain         = g_sdr.iq_gain,
+            .iq_phase        = g_sdr.iq_phase,
+            .dc_i_offset     = g_sdr.dc_i_offset,
+            .dc_q_offset     = g_sdr.dc_q_offset,
+            .audio_gain_db   = g_sdr.audio_gain_db,
+            .mic_gain        = g_sdr.mic_gain,
+            .smeter_offset_db= g_sdr.smeter_offset_db,
+            .lo_offset_hz    = g_sdr.lo_offset_hz,
           };
           if (Cal_Run(&g_lcd, &cp)) {
-            g_sdr.xtal_ppm       = cp.xtal_ppm;
-            g_sdr.iq_gain_tenth  = cp.iq_gain_tenth;
-            g_sdr.iq_phase_tenth = cp.iq_phase_tenth;
-            g_sdr.audio_cal_db   = cp.audio_cal_db;
+            g_sdr.xtal_ppm        = cp.xtal_ppm;
+            g_sdr.iq_gain         = cp.iq_gain;
+            g_sdr.iq_phase        = cp.iq_phase;
+            g_sdr.dc_i_offset     = cp.dc_i_offset;
+            g_sdr.dc_q_offset     = cp.dc_q_offset;
+            g_sdr.audio_gain_db   = cp.audio_gain_db;
+            g_sdr.mic_gain        = cp.mic_gain;
+            g_sdr.smeter_offset_db= cp.smeter_offset_db;
+            g_sdr.lo_offset_hz    = cp.lo_offset_hz;
             if (g_sdr.si5351_ok) {
-              uint32_t xtal_corr = (uint32_t)((int32_t)SI5351_XTAL_HZ +
+              g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
                 SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
-              g_si5351.xtal_hz = xtal_corr;
-              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + LO_OFFSET);
+              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
             }
           }
         }
@@ -527,21 +551,10 @@ static void csdr_handle_encoder(void)
 
 static void csdr_handle_keys(void)
 {
-  /* Debounce timestamps – ignores bounces for 50ms after each press */
-  static uint32_t db_menu=0, db_band=0, db_mode=0;
-  static uint32_t db_f1=0, db_f2=0, db_f3=0, db_f4=0, db_ptt=0;
-  /* Key state: true=currently pressed (for long-press detection) */
-  static bool st_menu=false, st_band=false, st_mode=false;
-  static bool st_f1=false, st_f2=false, st_f3=false;
-  static bool st_f4=false, st_ptt=false;
+  Key_Poll(&k_menu); Key_Poll(&k_f1);   Key_Poll(&k_f2); Key_Poll(&k_f3);
+  Key_Poll(&k_f4);   Key_Poll(&k_band); Key_Poll(&k_mode); Key_Poll(&k_ptt);
 
-#define KEY_DEBOUNCE_MS  50U
-/* KEY_FELL: true only on first press after debounce period */
-#define KEY_FELL(port, pin, last_t, state)   ({ bool _now = (HAL_GPIO_ReadPin(port, pin) == GPIO_PIN_RESET);      bool _fire = false;      if (_now && !(state) && (HAL_GetTick()-(last_t)) >= KEY_DEBOUNCE_MS)        { _fire=true; (last_t)=HAL_GetTick(); }      (state) = _now;      _fire; })
-
-  /* Macro: true on falling edge (button press) */
-
-  if (KEY_FELL(MENU_KEY_GPIO_Port, MENU_KEY_Pin, db_menu, st_menu)) {
+  if (Key_Press(&k_menu)) {
     g_sdr.display_dirty = false;  /* prevent status panel overwriting menu */
     if (!Menu_IsOpen(&g_menu))
       Menu_LoadFromSDR(&g_menu,
@@ -553,8 +566,8 @@ static void csdr_handle_keys(void)
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty = true;
   }
 
-  /* F1: menu UP / ATT+ */
-  if (KEY_FELL(F1_KEY_GPIO_Port, F1_KEY_Pin, db_f1, st_f1)) {
+  /* F1: menu UP / ATT+ (hold-repeat while held) */
+  if (Key_PressOrRepeat(&k_f1)) {
     if (Menu_IsOpen(&g_menu)) Menu_Up(&g_menu);
     else {
       PE4302_IncAttn(&g_att);
@@ -563,8 +576,8 @@ static void csdr_handle_keys(void)
     }
   }
 
-  /* F2: menu DOWN / ATT- */
-  if (KEY_FELL(F2_KEY_GPIO_Port, F2_KEY_Pin, db_f2, st_f2)) {
+  /* F2: menu DOWN / ATT- (hold-repeat while held) */
+  if (Key_PressOrRepeat(&k_f2)) {
     if (Menu_IsOpen(&g_menu)) Menu_Down(&g_menu);
     else {
       PE4302_DecAttn(&g_att);
@@ -573,7 +586,7 @@ static void csdr_handle_keys(void)
     }
   }
 
-  if (KEY_FELL(F3_KEY_GPIO_Port, F3_KEY_Pin, db_f3, st_f3)) {
+  if (Key_Press(&k_f3)) {
     if (Menu_IsOpen(&g_menu)) {
       if (g_menu.cursor < g_menu.item_count &&
           g_menu.items[g_menu.cursor].type == MENU_TYPE_ACTION) {
@@ -584,16 +597,30 @@ static void csdr_handle_keys(void)
           Diag_Run(&g_lcd);
         } else if (strcmp(name, "Calibration") == 0) {
           Cal_Params_t cp = {
-            .xtal_ppm=g_sdr.xtal_ppm, .iq_gain_tenth=g_sdr.iq_gain_tenth,
-            .iq_phase_tenth=g_sdr.iq_phase_tenth, .audio_cal_db=g_sdr.audio_cal_db
+            .xtal_ppm        = g_sdr.xtal_ppm,
+            .iq_gain         = g_sdr.iq_gain,
+            .iq_phase        = g_sdr.iq_phase,
+            .dc_i_offset     = g_sdr.dc_i_offset,
+            .dc_q_offset     = g_sdr.dc_q_offset,
+            .audio_gain_db   = g_sdr.audio_gain_db,
+            .mic_gain        = g_sdr.mic_gain,
+            .smeter_offset_db= g_sdr.smeter_offset_db,
+            .lo_offset_hz    = g_sdr.lo_offset_hz,
           };
           if (Cal_Run(&g_lcd, &cp)) {
-            g_sdr.xtal_ppm=cp.xtal_ppm; g_sdr.iq_gain_tenth=cp.iq_gain_tenth;
-            g_sdr.iq_phase_tenth=cp.iq_phase_tenth; g_sdr.audio_cal_db=cp.audio_cal_db;
+            g_sdr.xtal_ppm        = cp.xtal_ppm;
+            g_sdr.iq_gain         = cp.iq_gain;
+            g_sdr.iq_phase        = cp.iq_phase;
+            g_sdr.dc_i_offset     = cp.dc_i_offset;
+            g_sdr.dc_q_offset     = cp.dc_q_offset;
+            g_sdr.audio_gain_db   = cp.audio_gain_db;
+            g_sdr.mic_gain        = cp.mic_gain;
+            g_sdr.smeter_offset_db= cp.smeter_offset_db;
+            g_sdr.lo_offset_hz    = cp.lo_offset_hz;
             if (g_sdr.si5351_ok) {
-              g_si5351.xtal_hz=(uint32_t)((int32_t)SI5351_XTAL_HZ+
-                SI5351_XTAL_HZ/1000000L*g_sdr.xtal_ppm);
-              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + LO_OFFSET);
+              g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
+                SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
+              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
             }
           }
         }
@@ -605,27 +632,25 @@ static void csdr_handle_keys(void)
   }
 
   /* F4: Back / Exit menu */
-  if (KEY_FELL(F4_KEY_GPIO_Port, F4_KEY_Pin, db_f4, st_f4)) {
+  if (Key_Press(&k_f4)) {
     if (Menu_IsOpen(&g_menu)) {
       Menu_Back(&g_menu);
       if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty = true;
     }
   }
 
-  if (KEY_FELL(BAND_KEY_GPIO_Port, BAND_KEY_Pin, db_band, st_band))
+  if (Key_Press(&k_band))
     csdr_apply_band(BPF_BandUp(g_sdr.band_idx));
 
-  if (KEY_FELL(MODE_KEY_GPIO_Port, MODE_KEY_Pin, db_mode, st_mode)) {
+  if (Key_Press(&k_mode)) {
     g_sdr.mode = (SDR_Mode_t)((g_sdr.mode+1U) % MODE_COUNT);
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
     g_sdr.display_dirty = true;
   }
 
-  if (KEY_FELL(PTT_GPIO_Port, PTT_Pin, db_ptt, st_ptt)) {
-    cat_set_tx(!g_sdr.tx_mode);  /* reuse same TX sequencing */
+  if (Key_Press(&k_ptt)) {
+    cat_set_tx(!g_sdr.tx_mode);
   }
-  #undef KEY_FELL
-#undef KEY_DEBOUNCE_MS
 }
 
 static void csdr_update_waterfall(void)
@@ -714,7 +739,7 @@ static void menu_apply_cb(void)
 }
 
 /* CAT callbacks */
-static void     cat_set_freq(uint32_t f) { g_sdr.freq_hz=f; DSP_SetFrequency(&g_dsp,csdr_nco_freq(),f,CSDR_AUDIO_SAMPLE_RATE); if(g_sdr.si5351_ok)SI5351_SetQSDFrequency(&g_si5351,f+LO_OFFSET); g_sdr.display_dirty=true; }
+static void     cat_set_freq(uint32_t f) { g_sdr.freq_hz=f; DSP_SetFrequency(&g_dsp,csdr_nco_freq(),f,g_sdr.lo_offset_hz,CSDR_AUDIO_SAMPLE_RATE); if(g_sdr.si5351_ok)SI5351_SetQSDFrequency(&g_si5351,f+g_sdr.lo_offset_hz); g_sdr.display_dirty=true; }
 static void     cat_set_mode(uint8_t m)  { g_sdr.mode=(SDR_Mode_t)m; DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE); g_sdr.display_dirty=true; }
 static void cat_set_tx(bool tx)
 {
@@ -738,7 +763,7 @@ static void cat_set_tx(bool tx)
       g_sdr.qse_on = false;
       /* SI5351_SetQSEFrequency reprograms PLL_A (shared with QSD CLK0/CLK1).
        * Re-apply QSD frequency to restore CLK0/CLK1 to correct output. */
-      SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + LO_OFFSET);
+      SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
     }
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);  /* Ensure HP unmuted */
   }
@@ -833,7 +858,7 @@ static void cat_set_if_shift(int32_t hz)
   if (hz >  9999) hz =  9999;
   if (hz < -9999) hz = -9999;
   g_sdr.if_shift_hz = (int16_t)hz;
-  DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   g_sdr.display_dirty = true;
 }
 

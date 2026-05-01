@@ -15,10 +15,10 @@
 ../BSP/Src/sdr_dsp.c:287:7:Demod_LSB	1
 ../BSP/Src/sdr_dsp.c:289:7:Demod_CW	1
 ../BSP/Src/sdr_dsp.c:354:6:DSP_SetFrequency	1
-../BSP/Src/sdr_dsp.c:363:6:DSP_SetMode	2
-../BSP/Src/sdr_dsp.c:393:6:DSP_SetBW	2
-../BSP/Src/sdr_dsp.c:415:6:DSP_Process	11
-../BSP/Src/sdr_dsp.c:526:6:Hilbert_Init	6
+../BSP/Src/sdr_dsp.c:364:6:DSP_SetMode	2
+../BSP/Src/sdr_dsp.c:394:6:DSP_SetBW	2
+../BSP/Src/sdr_dsp.c:416:6:DSP_Process	11
+../BSP/Src/sdr_dsp.c:527:6:Hilbert_Init	6
 ../BSP/Src/sdr_dsp.c:305:6:DSP_Init	3
-../BSP/Src/sdr_dsp.c:563:7:Hilbert_Process	3
-../BSP/Src/sdr_dsp.c:591:6:DSP_ProcessTX	8
+../BSP/Src/sdr_dsp.c:564:7:Hilbert_Process	3
+../BSP/Src/sdr_dsp.c:592:6:DSP_ProcessTX	8

@@ -352,10 +352,11 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
 }
 
 void DSP_SetFrequency(DSP_State_t *dsp, uint32_t freq_hz,
-                       uint32_t if_hz, uint32_t sample_rate)
+                       uint32_t if_hz, uint32_t lo_offset_hz,
+                       uint32_t sample_rate)
 {
   /* USER CODE BEGIN DSP_SetFrequency_0 */
-  int32_t delta = (int32_t)freq_hz - ((int32_t)if_hz + (int32_t)LO_OFFSET);
+  int32_t delta = (int32_t)freq_hz - ((int32_t)if_hz + (int32_t)lo_offset_hz);
   NCO_SetFrequency(&dsp->nco, delta, sample_rate);
   /* USER CODE END DSP_SetFrequency_0 */
 }

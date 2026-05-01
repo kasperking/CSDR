@@ -16,7 +16,8 @@
 #include <math.h>
 
 /* ── Private defines ─────────────────────────────────────────────────────── */
-#define PANEL_H   (ZONE_WF_Y2 - ZONE_TOPBAR_Y2)   /* 178 rows */
+#define PANEL_H      (ZONE_WF_Y2 - ZONE_TOPBAR_Y2)   /* 178 rows */
+#define PANEL_STRIDE (PANEL_W + 1U)                  /* includes divider col */
 
 #define BIG_W     10U   /* 2× scaled digit width  */
 #define BIG_H     16U   /* 2× scaled digit height */
@@ -33,7 +34,7 @@
 static uint16_t s_topbar[ZONE_TOPBAR_H * LCD_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 
-static uint16_t s_panel[PANEL_H * PANEL_W]
+static uint16_t s_panel[PANEL_H * PANEL_STRIDE]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 
 static uint16_t s_spec_buf[ZONE_SPEC_H][DISP_W]
@@ -391,21 +392,24 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
   char buf[10];
   const uint16_t H = (uint16_t)PANEL_H;
 
-  for (uint32_t i = 0; i < (uint32_t)H * PANEL_W; i++) { s_panel[i] = SWAP16(UI_PANEL_BG); }
-  for (uint16_t r = 0; r < H; r++) { s_panel[(uint32_t)r * PANEL_W + (PANEL_W - 1U)] = SWAP16(UI_BORDER); }
+  for (uint32_t i = 0; i < (uint32_t)H * PANEL_STRIDE; i++) { s_panel[i] = SWAP16(UI_PANEL_BG); }
+  for (uint16_t r = 0; r < H; r++) {
+    s_panel[(uint32_t)r * PANEL_STRIDE + (PANEL_W - 1U)] = SWAP16(UI_BORDER);   /* right panel border */
+    s_panel[(uint32_t)r * PANEL_STRIDE + PANEL_W]        = SWAP16(UI_BORDER);   /* vertical divider */
+  }
   uint16_t sep_step = (uint16_t)(H / 8U);
   for (uint8_t s = 1; s < 8U; s++) {
     uint16_t ry = (uint16_t)(s * sep_step);
     if (ry < H) {
-      for (uint16_t x = 0; x < PANEL_W - 1U; x++) { s_panel[(uint32_t)ry * PANEL_W + x] = SWAP16(UI_BORDER); }
+      for (uint16_t x = 0; x < PANEL_W - 1U; x++) { s_panel[(uint32_t)ry * PANEL_STRIDE + x] = SWAP16(UI_BORDER); }
     }
   }
 
 #define PI(r0,lbl,val_str,vc) do{ \
-    uint16_t _vx=(uint16_t)(2U+(uint16_t)(strlen(lbl)*(uint16_t)Font6x8.width)+2U); \
+    uint16_t _vx=(uint16_t)(2U+(uint16_t)(strlen(lbl)*(uint16_t)Font6x8.width)+4U); \
     for(uint16_t _fr=0;_fr<Font6x8.height;_fr++){ \
       uint16_t _row=(uint16_t)((r0)+(_fr)+5U); if(_row>=H)break; \
-      uint16_t *_ln=s_panel+(uint32_t)_row*PANEL_W; \
+      uint16_t *_ln=s_panel+(uint32_t)_row*PANEL_STRIDE; \
       LCD_LineStr(_ln,2U,_fr,(lbl),&Font6x8,UI_STATUS_LBL,UI_PANEL_BG); \
       LCD_LineStr(_ln,_vx,_fr,(val_str),&Font6x8,(vc),UI_PANEL_BG); \
     } }while(0)
@@ -435,10 +439,10 @@ void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
 #undef PI
 
   for (uint16_t r = 0; r < H; r++) {
-    ST7789_PushWindow(lcd, PANEL_X, PANEL_W - 1U,
+    ST7789_PushWindow(lcd, PANEL_X, PANEL_W,
                       (uint16_t)(ZONE_TOPBAR_Y2 + r),
                       (uint16_t)(ZONE_TOPBAR_Y2 + r),
-                      s_panel + (uint32_t)r * PANEL_W);
+                      s_panel + (uint32_t)r * PANEL_STRIDE);
   }
 }
 

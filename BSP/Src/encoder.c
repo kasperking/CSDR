@@ -169,4 +169,83 @@ bool Encoder_GetLongPress(Encoder_t *enc)
 }
 
 /* USER CODE BEGIN 1 */
+
+/* ── Key state machine implementation ─────────────────────────── */
+
+void Key_Init(Key_t *k, GPIO_TypeDef *port, uint16_t pin)
+{
+  k->port       = port;
+  k->pin        = pin;
+  k->state      = KS_IDLE;
+  k->raw_prev   = false;
+  k->t_stable   = HAL_GetTick();
+  k->t_press    = 0U;
+  k->t_repeat   = 0U;
+  k->evt_press   = false;
+  k->evt_hold    = false;
+  k->evt_repeat  = false;
+  k->evt_release = false;
+}
+
+void Key_Poll(Key_t *k)
+{
+  uint32_t now = HAL_GetTick();
+  bool raw = (HAL_GPIO_ReadPin(k->port, k->pin) == GPIO_PIN_RESET);
+
+  if (raw != k->raw_prev) {
+    k->raw_prev = raw;
+    k->t_stable = now;
+    return;
+  }
+
+  if ((now - k->t_stable) < KEY_DEBOUNCE_MS) { return; }
+
+  switch (k->state) {
+    case KS_IDLE:
+      if (raw) {
+        k->state     = KS_PRESSED;
+        k->t_press   = now;
+        k->evt_press = true;
+      }
+      break;
+
+    case KS_PRESSED:
+      if (!raw) {
+        k->state       = KS_IDLE;
+        k->evt_release = true;
+      } else if ((now - k->t_press) >= KEY_HOLD_MS) {
+        k->state      = KS_HELD;
+        k->evt_hold   = true;
+        k->t_repeat   = now + KEY_REPEAT_RATE_MS;
+      }
+      break;
+
+    case KS_HELD:
+      if (!raw) {
+        k->state       = KS_IDLE;
+        k->evt_release = true;
+      } else if ((int32_t)(now - k->t_repeat) >= 0) {
+        k->t_repeat   += KEY_REPEAT_RATE_MS;
+        k->evt_repeat  = true;
+      }
+      break;
+
+    default:
+      k->state = KS_IDLE;
+      break;
+  }
+}
+
+bool Key_Press(Key_t *k)
+  { bool e = k->evt_press;   k->evt_press   = false; return e; }
+bool Key_Hold(Key_t *k)
+  { bool e = k->evt_hold;    k->evt_hold    = false; return e; }
+bool Key_Repeat(Key_t *k)
+  { bool e = k->evt_repeat;  k->evt_repeat  = false; return e; }
+bool Key_Release(Key_t *k)
+  { bool e = k->evt_release; k->evt_release = false; return e; }
+bool Key_PressOrRepeat(Key_t *k)
+  { bool e = k->evt_press || k->evt_repeat;
+    k->evt_press = false; k->evt_repeat = false; return e; }
+
 /* USER CODE END 1 */

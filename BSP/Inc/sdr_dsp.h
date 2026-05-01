@@ -127,7 +127,8 @@ typedef struct {
 /* Exported functions prototypes ---------------------------------------------*/
 void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate);
 void DSP_SetFrequency(DSP_State_t *dsp, uint32_t freq_hz,
-                       uint32_t if_hz, uint32_t sample_rate);
+                       uint32_t if_hz, uint32_t lo_offset_hz,
+                       uint32_t sample_rate);
 void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate);
 void DSP_SetBW(DSP_State_t *dsp, float bw_hz);
 void DSP_Process(DSP_State_t *dsp,
