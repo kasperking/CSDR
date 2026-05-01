@@ -1,4 +1,5 @@
-BSP/Src/menu.o: ../BSP/Src/menu.c H:/CSDR/BSP/Inc/menu.h \
+BSP/Src/sdr_ui.o: ../BSP/Src/sdr_ui.c H:/CSDR/BSP/Inc/sdr_ui.h \
+ H:/CSDR/BSP/Inc/st7789.h \
  ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h \
  ../Core/Inc/stm32h7xx_hal_conf.h \
  ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_rcc.h \
@@ -39,10 +40,9 @@ BSP/Src/menu.o: ../BSP/Src/menu.c H:/CSDR/BSP/Inc/menu.h \
  ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_tim_ex.h \
  ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h \
  ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h \
- ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h \
- H:/CSDR/BSP/Inc/ui.h H:/CSDR/BSP/Inc/sdr_ui.h H:/CSDR/BSP/Inc/st7789.h \
- H:/CSDR/BSP/Inc/ui.h
-H:/CSDR/BSP/Inc/menu.h:
+ ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h
+H:/CSDR/BSP/Inc/sdr_ui.h:
+H:/CSDR/BSP/Inc/st7789.h:
 ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h:
 ../Core/Inc/stm32h7xx_hal_conf.h:
 ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_rcc.h:
@@ -84,7 +84,3 @@ H:/CSDR/BSP/Inc/menu.h:
 ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd.h:
 ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_usb.h:
 ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_pcd_ex.h:
-H:/CSDR/BSP/Inc/ui.h:
-H:/CSDR/BSP/Inc/sdr_ui.h:
-H:/CSDR/BSP/Inc/st7789.h:
-H:/CSDR/BSP/Inc/ui.h:

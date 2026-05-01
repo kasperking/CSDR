@@ -11,9 +11,11 @@ C_SRCS += \
 ../BSP/Src/diag.c \
 ../BSP/Src/encoder.c \
 ../BSP/Src/fsdr_analog.c \
+../BSP/Src/mchf_ui.c \
 ../BSP/Src/menu.c \
 ../BSP/Src/pe4302.c \
 ../BSP/Src/sdr_dsp.c \
+../BSP/Src/sdr_ui.c \
 ../BSP/Src/si5351.c \
 ../BSP/Src/st7789.c \
 ../BSP/Src/usb_audio.c \
@@ -28,9 +30,11 @@ OBJS += \
 ./BSP/Src/diag.o \
 ./BSP/Src/encoder.o \
 ./BSP/Src/fsdr_analog.o \
+./BSP/Src/mchf_ui.o \
 ./BSP/Src/menu.o \
 ./BSP/Src/pe4302.o \
 ./BSP/Src/sdr_dsp.o \
+./BSP/Src/sdr_ui.o \
 ./BSP/Src/si5351.o \
 ./BSP/Src/st7789.o \
 ./BSP/Src/usb_audio.o \
@@ -45,9 +49,11 @@ C_DEPS += \
 ./BSP/Src/diag.d \
 ./BSP/Src/encoder.d \
 ./BSP/Src/fsdr_analog.d \
+./BSP/Src/mchf_ui.d \
 ./BSP/Src/menu.d \
 ./BSP/Src/pe4302.d \
 ./BSP/Src/sdr_dsp.d \
+./BSP/Src/sdr_ui.d \
 ./BSP/Src/si5351.d \
 ./BSP/Src/st7789.d \
 ./BSP/Src/usb_audio.d \
@@ -63,7 +69,7 @@ BSP/Src/%.o BSP/Src/%.su BSP/Src/%.cyclo: ../BSP/Src/%.c BSP/Src/subdir.mk
 clean: clean-BSP-2f-Src
 
 clean-BSP-2f-Src:
-	-$(RM) ./BSP/Src/bpf_lpf.cyclo ./BSP/Src/bpf_lpf.d ./BSP/Src/bpf_lpf.o ./BSP/Src/bpf_lpf.su ./BSP/Src/cal.cyclo ./BSP/Src/cal.d ./BSP/Src/cal.o ./BSP/Src/cal.su ./BSP/Src/csdr_app.cyclo ./BSP/Src/csdr_app.d ./BSP/Src/csdr_app.o ./BSP/Src/csdr_app.su ./BSP/Src/diag.cyclo ./BSP/Src/diag.d ./BSP/Src/diag.o ./BSP/Src/diag.su ./BSP/Src/encoder.cyclo ./BSP/Src/encoder.d ./BSP/Src/encoder.o ./BSP/Src/encoder.su ./BSP/Src/fsdr_analog.cyclo ./BSP/Src/fsdr_analog.d ./BSP/Src/fsdr_analog.o ./BSP/Src/fsdr_analog.su ./BSP/Src/menu.cyclo ./BSP/Src/menu.d ./BSP/Src/menu.o ./BSP/Src/menu.su ./BSP/Src/pe4302.cyclo ./BSP/Src/pe4302.d ./BSP/Src/pe4302.o ./BSP/Src/pe4302.su ./BSP/Src/sdr_dsp.cyclo ./BSP/Src/sdr_dsp.d ./BSP/Src/sdr_dsp.o ./BSP/Src/sdr_dsp.su ./BSP/Src/si5351.cyclo ./BSP/Src/si5351.d ./BSP/Src/si5351.o ./BSP/Src/si5351.su ./BSP/Src/st7789.cyclo ./BSP/Src/st7789.d ./BSP/Src/st7789.o ./BSP/Src/st7789.su ./BSP/Src/usb_audio.cyclo ./BSP/Src/usb_audio.d ./BSP/Src/usb_audio.o ./BSP/Src/usb_audio.su ./BSP/Src/usb_cat.cyclo ./BSP/Src/usb_cat.d ./BSP/Src/usb_cat.o ./BSP/Src/usb_cat.su ./BSP/Src/w25q128.cyclo ./BSP/Src/w25q128.d ./BSP/Src/w25q128.o ./BSP/Src/w25q128.su ./BSP/Src/wm8731.cyclo ./BSP/Src/wm8731.d ./BSP/Src/wm8731.o ./BSP/Src/wm8731.su
+	-$(RM) ./BSP/Src/bpf_lpf.cyclo ./BSP/Src/bpf_lpf.d ./BSP/Src/bpf_lpf.o ./BSP/Src/bpf_lpf.su ./BSP/Src/cal.cyclo ./BSP/Src/cal.d ./BSP/Src/cal.o ./BSP/Src/cal.su ./BSP/Src/csdr_app.cyclo ./BSP/Src/csdr_app.d ./BSP/Src/csdr_app.o ./BSP/Src/csdr_app.su ./BSP/Src/diag.cyclo ./BSP/Src/diag.d ./BSP/Src/diag.o ./BSP/Src/diag.su ./BSP/Src/encoder.cyclo ./BSP/Src/encoder.d ./BSP/Src/encoder.o ./BSP/Src/encoder.su ./BSP/Src/fsdr_analog.cyclo ./BSP/Src/fsdr_analog.d ./BSP/Src/fsdr_analog.o ./BSP/Src/fsdr_analog.su ./BSP/Src/mchf_ui.cyclo ./BSP/Src/mchf_ui.d ./BSP/Src/mchf_ui.o ./BSP/Src/mchf_ui.su ./BSP/Src/menu.cyclo ./BSP/Src/menu.d ./BSP/Src/menu.o ./BSP/Src/menu.su ./BSP/Src/pe4302.cyclo ./BSP/Src/pe4302.d ./BSP/Src/pe4302.o ./BSP/Src/pe4302.su ./BSP/Src/sdr_dsp.cyclo ./BSP/Src/sdr_dsp.d ./BSP/Src/sdr_dsp.o ./BSP/Src/sdr_dsp.su ./BSP/Src/sdr_ui.cyclo ./BSP/Src/sdr_ui.d ./BSP/Src/sdr_ui.o ./BSP/Src/sdr_ui.su ./BSP/Src/si5351.cyclo ./BSP/Src/si5351.d ./BSP/Src/si5351.o ./BSP/Src/si5351.su ./BSP/Src/st7789.cyclo ./BSP/Src/st7789.d ./BSP/Src/st7789.o ./BSP/Src/st7789.su ./BSP/Src/usb_audio.cyclo ./BSP/Src/usb_audio.d ./BSP/Src/usb_audio.o ./BSP/Src/usb_audio.su ./BSP/Src/usb_cat.cyclo ./BSP/Src/usb_cat.d ./BSP/Src/usb_cat.o ./BSP/Src/usb_cat.su ./BSP/Src/w25q128.cyclo ./BSP/Src/w25q128.d ./BSP/Src/w25q128.o ./BSP/Src/w25q128.su ./BSP/Src/wm8731.cyclo ./BSP/Src/wm8731.d ./BSP/Src/wm8731.o ./BSP/Src/wm8731.su
 
 .PHONY: clean-BSP-2f-Src
 

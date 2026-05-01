@@ -162,6 +162,7 @@ void CSDR_Init(void)
   g_lcd.width    = LCD_W;
   g_lcd.height   = LCD_H;
   ST7789_Init(&g_lcd);
+  SDR_UI_Init();
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 800U);
 
@@ -185,7 +186,7 @@ void CSDR_Init(void)
     }
     HAL_Delay(1200U);
   }
-  McHF_DrawFrame(&g_lcd);
+  SDR_UI_DrawFrame(&g_lcd);
 
   /* Delay nhỏ trước I2C để bus settle sau power-on */
   HAL_Delay(10);
@@ -269,13 +270,13 @@ void CSDR_Init(void)
   Menu_Init(&g_menu, &g_lcd);
 
   /* Initial UI */
-  McHF_UI_State_t ui = {0};
+  SDR_UI_State_t ui = {0};
   ui.freq_hz = g_sdr.freq_hz; ui.mode = (uint8_t)g_sdr.mode;
   ui.band_idx = g_sdr.band_idx; ui.volume = g_sdr.volume;
   ui.step = (uint32_t)g_sdr.step; ui.agc_fast = g_sdr.agc_fast;
   ui.si5351_ok = g_sdr.si5351_ok; ui.bw_hz = g_sdr.bw_hz;
-  McHF_DrawTopBar(&g_lcd, &ui);
-  McHF_DrawStatusPanel(&g_lcd, &ui);
+  SDR_UI_DrawTopBar(&g_lcd, &ui);
+  SDR_UI_DrawStatusPanel(&g_lcd, &ui);
 
   /* Start SAI DMA (provides BCLK/LRCK to WM8731) */
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
@@ -634,7 +635,7 @@ static void csdr_update_waterfall(void)
    * in background, CS deasserted from HAL_SPI_TxCpltCallback. */
   if (g_dsp.wf_lines == 0U || Menu_IsOpen(&g_menu)) return;
   g_dsp.wf_lines = 0U;                   /* drop extras accumulated since last tick */
-  McHF_DrawWaterfall(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE);
+  SDR_UI_DrawWaterfall(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE);
 }
 
 static void csdr_refresh_display(void)
@@ -660,13 +661,13 @@ static void csdr_refresh_display(void)
         default:       bw_lo_ratio = half; bw_hi_ratio = half; break;
       }
     }
-    McHF_DrawSpectrum(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE,
-                      bw_lo_ratio, bw_hi_ratio, NULL);
+    SDR_UI_DrawSpectrum(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE,
+                        bw_lo_ratio, bw_hi_ratio, NULL);
   }
 
   if (g_sdr.display_dirty) {
     g_sdr.display_dirty = false;
-    McHF_UI_State_t ui = {0};
+    SDR_UI_State_t ui = {0};
     ui.freq_hz  = g_sdr.freq_hz;  ui.mode      = (uint8_t)g_sdr.mode;
     ui.band_idx = g_sdr.band_idx; ui.volume     = g_sdr.volume;
     ui.squelch  = g_sdr.squelch;  ui.step       = (uint32_t)g_sdr.step;
@@ -677,19 +678,19 @@ static void csdr_refresh_display(void)
     ui.bw_hz    = g_sdr.bw_hz;
 
     /* TopBar (y=0..61) luôn cập nhật */
-    McHF_DrawTopBar(&g_lcd, &ui);
+    SDR_UI_DrawTopBar(&g_lcd, &ui);
 
     /* StatusPanel (y=62+) và S-meter chỉ khi menu ĐÓNG
      * Nếu menu đang mở: tuyệt đối không ghi đè vùng y=62.. */
     if (!menu_open) {
-      McHF_DrawStatusPanel(&g_lcd, &ui);
+      SDR_UI_DrawStatusPanel(&g_lcd, &ui);
     } else {
       /* Menu đang mở: re-render để đảm bảo không bị xóa */
       Menu_Render(&g_menu);
     }
   } else if (!menu_open) {
     /* Cập nhật S-meter nhẹ – chỉ khi menu đóng */
-    McHF_UpdateSMeter(&g_lcd, g_dsp.signal_power_db);
+    SDR_UI_UpdateSMeter(&g_lcd, g_dsp.signal_power_db);
   }
 }
 
@@ -741,7 +742,7 @@ static void cat_set_tx(bool tx)
     }
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);  /* Ensure HP unmuted */
   }
-  McHF_UpdateSMeter_SetTX(tx);
+  SDR_UI_UpdateSMeter_SetTX(tx);
   g_sdr.display_dirty = true;
 }
 static void     cat_set_att(uint8_t lv)  { static const uint8_t m[]={0,6,12,18}; PE4302_SetAttn_dB(&g_att,(lv<4)?m[lv]:0); g_sdr.att_db=g_att.current_atten_db; }

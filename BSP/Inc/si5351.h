@@ -47,7 +47,7 @@ extern "C" {
 #define SI5351_I2C_ADDR_DEFAULT    (0x60U << 1U)   /*!< FS=GND → 0xC0 */
 
 /* XTAL reference */
-#define SI5351_XTAL_FREQ_HZ        27000000UL       /*!< 25 MHz onboard XTAL */
+#define SI5351_XTAL_FREQ_HZ        27000000UL       /*!< 27 MHz onboard XTAL */
 
 /* VCO range (PLL_A / PLL_B) */
 #define SI5351_VCO_MIN_HZ          600000000UL

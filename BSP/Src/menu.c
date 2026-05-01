@@ -20,8 +20,8 @@ static inline uint16_t sw16(uint16_t c)
 /* ST7789_GetLineBuf() returns the 320-pixel DMA line buffer from st7789.c */
 #define LN  ST7789_GetLineBuf()
 
-/* ── Edit color (cyan = MCH_FREQ_MHZ) ── */
-#define MENU_EDIT_COLOR  MCH_FREQ_MHZ
+/* ── Edit color (cyan = UI_FREQ_MHZ) ── */
+#define MENU_EDIT_COLOR  UI_FREQ_MHZ
 
 /* USER CODE BEGIN PV */
 Menu_Handle_t g_menu;
@@ -78,7 +78,7 @@ static void render_item(Menu_Handle_t *m, uint8_t idx, uint16_t abs_y)
     bool bot = (fr == (uint16_t)MENU_ITEM_H - 1U);
 
     /* Fill */
-    LCD_LineFill(ln, 0U, LCD_W, MCH_BG);
+    LCD_LineFill(ln, 0U, LCD_W, UI_BG);
     LCD_LineFill(ln, MENU_X, MENU_W, (top || bot) ? MENU_BORDER_COLOR : bg);
 
     /* Side borders */
@@ -213,7 +213,7 @@ void Menu_Render(Menu_Handle_t *m)
   /* Header (16px) */
   for (uint16_t fr = 0U; fr < 16U; fr++) {
     uint16_t *ln = LN;
-    LCD_LineFill(ln, 0U, LCD_W, MCH_BG);
+    LCD_LineFill(ln, 0U, LCD_W, UI_BG);
     LCD_LineFill(ln, MENU_X, MENU_W,
                  (fr == 0U || fr == 15U) ? MENU_BORDER_COLOR : 0x001FU);
     ln[MENU_X]                = sw16(MENU_BORDER_COLOR);
@@ -238,14 +238,14 @@ void Menu_Render(Menu_Handle_t *m)
   /* Hint row */
   {
     uint16_t *ln = LN;
-    LCD_LineFill(ln, 0U, LCD_W, MCH_BG);
+    LCD_LineFill(ln, 0U, LCD_W, UI_BG);
     char cnt[10];
     snprintf(cnt, sizeof(cnt), "%d/%d", m->cursor + 1, m->item_count);
     LCD_LineStr(ln, (uint16_t)(MENU_X + MENU_W - 42U), 0U,
-                cnt, &Font6x8, MENU_LBL_COLOR, MCH_BG);
+                cnt, &Font6x8, MENU_LBL_COLOR, UI_BG);
     LCD_LineStr(ln, (uint16_t)(MENU_X + 4U), 0U,
                 "F1=UP F2=DN ENC=EDIT F4=EXIT",
-                &Font6x8, MENU_LBL_COLOR, MCH_BG);
+                &Font6x8, MENU_LBL_COLOR, UI_BG);
     for (uint8_t fr = 0U; fr < (uint8_t)Font6x8.height; fr++)
       push_ln(m->lcd, y++);
   }

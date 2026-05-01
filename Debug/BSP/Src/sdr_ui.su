@@ -1,0 +1,10 @@
+../BSP/Src/sdr_ui.c:141:13:ln_bigstr	56	static
+../BSP/Src/sdr_ui.c:165:6:SDR_UI_Init	176	static
+../BSP/Src/sdr_ui.c:174:6:SDR_UI_DrawFrame	32	static
+../BSP/Src/sdr_ui.c:199:6:SDR_UI_DrawTopBar	144	static
+../BSP/Src/sdr_ui.c:328:6:SDR_UI_UpdateSMeter_SetTX	0	static
+../BSP/Src/sdr_ui.c:335:6:SDR_UI_UpdateSMeter	72	static
+../BSP/Src/sdr_ui.c:389:6:SDR_UI_DrawStatusPanel	88	static
+../BSP/Src/sdr_ui.c:446:6:SDR_UI_DrawSpectrum	560	static
+../BSP/Src/sdr_ui.c:520:6:SDR_UI_DrawWaterfall	56	static
+../BSP/Src/sdr_ui.c:557:6:SDR_UI_DrawFuncBar	0	static
