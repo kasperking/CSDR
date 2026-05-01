@@ -227,13 +227,8 @@ typedef struct {
   GPIO_TypeDef  *bl_port;  uint16_t bl_pin;
   uint16_t       width;
   uint16_t       height;
-  volatile bool  dma_busy;
-
-  /* Waterfall circular row pointer */
-  uint16_t wf_row;
-
-  /* Peak hold: max bar_h trên mỗi bin (decay theo thời gian) */
-  /* peak hold đã bỏ - không cần spec_peak arrays */
+  volatile bool     dma_busy;
+  volatile bool     cs_held;      /*!< CS deasserted by DMA-cplt IRQ  */
 } ST7789_Handle_t;
 
 /* ── Core API ───────────────────────────────────────── */

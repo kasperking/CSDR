@@ -236,25 +236,25 @@ void FFT_ComputeMag_dB(const Complex_f *buf, float *mag_db,
                         uint16_t half_n, float *peak_db)
 {
   /* USER CODE BEGIN FFT_ComputeMag_0 */
-  /* full_n is passed as half_n for API compat; caller passes DSP_FFT_SIZE=256 */
+  /* Store raw power (re²+im²) — no sqrt, no log.
+   * Compression to log-like display range is done by pwr_compress() in st7789.c
+   * at render time (25 fps × 240 px) rather than here (188 fps × 256 bins). */
   const uint16_t n = half_n;
   const uint16_t h = n / 2U;
-  *peak_db = -120.0f;
-  /* Negative half: buf[h..n-1] → mag_db[0..h-1] (fftshift) */
+  *peak_db = 0.0f;
+  /* fftshift: negative half buf[h..n-1] → mag_db[0..h-1] */
   for (uint16_t i = 0U; i < h; i++)
   {
-    float mag = sqrtf(buf[h+i].re * buf[h+i].re + buf[h+i].im * buf[h+i].im);
-    float db  = 20.0f * log10f(mag + 1e-10f);
-    mag_db[i] = db;
-    if (db > *peak_db) { *peak_db = db; }
+    float pwr = buf[h+i].re * buf[h+i].re + buf[h+i].im * buf[h+i].im;
+    mag_db[i] = pwr;
+    if (pwr > *peak_db) { *peak_db = pwr; }
   }
-  /* Positive half: buf[0..h-1] → mag_db[h..n-1] */
+  /* positive half buf[0..h-1] → mag_db[h..n-1] */
   for (uint16_t i = 0U; i < h; i++)
   {
-    float mag = sqrtf(buf[i].re * buf[i].re + buf[i].im * buf[i].im);
-    float db  = 20.0f * log10f(mag + 1e-10f);
-    mag_db[h+i] = db;
-    if (db > *peak_db) { *peak_db = db; }
+    float pwr = buf[i].re * buf[i].re + buf[i].im * buf[i].im;
+    mag_db[h+i] = pwr;
+    if (pwr > *peak_db) { *peak_db = pwr; }
   }
   /* USER CODE END FFT_ComputeMag_0 */
 }
@@ -355,7 +355,7 @@ void DSP_SetFrequency(DSP_State_t *dsp, uint32_t freq_hz,
                        uint32_t if_hz, uint32_t sample_rate)
 {
   /* USER CODE BEGIN DSP_SetFrequency_0 */
-  int32_t delta = (int32_t)freq_hz - (int32_t)if_hz;
+  int32_t delta = (int32_t)freq_hz - ((int32_t)if_hz + (int32_t)LO_OFFSET);
   NCO_SetFrequency(&dsp->nco, delta, sample_rate);
   /* USER CODE END DSP_SetFrequency_0 */
 }
@@ -456,15 +456,8 @@ void DSP_Process(DSP_State_t *dsp,
         float peak;
         FFT_Radix2(dsp->fft_buf, DSP_FFT_SIZE);
         FFT_ComputeMag_dB(dsp->fft_buf, dsp->fft_mag_db, DSP_FFT_SIZE, &peak);
-        /* Interpolate center 3 bins từ lân cận để ẩn DC spike mà không tạo rãnh. */
-        {
-          float l = dsp->fft_mag_db[DSP_FFT_SIZE / 2U - 2U];
-          float r = dsp->fft_mag_db[DSP_FFT_SIZE / 2U + 2U];
-          dsp->fft_mag_db[DSP_FFT_SIZE / 2U - 1U] = l * 0.67f + r * 0.33f;
-          dsp->fft_mag_db[DSP_FFT_SIZE / 2U      ] = (l + r) * 0.5f;
-          dsp->fft_mag_db[DSP_FFT_SIZE / 2U + 1U] = l * 0.33f + r * 0.67f;
-        }
         dsp->fft_ready = true;
+        if (dsp->wf_lines < 8U) dsp->wf_lines++;
         dsp->fft_fill  = 0U;
       }
     }

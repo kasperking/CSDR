@@ -1,657 +1,883 @@
-/* USER CODE BEGIN Header */
-/**
-  * @file usb_cat.c
-  * @brief USB CAT Control – Kenwood TS-2000 Protocol
-  *
-  *  Kiến trúc 2 tầng để tránh crash:
-  *  
-  *  CAT_Receive() ← gọi từ USB ISR (DataOut callback)
-  *    → CHỈ copy raw bytes vào RX ring buffer
-  *    → KHÔNG parse, KHÔNG gọi I2C/DSP/HAL
-  *
-  *  CAT_Process() ← gọi từ main loop mỗi vòng lặp
-  *    → dequeue RX ring → parse → execute callbacks
-  *    → callbacks (set_freq→I2C, set_mode→DSP) chạy ở main context
-  *    → flush TX response qua CDC
-  */
-/* USER CODE END Header */
+ /*
+ * Features:
+ *  - Kenwood TS-480 CAT protocol (ID020)
+ *  - IF frame 38 chars (P15 shift byte added vs TS-2000)
+ *  - SH/SL filter bandwidth (TS-480 standard), FW kept for legacy
+ *  - g_cat exported, CAT_FlushTX exported
+ */
 
 #include "usb_cat.h"
 #include "stm32h7xx_hal.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
 
-CAT_Handle_t g_cat;
+/* USB CDC TX */
 extern uint8_t CDC_Transmit_FS(uint8_t *Buf, uint16_t Len);
 
+/* Exported CAT handle */
+CAT_Handle_t g_cat;
 
-/* ── Helper: format uint32 as 0-padded decimal, return end pointer ── */
-static char *cat_u32(char *p, uint32_t v, uint8_t width)
+/* =========================================================
+ * Helpers
+ * ========================================================= */
+static inline uint32_t cat_now_ms(void)
 {
-  char tmp[12];
-  uint8_t n = 0U;
-  if (v == 0U) { tmp[n++] = '0'; }
-  else {
-    while (v > 0U && n < 12U) { tmp[n++] = (char)('0' + (v % 10U)); v /= 10U; }
-  }
-  while (n < width) { tmp[n++] = '0'; }
-  while (n > 0U)    { *p++ = tmp[--n]; }
-  return p;
+    return HAL_GetTick();
 }
 
-static char *cat_str(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+static char *cat_put_u32(char *p, uint32_t v, uint8_t width)
+{
+    char tmp[12];
+    uint8_t n = 0U;
 
-/* ── Parse fixed-length decimal number, no sign, no validation ── */
+    if (v == 0U) {
+        tmp[n++] = '0';
+    } else {
+        while (v > 0U && n < sizeof(tmp)) {
+            tmp[n++] = (char)('0' + (v % 10U));
+            v /= 10U;
+        }
+    }
+
+    while (n < width) {
+        tmp[n++] = '0';
+    }
+
+    while (n > 0U) {
+        *p++ = tmp[--n];
+    }
+    return p;
+}
+
 static uint32_t cat_parse_u(const char *s, uint8_t n)
 {
-  uint32_t v = 0U;
-  for (uint8_t i = 0U; i < n; i++) {
-    if (s[i] >= '0' && s[i] <= '9') { v = v * 10U + (uint32_t)(s[i] - '0'); }
-  }
-  return v;
+    uint32_t v = 0U;
+    for (uint8_t i = 0U; i < n; i++) {
+        if (s[i] >= '0' && s[i] <= '9') {
+            v = v * 10U + (uint32_t)(s[i] - '0');
+        }
+    }
+    return v;
 }
 
+static void cat_copy(char *dst, const char *src)
+{
+    while ((*dst++ = *src++) != '\0') {;}
+}
 
-/* ── RX ring: viết từ ISR, đọc từ main loop ──────────── */
-#define RX_RING  256U
-static uint8_t           s_rxring[RX_RING];
-static volatile uint16_t s_rx_head = 0U;
-static volatile uint16_t s_rx_tail = 0U;
+static inline char cat_vfo_digit(uint8_t vfo)
+{
+    return (vfo == 1U) ? '1' : '0';
+}
 
-/* ── TX buffer: main loop ghi + flush ────────────────── */
-#define TX_BUF_SIZE  512U
-static uint8_t  s_tx_buf[TX_BUF_SIZE];
+static inline uint8_t cat_clamp_vfo(uint8_t vfo)
+{
+    return (vfo == 1U) ? 1U : 0U;
+}
+
+/* =========================================================
+ * Mode mapping
+ * Assumed SDR enum order: 0=AM, 1=FM, 2=USB, 3=LSB, 4=CW
+ * ========================================================= */
+uint8_t CAT_SDRModeToCat(uint8_t m)
+{
+    switch (m) {
+        case 0U: return CAT_MODE_AM;
+        case 1U: return CAT_MODE_FM;
+        case 2U: return CAT_MODE_USB;
+        case 3U: return CAT_MODE_LSB;
+        case 4U: return CAT_MODE_CW;
+        default: return CAT_MODE_USB;
+    }
+}
+
+uint8_t CAT_CatModeToSDR(uint8_t m)
+{
+    switch (m) {
+        case CAT_MODE_AM:  return 0U;
+        case CAT_MODE_FM:  return 1U;
+        case CAT_MODE_USB: return 2U;
+        case CAT_MODE_LSB: return 3U;
+        case CAT_MODE_CW:  return 4U;
+        default:           return 2U;
+    }
+}
+
+/* =========================================================
+ * TX FIFO
+ * ========================================================= */
+#define CAT_TX_FIFO_SIZE 512U
+static char     s_tx_fifo[CAT_TX_FIFO_SIZE];
 static uint16_t s_tx_head = 0U;
 static uint16_t s_tx_tail = 0U;
 
-static void tx_enqueue(const char *str)
+static void cat_tx_enqueue(const char *s)
 {
-  while (str && *str) {
-    uint16_t next = (uint16_t)((s_tx_head + 1U) % TX_BUF_SIZE);
-    if (next == s_tx_tail) break;
-    s_tx_buf[s_tx_head] = (uint8_t)*str++;
-    s_tx_head = next;
-  }
+    while (s && *s) {
+        uint16_t next = (uint16_t)((s_tx_head + 1U) % CAT_TX_FIFO_SIZE);
+        if (next == s_tx_tail) break;
+        s_tx_fifo[s_tx_head] = *s++;
+        s_tx_head = next;
+    }
+}
+
+void CAT_SendResponse(const char *resp)
+{
+    cat_tx_enqueue(resp);
 }
 
 void CAT_FlushTX(CAT_Handle_t *cat)
 {
-  (void)cat;
-  if (s_tx_tail == s_tx_head) return;
-  static uint8_t chunk[TX_BUF_SIZE];
-  uint16_t n = 0;
-  while (s_tx_tail != s_tx_head && n < sizeof(chunk)-1U) {
-    chunk[n++] = s_tx_buf[s_tx_tail];
-    s_tx_tail = (uint16_t)((s_tx_tail+1U) % TX_BUF_SIZE);
-  }
-  for (uint8_t retry = 0; n && retry < 3U; retry++) {
-    if (CDC_Transmit_FS(chunk, n) != 0x01U) break;
-    HAL_Delay(1);
-  }
+    (void)cat;
+    if (s_tx_head == s_tx_tail) return;
+
+    uint8_t out[64];
+    uint16_t n = 0U;
+
+    while (s_tx_tail != s_tx_head && n < sizeof(out)) {
+        out[n++] = (uint8_t)s_tx_fifo[s_tx_tail];
+        s_tx_tail = (uint16_t)((s_tx_tail + 1U) % CAT_TX_FIFO_SIZE);
+    }
+
+    (void)CDC_Transmit_FS(out, n);
 }
 
-/* ══════════════════════════════════════════════════════ */
-
-void CAT_Init(CAT_Handle_t *cat, const CAT_Callbacks_t *cb)
-{
-  memset(cat, 0, sizeof(*cat));
-  cat->cb          = *cb;
-  cat->ai_level    = 0U;
-  cat->last_freq   = 0U;
-  cat->last_mode   = 0xFFU;
-  cat->last_tx     = false;
-  cat->vfo_b_freq  = 7100000UL;
-  cat->vfo_b_mode  = CAT_MODE_USB;
-  cat->active_vfo  = 0U;
-  cat->split_on    = false;
-  cat->initialized = true;
-  s_rx_head = 0U; s_rx_tail = 0U;
-  s_tx_head = 0U; s_tx_tail = 0U;
-}
-
-void CAT_SendResponse(const char *resp) { tx_enqueue(resp); }
-
-void CAT_BuildIF(CAT_Handle_t *cat, char *buf)
-{
-  uint32_t f;
-  uint8_t  m_cat;
-  if (cat->active_vfo == 1U) {
-    f     = cat->vfo_b_freq;
-    m_cat = cat->vfo_b_mode;
-  } else {
-    uint8_t sdr_m = cat->cb.get_mode ? cat->cb.get_mode() : CAT_MODE_USB;
-    f     = cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL;
-    m_cat = CAT_SDRModeToCat(sdr_m);
-  }
-  bool    tx  = cat->cb.get_tx ? cat->cb.get_tx() : false;
-  int32_t rit = (cat->rit_on && cat->cb.get_rit_hz) ? cat->cb.get_rit_hz() : 0;
-
-  char *p = buf;
-  p = cat_str(p, "IF");
-  p = cat_u32(p, f, 11);               /* P1 : freq 11 digits      */
-  p = cat_str(p, "00000");             /* P2 : step (fixed 00000)  */
-  *p++ = (rit >= 0) ? '+' : '-';       /* P3 : RIT sign            */
-  p = cat_u32(p, (uint32_t)(rit >= 0 ? rit : -rit), 4); /* P3: 4-digit RIT → info[18..22] */
-  *p++ = cat->rit_on ? '1' : '0';      /* P4 : RIT on/off  → info[23] */
-  *p++ = '0';                          /* P5 : XIT off     → info[24] */
-  *p++ = '0'; *p++ = '0'; *p++ = '0'; /* P6 : mem ch 000  → info[25..27] */
-  *p++ = tx ? '1' : '0';              /* P7 : TX state    → info[28] */
-  *p++ = (char)('0' + m_cat);          /* P8 : mode        → info[29] */
-  *p++ = (char)('0' + cat->active_vfo);/* P9 : VFO select  → info[30]: 0=A,1=B */
-  *p++ = '0'; *p++ = '0';             /* P10: scan 00     → info[31..32] */
-  *p++ = cat->split_on ? '1' : '0';   /* P11: split       → info[33] */
-  *p++ = '0';                          /* P12: tone 0      → info[34] */
-  *p++ = '0'; *p++ = '0';             /* P13: CTCSS no 00 → info[35..36] */
-  *p++ = '0'; *p++ = '0';             /* P14: CTCSS tone  → info[37..38] */
-  *p++ = ';';
-  *p   = '\0';
-}
-
-uint8_t CAT_SDRModeToCat(uint8_t sdr_mode)
-{
-  static const uint8_t map[] = {
-    CAT_MODE_AM, CAT_MODE_FM, CAT_MODE_USB, CAT_MODE_LSB, CAT_MODE_CW
-  };
-  return (sdr_mode < 5U) ? map[sdr_mode] : CAT_MODE_USB;
-}
-
-uint8_t CAT_CatModeToSDR(uint8_t cat_mode)
-{
-  switch (cat_mode) {
-    case CAT_MODE_LSB:            return 3U;
-    case CAT_MODE_USB:            return 2U;
-    case CAT_MODE_CW:
-    case CAT_MODE_CWR:            return 4U;
-    case CAT_MODE_FM:             return 1U;
-    case CAT_MODE_AM:             return 0U;
-    case CAT_MODE_FSK:
-    case CAT_MODE_FSKR:           return 2U;  /* RTTY/PKT → USB for SDR */
-    default:                      return 2U;
-  }
-}
-
-/* ── cat_execute: MAIN LOOP ONLY ─────────────────────── */
-static void cat_execute(CAT_Handle_t *cat, const char *cmd, uint16_t len)
-{
-  char resp[128];
-  resp[0] = '\0';
-  if (len < 2U) { tx_enqueue("?;"); return; }
-
-  /* FA: VFO A frequency */
-  if (cmd[0]=='F' && cmd[1]=='A') {
-    if (len == 2U) {
-      uint32_t f = cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL;
-      char *p = resp; p = cat_str(p, "FA"); p = cat_u32(p, f, 11); *p++ = ';'; *p = 0;
-    } else if (len == 13U) {
-      uint32_t f = cat_parse_u(&cmd[2], 11U);
-      if (cat->cb.set_freq) cat->cb.set_freq(f);
-      cat->last_freq = f;
-    } else { tx_enqueue("?;"); }
-  }
-
-  /* FB: VFO B frequency (independent storage, no hardware side-effect) */
-  else if (cmd[0]=='F' && cmd[1]=='B') {
-    if (len == 2U) {
-      char *p = resp; p = cat_str(p, "FB");
-      p = cat_u32(p, cat->vfo_b_freq, 11); *p++ = ';'; *p = 0;
-    } else if (len == 13U) {
-      cat->vfo_b_freq = cat_parse_u(&cmd[2], 11U);
-    } else { tx_enqueue("?;"); }
-  }
-
-  /* MD: Mode (VFO A/B aware) */
-  else if (cmd[0]=='M' && cmd[1]=='D') {
-    if (len == 2U) {
-      uint8_t cm = (cat->active_vfo == 1U)
-                   ? cat->vfo_b_mode
-                   : (cat->cb.get_mode ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB);
-      char *p = resp; p = cat_str(p, "MD"); *p++ = (char)('0' + cm); *p++ = ';'; *p = 0;
-    } else if (len == 3U) {
-      uint8_t cm = (uint8_t)(cmd[2] - '0');
-      if (cat->active_vfo == 1U) {
-        cat->vfo_b_mode = cm;
-      } else {
-        if (cat->cb.set_mode) cat->cb.set_mode(CAT_CatModeToSDR(cm));
-        cat->last_mode = CAT_CatModeToSDR(cm);
-      }
-    } else { tx_enqueue("?;"); }
-  }
-
-  /* TX: flrig dùng "TX;" làm PTT-on fire-and-forget (log: "PTT S: TX; R: " rỗng).
-   * KHÔNG trả response để tránh TX1; bị lẫn vào buffer khi flrig query IF; ngay sau.
-   * TX0;/TX1; là SET tường minh, cũng không trả response.
-   * last_tx KHÔNG cập nhật – CAT_Process phát hiện thay đổi và gửi IF. */
-  else if (cmd[0]=='T' && cmd[1]=='X') {
-    if (len == 2U) {
-      if (cat->cb.set_tx) cat->cb.set_tx(true);
-    } else if (len == 3U) {
-      if (cat->cb.set_tx) cat->cb.set_tx(cmd[2] == '1');
-    }
-  }
-  /* RX: SET tx=false, không trả response. */
-  else if (cmd[0]=='R' && cmd[1]=='X') {
-    if (cat->cb.set_tx) cat->cb.set_tx(false);
-  }
-
-  /* IF: information frame.
-   * Sau khi trả response, sync last_* để CAT_Process không gửi thêm
-   * một IF unsolicited trùng lặp trong cùng chu kỳ (tránh IF flood). */
-  else if (cmd[0]=='I' && cmd[1]=='F') {
-    CAT_BuildIF(cat, resp);
-    cat->last_freq = cat->cb.get_freq ? cat->cb.get_freq() : 0U;
-    cat->last_mode = cat->cb.get_mode ? cat->cb.get_mode() : 0xFFU;
-    cat->last_tx   = cat->cb.get_tx   ? cat->cb.get_tx()   : false;
-  }
-
-  /* AI: Auto Information  AI0=off  AI1=on  AI2=on (immediate IF + unsolicited) */
-  else if (cmd[0]=='A' && cmd[1]=='I') {
-    if (len == 2U) {
-      char *p = resp;
-      p = cat_str(p, "AI"); *p++ = (char)('0' + cat->ai_level); *p++ = ';'; *p = 0;
-    } else if (len == 3U) {
-      uint8_t lv = (uint8_t)(cmd[2] - '0');
-      cat->ai_level = (lv <= 2U) ? lv : 0U;
-      /* Send AIx; echo immediately */
-      char ai_echo[8];
-      char *p = ai_echo;
-      p = cat_str(p, "AI"); *p++ = (char)('0' + cat->ai_level); *p++ = ';'; *p = 0;
-      tx_enqueue(ai_echo);
-      /* If AI enabled, flrig expects an immediate IF frame for initial state */
-      if (cat->ai_level > 0U) {
-        CAT_BuildIF(cat, resp);
-        cat->last_freq = cat->cb.get_freq ? cat->cb.get_freq() : 0U;
-        cat->last_mode = cat->cb.get_mode ? cat->cb.get_mode() : 0xFFU;
-        cat->last_tx   = cat->cb.get_tx   ? cat->cb.get_tx()   : false;
-      }
-      /* resp is empty if ai_level==0, IF frame if >0 — enqueued at bottom */
-    }
-  }
-
-  /* AG: Audio Gain  AG0;=query  AG0nnn;=set (000-255) */
-  else if (cmd[0]=='A' && cmd[1]=='G') {
-    if (len == 3U && cmd[2] == '0') {
-      uint8_t v = cat->cb.get_volume ? cat->cb.get_volume() : 127U;
-      char *p = resp; p = cat_str(p, "AG0"); p = cat_u32(p, v, 3U); *p++ = ';'; *p = 0;
-    } else if (len == 6U && cmd[2] == '0') {
-      uint8_t v = (uint8_t)cat_parse_u(&cmd[3], 3U);
-      if (cat->cb.set_volume) cat->cb.set_volume(v);
-    }
-  }
-
-  /* NR: Noise Reduction  NR;=query  NR0/NR1=set */
-  else if (cmd[0]=='N' && cmd[1]=='R') {
-    if (len == 2U) {
-      bool on = cat->cb.get_nr ? cat->cb.get_nr() : false;
-      char *p = resp; p = cat_str(p, "NR"); *p++ = on ? '1' : '0'; *p++ = ';'; *p = 0;
-    } else if (len == 3U) {
-      if (cat->cb.set_nr) cat->cb.set_nr(cmd[2] == '1');
-    }
-  }
-
-  /* NB: Noise Blanker  NB;=query  NB0/NB1=set */
-  else if (cmd[0]=='N' && cmd[1]=='B') {
-    if (len == 2U) {
-      bool on = cat->cb.get_nb ? cat->cb.get_nb() : false;
-      char *p = resp; p = cat_str(p, "NB"); *p++ = on ? '1' : '0'; *p++ = ';'; *p = 0;
-    } else if (len == 3U) {
-      if (cat->cb.set_nb) cat->cb.set_nb(cmd[2] == '1');
-    }
-  }
-
-  /* FW: Filter Width (Hz)  FW;=query  FWnnnn;=set (4 digits, 0100-9999 Hz) */
-  else if (cmd[0]=='F' && cmd[1]=='W') {
-    if (len == 2U) {
-      uint32_t bw = cat->cb.get_bw ? cat->cb.get_bw() : 3000U;
-      char *p = resp; p = cat_str(p, "FW"); p = cat_u32(p, bw, 4U); *p++ = ';'; *p = 0;
-    } else if (len == 6U) {
-      uint32_t bw = cat_parse_u(&cmd[2], 4U);
-      if (cat->cb.set_bw) cat->cb.set_bw(bw);
-    }
-  }
-
-  /* GT: AGC Speed  GT;=query  GT00=fast  GT01=slow  GT02=off */
-  else if (cmd[0]=='G' && cmd[1]=='T') {
-    if (len == 2U) {
-      bool fast = cat->cb.get_agc_fast ? cat->cb.get_agc_fast() : true;
-      char *p = resp; p = cat_str(p, "GT0"); *p++ = fast ? '0' : '1'; *p++ = ';'; *p = 0;
-    } else if (len == 4U && cmd[2] == '0') {
-      if (cat->cb.set_agc_fast) cat->cb.set_agc_fast(cmd[3] == '0');
-    }
-  }
-
-  /* SQ: Squelch  SQ0;=query  SQ0nnn;=set (000-255) */
-  else if (cmd[0]=='S' && cmd[1]=='Q') {
-    if (len == 3U && cmd[2] == '0') {
-      uint8_t sq = cat->cb.get_squelch ? cat->cb.get_squelch() : 0U;
-      char *p = resp; p = cat_str(p, "SQ0"); p = cat_u32(p, sq, 3U); *p++ = ';'; *p = 0;
-    } else if (len == 6U && cmd[2] == '0') {
-      uint8_t sq = (uint8_t)cat_parse_u(&cmd[3], 3U);
-      if (cat->cb.set_squelch) cat->cb.set_squelch(sq);
-    }
-  }
-
-  /* SM: S-meter (read-only) SM0; → SM0nnnn; (0000-0030) */
-  else if (cmd[0]=='S' && cmd[1]=='M') {
-    float db = cat->cb.get_signal_db ? cat->cb.get_signal_db() : -80.0f;
-    int32_t su = (int32_t)((db + 73.0f) / 2.0f);
-    if (su < 0)  su = 0;
-    if (su > 30) su = 30;
-    char *p = resp; p = cat_str(p, "SM0"); p = cat_u32(p, (uint32_t)su, 4U); *p++ = ';'; *p = 0;
-  }
-
-  /* RA: Attenuator */
-  else if (cmd[0]=='R' && cmd[1]=='A') {
-    if (len == 2U) {
-      uint8_t att = cat->cb.get_att ? cat->cb.get_att() : 0U;
-      uint8_t lv  = (att>=18U)?3U:(att>=12U)?2U:(att>=6U)?1U:0U;
-      char *p = resp; p = cat_str(p, "RA"); p = cat_u32(p, lv, 2); *p++ = ';'; *p = 0;
-    } else if (len == 4U) {
-      uint8_t lv = (uint8_t)(cmd[2]-'0')*10U + (uint8_t)(cmd[3]-'0');
-      if (cat->cb.set_att) cat->cb.set_att(lv > 3U ? 3U : lv);
-    }
-  }
-
-  /* ID / PS */
-  else if (cmd[0]=='I' && cmd[1]=='D') {
-    char *p = resp; p = cat_str(p, "ID019;"); *p = 0;
-  }
-  else if (cmd[0]=='P' && cmd[1]=='S') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "PS1;"); *p = 0; }
-  }
-
-  /* FT: TX VFO  FT;→FT0/FT1  FT0;/FT1; clears/sets split
-   * FR: RX VFO  FR;→FR0      FR1; accepted (ACK, RX always VFO A in HW) */
-  else if (cmd[0]=='F' && cmd[1]=='T') {
-    if (len == 2U) {
-      char *p = resp; *p++ = 'F'; *p++ = 'T';
-      *p++ = cat->split_on ? '1' : '0'; *p++ = ';'; *p = 0;
-    } else if (len == 3U) {
-      cat->split_on = (cmd[2] == '1');
-    }
-  }
-  else if (cmd[0]=='F' && cmd[1]=='R') {
-    if (len == 2U) {
-      char *p = resp; p = cat_str(p, "FR0;"); *p = 0;
-    }
-    /* FR0;/FR1; set: ACK only – RX always on VFO A in hardware */
-  }
-
-  /* RT: RIT on/off  RT; → RT0;/RT1;  RT0;/RT1; → ACK */
-  else if (cmd[0]=='R' && cmd[1]=='T') {
-    if (len == 2U) {
-      char *p = resp; p = cat_str(p, "RT"); *p++ = cat->rit_on?'1':'0'; *p++ = ';'; *p = 0;
-    } else if (len == 3U) {
-      cat->rit_on = (cmd[2] == '1');
-      if (!cat->rit_on && cat->cb.set_rit_hz) cat->cb.set_rit_hz(0);
-    }
-  }
-
-  /* RC: Clear RIT offset (ACK) */
-  else if (cmd[0]=='R' && cmd[1]=='C') {
-    if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(0);
-  }
-
-  /* RU: RIT up  RUnnnnn; (5-digit Hz increment) */
-  else if (cmd[0]=='R' && cmd[1]=='U') {
-    int32_t cur = cat->cb.get_rit_hz ? cat->cb.get_rit_hz() : 0;
-    int32_t delta = (len >= 7U) ? (int32_t)cat_parse_u(&cmd[2], 5U) : 10;
-    if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(cur + delta);
-  }
-
-  /* RD: RIT down  RDnnnnn; */
-  else if (cmd[0]=='R' && cmd[1]=='D') {
-    int32_t cur = cat->cb.get_rit_hz ? cat->cb.get_rit_hz() : 0;
-    int32_t delta = (len >= 7U) ? (int32_t)cat_parse_u(&cmd[2], 5U) : 10;
-    if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(cur - delta);
-  }
-
-  /* XT: XIT – always off */
-  else if (cmd[0]=='X' && cmd[1]=='T') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "XT0;"); *p = 0; }
-  }
-
-  /* IS: IF shift  IS0; → IS0+nnnn;  IS0+nnnn;/IS0-nnnn; → ACK */
-  else if (cmd[0]=='I' && cmd[1]=='S') {
-    if (len == 2U || (len == 3U && cmd[2] == '0')) {
-      char *p = resp; p = cat_str(p, "IS0");
-      *p++ = (cat->if_shift >= 0) ? '+' : '-';
-      p = cat_u32(p, (uint32_t)(cat->if_shift >= 0 ? cat->if_shift : -cat->if_shift), 4U);
-      *p++ = ';'; *p = 0;
-    } else if (len == 9U && cmd[2] == '0') {
-      /* IS0±nnnn; */
-      int16_t sh = (int16_t)cat_parse_u(&cmd[4], 4U);
-      cat->if_shift = (cmd[3] == '-') ? (int16_t)(-sh) : sh;
-    }
-  }
-
-  /* SP: Split  SP; → SP0;/SP1;  SP0;/SP1; → set split */
-  else if (cmd[0]=='S' && cmd[1]=='P') {
-    if (len == 2U) {
-      char *p = resp; p = cat_str(p, "SP");
-      *p++ = cat->split_on ? '1' : '0'; *p++ = ';'; *p = 0;
-    } else if (len == 3U) {
-      cat->split_on = (cmd[2] == '1');
-    }
-  }
-
-  /* TS: Tuning step  TS0; → TS0nn;  TS0nn; → set */
-  else if (cmd[0]=='T' && cmd[1]=='S') {
-    if (len == 3U && cmd[2] == '0') {
-      uint32_t st = cat->cb.get_step ? cat->cb.get_step() : 100U;
-      uint8_t idx = 6U; /* default 100Hz */
-      if      (st >= 100000U) idx = 20U;
-      else if (st >=  10000U) idx = 13U;
-      else if (st >=   5000U) idx = 11U;
-      else if (st >=   1000U) idx =  9U;
-      else if (st >=    500U) idx =  8U;
-      else if (st >=    100U) idx =  6U;
-      else if (st >=     10U) idx =  3U;
-      else                    idx =  0U;
-      char *p = resp; p = cat_str(p, "TS0"); p = cat_u32(p, idx, 2U); *p++ = ';'; *p = 0;
-    } else if (len == 5U && cmd[2] == '0') {
-      static const uint32_t ts_tbl[] = {
-        1,2,5,10,20,50,100,200,500,1000,2500,5000,6250,
-        10000,12500,15000,20000,25000,30000,50000,100000
-      };
-      uint8_t idx = (uint8_t)cat_parse_u(&cmd[3], 2U);
-      uint32_t st = (idx < 21U) ? ts_tbl[idx] : 100000U;
-      if (cat->cb.set_step) cat->cb.set_step(st);
-    }
-  }
-
-  /* VS: VFO select  VS;→VS0/VS1  VS0;/VS1;→switch active VFO */
-  else if (cmd[0]=='V' && cmd[1]=='S') {
-    if (len == 2U) {
-      char *p = resp; p = cat_str(p, "VS");
-      *p++ = (char)('0' + cat->active_vfo); *p++ = ';'; *p = 0;
-    } else if (len == 3U) {
-      uint8_t v = (uint8_t)(cmd[2] - '0');
-      cat->active_vfo = (v <= 1U) ? v : 0U;
-    }
-  }
-
-  /* SH: SSB hi-cut passband
-   * TS-2000 index → Hz: 00=2000 01=2200 02=2400 03=2600 04=2800
-   *                     05=3000 06=3400 07=4000 08=5000 09=thru
-   * Query: SH0; → SH0nn;   SET: SH0nn; → apply BW */
-  else if (cmd[0]=='S' && cmd[1]=='H') {
-    static const uint32_t sh_tbl[10] = {
-      2000,2200,2400,2600,2800,3000,3400,4000,5000,10000
-    };
-    if (len == 2U || (len == 3U && cmd[2] == '0')) {
-      /* query: derive index from current bw_hz */
-      uint32_t bw = cat->cb.get_bw ? cat->cb.get_bw() : 3000U;
-      uint8_t idx = 9U;
-      for (uint8_t i = 0U; i < 9U; i++) {
-        if (bw <= (sh_tbl[i] + sh_tbl[i+1]) / 2U) { idx = i; break; }
-      }
-      char *p = resp; p = cat_str(p, "SH0"); p = cat_u32(p, idx, 2U); *p++ = ';'; *p = 0;
-    } else if (len == 5U && cmd[2] == '0') {
-      /* SET: SH0nn; → look up Hz and apply */
-      uint8_t idx = (uint8_t)cat_parse_u(&cmd[3], 2U);
-      if (idx > 9U) idx = 9U;
-      if (cat->cb.set_bw) cat->cb.set_bw(sh_tbl[idx]);
-    }
-  }
-
-  /* SL: SSB lo-cut passband — our FIR is a LPF from 0 Hz so lo-cut is
-   * acknowledged but not applied (passband lower edge is always 0 Hz).
-   * Query: SL0; → SL000;   SET: SL0nn; → ACK */
-  else if (cmd[0]=='S' && cmd[1]=='L') {
-    if (len == 2U || (len == 3U && cmd[2] == '0')) {
-      char *p = resp; p = cat_str(p, "SL000;"); *p = 0;
-    }
-    /* len==5: SET SL0nn; → silently ACK, lo-cut not implemented */
-  }
-
-  /* MG: Mic gain  MG; → MG030; */
-  else if (cmd[0]=='M' && cmd[1]=='G') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "MG030;"); *p = 0; }
-  }
-
-  /* KS: CW keyer speed  KS; → KS020; */
-  else if (cmd[0]=='K' && cmd[1]=='S') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "KS020;"); *p = 0; }
-  }
-
-  /* TN: Tone/CTCSS number  TN; → TN00; */
-  else if (cmd[0]=='T' && cmd[1]=='N') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "TN00;"); *p = 0; }
-  }
-
-  /* TO: Tone on/off  TO; → TO0; */
-  else if (cmd[0]=='T' && cmd[1]=='O') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "TO0;"); *p = 0; }
-  }
-
-  /* RL: Noise limiter  RL; → RL00; */
-  else if (cmd[0]=='R' && cmd[1]=='L') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "RL00;"); *p = 0; }
-  }
-
-  /* BC: Beat canceller  BC; → BC0; */
-  else if (cmd[0]=='B' && cmd[1]=='C') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "BC0;"); *p = 0; }
-  }
-
-  /* SC: Scan  SC; → SC0; */
-  else if (cmd[0]=='S' && cmd[1]=='C') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "SC0;"); *p = 0; }
-  }
-
-  /* LK: Lock  LK; → LK0; */
-  else if (cmd[0]=='L' && cmd[1]=='K') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "LK0;"); *p = 0; }
-  }
-
-  /* VG: Voice gain  VG; → VG050; */
-  else if (cmd[0]=='V' && cmd[1]=='G') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "VG050;"); *p = 0; }
-  }
-
-  /* MC: Memory channel  MC; → MC000; */
-  else if (cmd[0]=='M' && cmd[1]=='C') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "MC000;"); *p = 0; }
-  }
-
-  /* SD: Semi-break-in delay  SD; → SD0290; */
-  else if (cmd[0]=='S' && cmd[1]=='D') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "SD0290;"); *p = 0; }
-  }
-
-  /* QR: Quick RIT  QR; → QR0; */
-  else if (cmd[0]=='Q' && cmd[1]=='R') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "QR0;"); *p = 0; }
-  }
-
-  /* BT: Beat tone  BT; → BT0; */
-  else if (cmd[0]=='B' && cmd[1]=='T') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "BT0;"); *p = 0; }
-  }
-
-  /* AC: Antenna connector  AC; → AC000; */
-  else if (cmd[0]=='A' && cmd[1]=='C') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "AC000;"); *p = 0; }
-  }
-
-  /* AN: Antenna number  AN; → AN0; */
-  else if (cmd[0]=='A' && cmd[1]=='N') {
-    if (len == 2U) { char *p = resp; p = cat_str(p, "AN0;"); *p = 0; }
-  }
-
-  /* ACK-only commands: no response expected */
-  else if (cmd[0]=='P' && cmd[1]=='C') { /* TX power: ACK */ }
-  else if (cmd[0]=='V' && cmd[1]=='X') { /* Voice TX: ACK */ }
-  else if (cmd[0]=='V' && cmd[1]=='V') {
-    /* VFO A=B: copy current VFO A state into VFO B shadow */
-    cat->vfo_b_freq = cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL;
-    cat->vfo_b_mode = cat->cb.get_mode
-                      ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB;
-  }
-  else if (cmd[0]=='U' && cmd[1]=='P') { /* VFO up: ACK */ }
-  else if (cmd[0]=='D' && cmd[1]=='N') { /* VFO down: ACK */ }
-  else if (cmd[0]=='B' && cmd[1]=='U') { /* Band up: ACK */ }
-  else if (cmd[0]=='B' && cmd[1]=='D') { /* Band down: ACK */ }
-  else if (cmd[0]=='M' && cmd[1]=='W') { /* Memory write: ACK */ }
-  else if (cmd[0]=='D' && cmd[1]=='S') { /* Display: ACK */ }
-  else if (cmd[0]=='T' && cmd[1]=='C') { /* Tone code: ACK */ }
-  else if (cmd[0]=='K' && cmd[1]=='Y') { /* CW keyer text: ACK */ }
-  else if (cmd[0]=='M' && cmd[1]=='R') { /* Memory read: no memory */
-    tx_enqueue("?;"); }
-
-  /* Unknown / unimplemented */
-  else { tx_enqueue("?;"); }
-
-  if (resp[0]) tx_enqueue(resp);
-}
-
-/* ── CAT_Receive: ISR SAFE – copy only, no processing ── */
+/* =========================================================
+ * RX accumulation
+ * ========================================================= */
 void CAT_Receive(CAT_Handle_t *cat, const uint8_t *data, uint16_t len)
 {
-  (void)cat;
-  for (uint16_t i = 0; i < len; i++) {
-    uint16_t next = (uint16_t)((s_rx_head + 1U) % RX_RING);
-    if (next == s_rx_tail) break;  /* ring full: drop */
-    s_rxring[s_rx_head] = data[i];
-    s_rx_head = next;
-  }
+    if (!cat) return;
+
+    for (uint16_t i = 0U; i < len; i++) {
+        if (cat->rx_len < (CAT_BUF_SIZE - 1U)) {
+            cat->rx_buf[cat->rx_len++] = (char)data[i];
+        }
+    }
 }
 
-/* ── CAT_Process: MAIN LOOP – parse + execute + flush ── */
+/* =========================================================
+ * Timing
+ * ========================================================= */
+static uint32_t s_tx_ready_ms = 0U;
+
+/* =========================================================
+ * Init
+ * ========================================================= */
+void CAT_Init(CAT_Handle_t *cat, const CAT_Callbacks_t *cb)
+{
+    memset(cat, 0, sizeof(*cat));
+    cat->cb = *cb;
+
+    cat->ai_level   = 0U;
+    cat->last_freq  = 0U;
+    cat->last_mode  = 0xFFU;
+    cat->last_tx    = false;
+    cat->last_vfo   = 0U;
+    cat->last_split = false;
+    cat->rit_on     = false;
+    cat->if_shift   = 0;
+    cat->vfo_b_freq = 7100000UL;
+    cat->vfo_b_mode = CAT_MODE_USB;
+    cat->vfo_b_bw   = 3000U;
+    cat->active_vfo = 0U;
+    cat->split_on   = false;
+
+    cat->initialized = true;
+    cat->rx_len = 0U;
+
+    s_tx_head = s_tx_tail = 0U;
+    s_tx_ready_ms = 0U;
+}
+
+/* =========================================================
+ * IF builder — mcHF / TS-2000 standard
+ * priv->info[] (0-based from content after "IF"):
+ *  [0..10]  P1  freq (11)      [11..15] P2  step "     " (5 spaces, VFO mode)
+ *  [16]     P3  '+' (sign)     [17..20] P4  "0000" (RIT, always zero)
+ *  [21]     P5  '0' (RIT off)  [22]     P6  '0' (XIT off)
+ *  [23..25] P7  mem "000" (3)  [26]     P8  TX
+ *  [27]     P9  mode           [28]     P10 VFO ← hamlib kenwood_get_vfo_if
+ *  [29]     P11 '0' scan       [30]     P12 split ← hamlib reads split here
+ *  [31]     P13 '0' tone       [32..33] P14 "00" CTCSS
+ *  [34]     ';'
+ * Total: "IF"(2) + 34 payload + ";"(1) = 37 chars
+ * ========================================================= */
+void CAT_BuildIF(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+
+    uint32_t f = (cat->active_vfo == 1U)
+               ? cat->vfo_b_freq
+               : (cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL);
+
+    uint8_t mode = (cat->active_vfo == 1U)
+                 ? cat->vfo_b_mode
+                 : (cat->cb.get_mode ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB);
+
+    bool tx = cat->cb.get_tx ? cat->cb.get_tx() : false;
+
+    *p++ = 'I'; *p++ = 'F';
+
+    p = cat_put_u32(p, f, 11U);                           /* [0..10]  P1  freq */
+    *p++ = ' '; *p++ = ' '; *p++ = ' '; *p++ = ' '; *p++ = ' '; /* [11..15] P2  step (VFO mode) */
+    *p++ = '+';                                           /* [16]     P3  sign */
+    *p++ = '0'; *p++ = '0'; *p++ = '0'; *p++ = '0';     /* [17..20] P4  RIT = 0000 */
+    *p++ = '0';                                           /* [21]     P5  RIT off */
+    *p++ = '0';                                           /* [22]     P6  XIT off */
+    *p++ = '0'; *p++ = '0'; *p++ = '0';                  /* [23..25] P7  mem */
+    *p++ = tx ? '1' : '0';                               /* [26]     P8  TX */
+    *p++ = (char)('0' + mode);                           /* [27]     P9  mode */
+    *p++ = cat_vfo_digit(cat->active_vfo);               /* [28]     P10 VFO ← hamlib */
+    *p++ = '0';                                          /* [29]     P11 scan */
+    *p++ = cat->split_on ? '1' : '0';                   /* [30]     P12 split */
+    *p++ = '0';                                          /* [31]     P13 tone */
+    *p++ = '0'; *p++ = '0';                             /* [32..33] P14 CTCSS */
+    *p++ = '0';                                          /* [34]     P15 shift (TS-480) */
+    *p++ = ';';
+    *p   = '\0';
+}
+
+/* =========================================================
+ * Helpers for common responses
+ * ========================================================= */
+static void cat_build_FA(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    uint32_t f = (cat->active_vfo == 1U)
+               ? cat->vfo_b_freq
+               : (cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL);
+
+    *p++ = 'F'; *p++ = 'A';
+    p = cat_put_u32(p, f, 11U);
+    *p++ = ';';
+    *p = '\0';
+}
+
+static void cat_build_FB(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    *p++ = 'F'; *p++ = 'B';
+    p = cat_put_u32(p, cat->vfo_b_freq, 11U);
+    *p++ = ';';
+    *p = '\0';
+}
+
+static void cat_build_MD(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    uint8_t mode = (cat->active_vfo == 1U)
+                 ? cat->vfo_b_mode
+                 : (cat->cb.get_mode ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB);
+
+    *p++ = 'M'; *p++ = 'D';
+    *p++ = (char)('0' + mode);
+    *p++ = ';';
+    *p = '\0';
+}
+
+/* 0-255 raw ↔ 0-100 percent, bidirectional */
+static uint8_t cat_to_pct(uint8_t raw)
+{
+    return (uint8_t)(((uint32_t)raw * 100U + 127U) / 255U);
+}
+
+static uint8_t cat_from_pct(uint32_t pct)
+{
+    if (pct >= 100U) return 255U;
+    return (uint8_t)(pct * 255U / 100U);
+}
+
+static void cat_build_AG(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    uint8_t v = cat->cb.get_volume ? cat->cb.get_volume() : 50U; /* internal 0-100 */
+    *p++ = 'A'; *p++ = 'G'; *p++ = '0';
+    p = cat_put_u32(p, cat_from_pct(v), 3U); /* internal→CAT 0-255 */
+    *p++ = ';';
+    *p = '\0';
+}
+
+static void cat_build_NR(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    bool on = cat->cb.get_nr ? cat->cb.get_nr() : false;
+    *p++ = 'N'; *p++ = 'R'; *p++ = on ? '1' : '0'; *p++ = ';'; *p = '\0';
+}
+
+static void cat_build_NB(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    bool on = cat->cb.get_nb ? cat->cb.get_nb() : false;
+    *p++ = 'N'; *p++ = 'B'; *p++ = on ? '1' : '0'; *p++ = ';'; *p = '\0';
+}
+
+static void cat_build_FW(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    uint32_t bw = (cat->active_vfo == 1U)
+                ? cat->vfo_b_bw
+                : (cat->cb.get_bw ? cat->cb.get_bw() : 3000U);
+    *p++ = 'F'; *p++ = 'W';
+    p = cat_put_u32(p, bw, 4U);
+    *p++ = ';';
+    *p = '\0';
+}
+
+/* TS-480 SH high-cut table: index 00-11 → Hz */
+static const uint32_t s_sh_tbl[12] = {
+    1000U, 1200U, 1400U, 1600U, 1800U, 2000U,
+    2200U, 2400U, 2600U, 2800U, 3000U, 3400U
+};
+
+static uint8_t cat_bw_to_sh(uint32_t bw)
+{
+    for (uint8_t i = 0U; i < 11U; i++) {
+        if (bw <= s_sh_tbl[i]) return i;
+    }
+    return 11U;
+}
+
+static void cat_build_SH(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    uint32_t bw = (cat->active_vfo == 1U)
+                ? cat->vfo_b_bw
+                : (cat->cb.get_bw ? cat->cb.get_bw() : 3000U);
+    uint8_t idx = cat_bw_to_sh(bw);
+    *p++ = 'S'; *p++ = 'H';
+    *p++ = (char)('0' + (idx / 10U));
+    *p++ = (char)('0' + (idx % 10U));
+    *p++ = ';';
+    *p = '\0';
+}
+
+static void cat_build_SL(char *buf)
+{
+    buf[0] = 'S'; buf[1] = 'L'; buf[2] = '0'; buf[3] = '0'; buf[4] = ';'; buf[5] = '\0';
+}
+
+static void cat_build_SQ(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    uint8_t sq = cat->cb.get_squelch ? cat->cb.get_squelch() : 0U; /* internal 0-100 */
+    *p++ = 'S'; *p++ = 'Q'; *p++ = '0';
+    p = cat_put_u32(p, cat_from_pct(sq), 3U); /* internal→CAT 0-255 */
+    *p++ = ';';
+    *p = '\0';
+}
+
+static void cat_build_SM(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    float db = cat->cb.get_signal_db ? cat->cb.get_signal_db() : -80.0f;
+    int32_t su = (int32_t)((db + 73.0f) / 2.0f);
+    if (su < 0) su = 0;
+    if (su > 30) su = 30;
+
+    *p++ = 'S'; *p++ = 'M'; *p++ = '0';
+    p = cat_put_u32(p, (uint32_t)su, 4U);
+    *p++ = ';';
+    *p = '\0';
+}
+
+static void cat_build_BC(char *buf)
+{
+    buf[0] = 'B'; buf[1] = 'C'; buf[2] = '0'; buf[3] = ';'; buf[4] = '\0';
+}
+
+static void cat_build_VS(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    *p++ = 'V'; *p++ = 'S';
+    *p++ = cat_vfo_digit(cat->active_vfo);
+    *p++ = ';';
+    *p = '\0';
+}
+
+static void cat_build_DC(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    *p++ = 'D'; *p++ = 'C';
+    *p++ = cat_vfo_digit(cat->active_vfo);
+    *p++ = cat_vfo_digit(cat->split_on ? 1U : 0U);
+    *p++ = ';';
+    *p = '\0';
+}
+
+/* =========================================================
+ * Command executor
+ * ========================================================= */
+static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
+{
+    resp[0] = '\0';
+
+    /* FA — GET returns active VFO freq; SET is ACK-only, never touches active_vfo */
+    if (cmd[0] == 'F' && cmd[1] == 'A') {
+        if (cmd[2] == '\0') {
+            cat_build_FA(cat, resp);
+        } else {
+            uint32_t f = cat_parse_u(&cmd[2], 11U);
+            if (cat->active_vfo == 1U) {
+                cat->vfo_b_freq = f;
+            } else if (cat->cb.set_freq) {
+                cat->cb.set_freq(f);
+            }
+            /* ACK-only: no response, active_vfo unchanged */
+        }
+    }
+
+    /* FB — always VFO B; SET is ACK-only, never touches active_vfo */
+    else if (cmd[0] == 'F' && cmd[1] == 'B') {
+        if (cmd[2] == '\0') {
+            cat_build_FB(cat, resp);
+        } else {
+            cat->vfo_b_freq = cat_parse_u(&cmd[2], 11U);
+            /* ACK-only: no response */
+        }
+    }
+
+    /* MD — VFO-aware: routes to vfo_b_mode when active_vfo==1 */
+    else if (cmd[0] == 'M' && cmd[1] == 'D') {
+        if (cmd[2] == '\0') {
+            cat_build_MD(cat, resp);
+        } else {
+            uint8_t m = (uint8_t)(cmd[2] - '0');
+            if (cat->active_vfo == 1U) {
+                cat->vfo_b_mode = m;
+            } else if (cat->cb.set_mode) {
+                cat->cb.set_mode(CAT_CatModeToSDR(m));
+            }
+            cat_build_MD(cat, resp);
+        }
+    }
+
+    /* TX; = poll TX/RX status (GET only, no state change)
+     * TX1;/TX2; = set TX ON — TX0; = set RX OFF — respond and flush immediately */
+    else if (cmd[0] == 'T' && cmd[1] == 'X') {
+        if (cmd[2] == '\0') {
+            /* GET: return current state */
+            bool tx = cat->cb.get_tx ? cat->cb.get_tx() : false;
+            resp[0] = 'T'; resp[1] = 'X'; resp[2] = tx ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
+            cat_tx_enqueue(resp);
+            CAT_FlushTX(cat);
+            resp[0] = '\0';
+        } else {
+            /* SET: TX0=RX, TX1/TX2=TX — flush immediately */
+            bool on = (cmd[2] != '0');
+            if (cat->cb.set_tx) cat->cb.set_tx(on);
+            resp[0] = 'T'; resp[1] = 'X'; resp[2] = cmd[2]; resp[3] = ';'; resp[4] = '\0';
+            cat_tx_enqueue(resp);
+            CAT_FlushTX(cat);
+            resp[0] = '\0';
+        }
+    }
+
+    /* RX;/RX0; = set TX OFF — respond RX0; and flush immediately */
+    else if (cmd[0] == 'R' && cmd[1] == 'X') {
+        if (cat->cb.set_tx) cat->cb.set_tx(false);
+        cat_tx_enqueue("RX0;");
+        CAT_FlushTX(cat);
+        /* resp stays '\0', caller skips enqueue */
+    }
+
+    /* IF */
+    else if (cmd[0] == 'I' && cmd[1] == 'F') {
+        CAT_BuildIF(cat, resp);
+    }
+
+    /* ID */
+    else if (cmd[0] == 'I' && cmd[1] == 'D') {
+        cat_copy(resp, "ID020;");
+    }
+
+    /* AI */
+    else if (cmd[0] == 'A' && cmd[1] == 'I') {
+        if (cmd[2] != '\0') {
+            uint8_t lv = (uint8_t)(cmd[2] - '0');
+            cat->ai_level = (lv <= 2U) ? lv : 0U;
+        }
+        resp[0] = 'A'; resp[1] = 'I'; resp[2] = (char)('0' + cat->ai_level); resp[3] = ';'; resp[4] = '\0';
+    }
+
+    /* AG — 0-100% ↔ 0-255 internal */
+    else if (cmd[0] == 'A' && cmd[1] == 'G') {
+        if (cmd[2] == '\0' || cmd[3] == '\0') {
+            /* GET: AG; or AG0; */
+            cat_build_AG(cat, resp);
+        } else if (cmd[2] == '0') {
+            /* SET: AG0xxx; — flrig sends 0-255, convert to internal 0-100 */
+            uint32_t raw = cat_parse_u(&cmd[3], 3U);
+            if (raw > 255U) raw = 255U;
+            if (cat->cb.set_volume) cat->cb.set_volume(cat_to_pct((uint8_t)raw));
+            cat_build_AG(cat, resp);
+        } else {
+            cat_copy(resp, "?;");
+        }
+    }
+
+    /* NR — Kenwood standard: 0=off, 1=on */
+    else if (cmd[0] == 'N' && cmd[1] == 'R') {
+        if (cmd[2] == '\0') {
+            cat_build_NR(cat, resp);
+        } else {
+            if (cat->cb.set_nr) cat->cb.set_nr(cmd[2] == '1');
+            cat_build_NR(cat, resp);
+        }
+    }
+
+    /* NB — Kenwood standard: 0=off, 1=on */
+    else if (cmd[0] == 'N' && cmd[1] == 'B') {
+        if (cmd[2] == '\0') {
+            cat_build_NB(cat, resp);
+        } else {
+            if (cat->cb.set_nb) cat->cb.set_nb(cmd[2] == '1');
+            cat_build_NB(cat, resp);
+        }
+    }
+
+    /* FW */
+    else if (cmd[0] == 'F' && cmd[1] == 'W') {
+        if (cmd[2] == '\0') {
+            cat_build_FW(cat, resp);
+        } else {
+            uint32_t bw = cat_parse_u(&cmd[2], 4U);
+            if (bw < 100U) bw = 100U;
+            if (bw > 9999U) bw = 9999U;
+            if (cat->active_vfo == 1U) {
+                cat->vfo_b_bw = bw;
+            } else if (cat->cb.set_bw) {
+                cat->cb.set_bw(bw);
+            }
+            cat_build_FW(cat, resp);
+        }
+    }
+
+    /* SH — TS-480 IF high-cut */
+    else if (cmd[0] == 'S' && cmd[1] == 'H') {
+        if (cmd[2] == '\0') {
+            cat_build_SH(cat, resp);
+        } else {
+            uint32_t idx = cat_parse_u(&cmd[2], 2U);
+            if (idx > 11U) idx = 11U;
+            uint32_t bw = s_sh_tbl[idx];
+            if (cat->active_vfo == 1U) {
+                cat->vfo_b_bw = bw;
+            } else if (cat->cb.set_bw) {
+                cat->cb.set_bw(bw);
+            }
+            cat_build_SH(cat, resp);
+        }
+    }
+
+    /* SL — TS-480 IF low-cut (stub: always 0 Hz) */
+    else if (cmd[0] == 'S' && cmd[1] == 'L') {
+        cat_build_SL(resp);
+    }
+
+    /* SQ — 0-100% ↔ 0-255 internal */
+    else if (cmd[0] == 'S' && cmd[1] == 'Q') {
+        if (cmd[2] == '\0' || cmd[3] == '\0') {
+            /* GET: SQ; or SQ0; */
+            cat_build_SQ(cat, resp);
+        } else if (cmd[2] == '0') {
+            /* SET: SQ0xxx; — flrig sends 0-255, convert to internal 0-100 */
+            uint32_t raw = cat_parse_u(&cmd[3], 3U);
+            if (raw > 255U) raw = 255U;
+            if (cat->cb.set_squelch) cat->cb.set_squelch(cat_to_pct((uint8_t)raw));
+            cat_build_SQ(cat, resp);
+        } else {
+            cat_copy(resp, "?;");
+        }
+    }
+
+    /* SM */
+    else if (cmd[0] == 'S' && cmd[1] == 'M') {
+        cat_build_SM(cat, resp);
+    }
+
+    /* RA */
+    else if (cmd[0] == 'R' && cmd[1] == 'A') {
+        if (cmd[2] == '\0') {
+            uint8_t att = cat->cb.get_att ? cat->cb.get_att() : 0U;
+            uint8_t lv = (att >= 18U) ? 3U : (att >= 12U) ? 2U : (att >= 6U) ? 1U : 0U;
+            resp[0] = 'R'; resp[1] = 'A';
+            resp[2] = (char)('0' + (lv / 10U));
+            resp[3] = (char)('0' + (lv % 10U));
+            resp[4] = ';';
+            resp[5] = '\0';
+        } else if (strlen(cmd) == 4U) {
+            uint8_t lv = (uint8_t)(cmd[2] - '0') * 10U + (uint8_t)(cmd[3] - '0');
+            if (cat->cb.set_att) cat->cb.set_att(lv > 3U ? 3U : lv);
+            resp[0] = 'R'; resp[1] = 'A';
+            resp[2] = (char)('0' + ((lv > 3U ? 3U : lv) / 10U));
+            resp[3] = (char)('0' + ((lv > 3U ? 3U : lv) % 10U));
+            resp[4] = ';';
+            resp[5] = '\0';
+        } else {
+            cat_copy(resp, "?;");
+        }
+    }
+
+    /* GT */
+    else if (cmd[0] == 'G' && cmd[1] == 'T') {
+        if (cmd[2] == '\0') {
+            bool fast = cat->cb.get_agc_fast ? cat->cb.get_agc_fast() : true;
+            resp[0] = 'G'; resp[1] = 'T'; resp[2] = '0'; resp[3] = fast ? '0' : '1'; resp[4] = ';'; resp[5] = '\0';
+        } else if (strlen(cmd) == 4U && cmd[2] == '0') {
+            if (cat->cb.set_agc_fast) cat->cb.set_agc_fast(cmd[3] == '0');
+            resp[0] = 'G'; resp[1] = 'T'; resp[2] = '0'; resp[3] = cmd[3]; resp[4] = ';'; resp[5] = '\0';
+        } else {
+            cat_copy(resp, "?;");
+        }
+    }
+
+    /* PS */
+    else if (cmd[0] == 'P' && cmd[1] == 'S') {
+        cat_copy(resp, "PS1;");
+    }
+
+    /* PC - ACK only */
+    else if (cmd[0] == 'P' && cmd[1] == 'C') {
+        if (cmd[2] == '\0' || strlen(cmd) == 5U) {
+            cat_copy(resp, "PC000;");
+        } else {
+            cat_copy(resp, "PC000;");
+        }
+    }
+
+    /* BC — Beat Canceller (TS-2000); always stub off */
+    else if (cmd[0] == 'B' && cmd[1] == 'C') {
+        cat_build_BC(resp);
+    }
+
+    /* VS - VFO select/query */
+    else if (cmd[0] == 'V' && cmd[1] == 'S') {
+        if (cmd[2] != '\0') {
+            cat->active_vfo = cat_clamp_vfo((uint8_t)(cmd[2] - '0'));
+        }
+        cat_build_VS(cat, resp);
+    }
+
+    /* DC - CTRL/PTT routing query (simplified: RX VFO + split bit) */
+    else if (cmd[0] == 'D' && cmd[1] == 'C') {
+        if (cmd[2] != '\0') {
+            cat->active_vfo = cat_clamp_vfo((uint8_t)(cmd[2] - '0'));
+        }
+        if (cmd[3] != '\0') {
+            cat->split_on = (cmd[3] == '1');
+        }
+        cat_build_DC(cat, resp);
+    }
+
+    /* FR */
+    else if (cmd[0] == 'F' && cmd[1] == 'R') {
+        if (cmd[2] != '\0') {
+            cat->active_vfo = cat_clamp_vfo((uint8_t)(cmd[2] - '0'));
+        }
+        resp[0] = 'F'; resp[1] = 'R'; resp[2] = cat_vfo_digit(cat->active_vfo); resp[3] = ';'; resp[4] = '\0';
+    }
+
+    /* FT */
+    else if (cmd[0] == 'F' && cmd[1] == 'T') {
+        if (cmd[2] != '\0') {
+            cat->split_on = (cmd[2] == '1');
+        }
+        resp[0] = 'F'; resp[1] = 'T'; resp[2] = cat->split_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
+    }
+
+    /* RT */
+    else if (cmd[0] == 'R' && cmd[1] == 'T') {
+        if (cmd[2] != '\0') {
+            cat->rit_on = (cmd[2] == '1');
+            if (!cat->rit_on && cat->cb.set_rit_hz) cat->cb.set_rit_hz(0);
+        }
+        resp[0] = 'R'; resp[1] = 'T'; resp[2] = cat->rit_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
+    }
+
+    /* RC */
+    else if (cmd[0] == 'R' && cmd[1] == 'C') {
+        if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(0);
+        cat_copy(resp, "RC;");
+    }
+
+    /* RU */
+    else if (cmd[0] == 'R' && cmd[1] == 'U') {
+        int32_t cur = cat->cb.get_rit_hz ? cat->cb.get_rit_hz() : 0;
+        int32_t delta = (strlen(cmd) >= 7U) ? (int32_t)cat_parse_u(&cmd[2], 5U) : 10;
+        if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(cur + delta);
+        cat_copy(resp, "RU;");
+    }
+
+    /* RD */
+    else if (cmd[0] == 'R' && cmd[1] == 'D') {
+        int32_t cur = cat->cb.get_rit_hz ? cat->cb.get_rit_hz() : 0;
+        int32_t delta = (strlen(cmd) >= 7U) ? (int32_t)cat_parse_u(&cmd[2], 5U) : 10;
+        if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(cur - delta);
+        cat_copy(resp, "RD;");
+    }
+
+    /* XT */
+    else if (cmd[0] == 'X' && cmd[1] == 'T') {
+        cat_copy(resp, "XT0;");
+    }
+
+    /* IS — IF shift: offset passband via NCO, BW unchanged */
+    else if (cmd[0] == 'I' && cmd[1] == 'S') {
+        if (cmd[2] == '\0' || cmd[3] == '\0') {
+            /* GET */
+            int16_t sh = cat->cb.get_if_shift
+                       ? (int16_t)cat->cb.get_if_shift()
+                       : cat->if_shift;
+            cat->if_shift = sh;
+            char *p = resp;
+            *p++ = 'I'; *p++ = 'S'; *p++ = '0';
+            *p++ = (sh >= 0) ? '+' : '-';
+            p = cat_put_u32(p, (uint32_t)(sh >= 0 ? sh : -sh), 4U);
+            *p++ = ';'; *p = '\0';
+        } else if (cmd[2] == '0') {
+            /* SET: IS0[+/-]nnnn; */
+            int16_t sh = (int16_t)cat_parse_u(&cmd[4], 4U);
+            cat->if_shift = (cmd[3] == '-') ? (int16_t)(-sh) : sh;
+            if (cat->cb.set_if_shift) cat->cb.set_if_shift((int32_t)cat->if_shift);
+            cat_copy(resp, "IS0;");
+        } else {
+            cat_copy(resp, "?;");
+        }
+    }
+
+    /* SP */
+    else if (cmd[0] == 'S' && cmd[1] == 'P') {
+        if (cmd[2] != '\0') {
+            cat->split_on = (cmd[2] == '1');
+        }
+        resp[0] = 'S'; resp[1] = 'P'; resp[2] = cat->split_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
+    }
+
+    /* TS */
+    else if (cmd[0] == 'T' && cmd[1] == 'S') {
+        if (cmd[2] == '\0' || cmd[2] == '0') {
+            uint32_t st = cat->cb.get_step ? cat->cb.get_step() : 100U;
+            uint8_t idx = 6U;
+            if      (st >= 100000U) idx = 20U;
+            else if (st >= 10000U)  idx = 13U;
+            else if (st >= 5000U)   idx = 11U;
+            else if (st >= 1000U)   idx = 9U;
+            else if (st >= 500U)    idx = 8U;
+            else if (st >= 100U)    idx = 6U;
+            else if (st >= 10U)     idx = 3U;
+            else                    idx = 0U;
+
+            resp[0] = 'T'; resp[1] = 'S'; resp[2] = '0';
+            resp[3] = (char)('0' + ((idx / 10U) % 10U));
+            resp[4] = (char)('0' + (idx % 10U));
+            resp[5] = ';'; resp[6] = '\0';
+        } else if (strlen(cmd) == 5U && cmd[2] == '0') {
+            static const uint32_t ts_tbl[] = {
+                1U,2U,5U,10U,20U,50U,100U,200U,500U,1000U,2500U,5000U,6250U,
+                10000U,12500U,15000U,20000U,25000U,30000U,50000U,100000U
+            };
+            uint32_t idx = cat_parse_u(&cmd[3], 2U);
+            uint32_t st = (idx < 21U) ? ts_tbl[idx] : 100000U;
+            if (cat->cb.set_step) cat->cb.set_step(st);
+            resp[0] = 'T'; resp[1] = 'S'; resp[2] = '0';
+            resp[3] = (char)('0' + ((idx / 10U) % 10U));
+            resp[4] = (char)('0' + (idx % 10U));
+            resp[5] = ';'; resp[6] = '\0';
+        } else {
+            cat_copy(resp, "?;");
+        }
+    }
+
+    /* VV */
+    else if (cmd[0] == 'V' && cmd[1] == 'V') {
+        cat->vfo_b_freq = cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL;
+        cat->vfo_b_mode = cat->cb.get_mode ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB;
+        cat_copy(resp, "VV;");
+    }
+
+    /* ACK-only/common */
+    else if (cmd[0] == 'U' && cmd[1] == 'P') { cat_copy(resp, "UP;"); }
+    else if (cmd[0] == 'D' && cmd[1] == 'N') { cat_copy(resp, "DN;"); }
+    else if (cmd[0] == 'B' && cmd[1] == 'U') { cat_copy(resp, "BU;"); }
+    else if (cmd[0] == 'B' && cmd[1] == 'D') { cat_copy(resp, "BD;"); }
+    else if (cmd[0] == 'M' && cmd[1] == 'W') { cat_copy(resp, "MW;"); }
+    else if (cmd[0] == 'D' && cmd[1] == 'S') { cat_copy(resp, "DS;"); }
+    else if (cmd[0] == 'T' && cmd[1] == 'C') { cat_copy(resp, "TC;"); }
+    else if (cmd[0] == 'K' && cmd[1] == 'Y') { cat_copy(resp, "KY;"); }
+    else if (cmd[0] == 'M' && cmd[1] == 'R') { cat_copy(resp, "?;"); }
+
+    else {
+        cat_copy(resp, "?;");
+    }
+
+}
+
+/* =========================================================
+ * CAT Process
+ * ========================================================= */
 void CAT_Process(CAT_Handle_t *cat)
 {
-  if (!cat->initialized) return;
+    if (!cat || !cat->initialized) return;
 
-  /* 1. Dequeue RX, parse, execute (I2C/DSP calls happen here, safe) */
-  while (s_rx_tail != s_rx_head) {
-    char ch = (char)s_rxring[s_rx_tail];
-    s_rx_tail = (uint16_t)((s_rx_tail + 1U) % RX_RING);
+    static char cmd[CAT_BUF_SIZE];
+    static uint8_t len = 0U;
+    bool skip_ai = false;
 
-    if (ch == '\r' || ch == '\n') continue;
-    if (cat->rx_len < CAT_BUF_SIZE - 1U)
-      cat->rx_buf[cat->rx_len++] = ch;
+    while (cat->rx_len > 0U) {
+        char c = cat->rx_buf[0];
+        memmove(cat->rx_buf, cat->rx_buf + 1, --cat->rx_len);
 
-    if (ch == ';') {
-      cat->rx_buf[cat->rx_len] = '\0';
-      cat_execute(cat, cat->rx_buf, (uint16_t)(cat->rx_len - 1U));
-      cat->rx_len = 0U;
+        if (c == '\r' || c == '\n') continue;
+        if (len < (CAT_BUF_SIZE - 1U)) cmd[len++] = c;
+
+        if (c == ';') {
+            cmd[len - 1U] = '\0';
+
+            /* suppress AI IF notification after PTT commands */
+            if ((cmd[0] == 'T' && cmd[1] == 'X') || (cmd[0] == 'R' && cmd[1] == 'X')) {
+                skip_ai = true;
+            }
+
+            char resp[CAT_TX_BUF_SIZE];
+            cat_exec(cat, cmd, resp);
+            if (resp[0] != '\0') {
+                cat_tx_enqueue(resp);
+                CAT_FlushTX(cat); /* flush every command immediately */
+            }
+
+            len = 0U;
+        }
     }
-  }
 
-  /* 2. Auto-info (AI1 / AI2): send IF on freq, mode, or TX state change */
-  if (cat->ai_level > 0U) {
-    uint32_t f  = cat->cb.get_freq ? cat->cb.get_freq() : 0U;
-    uint8_t  m  = cat->cb.get_mode ? cat->cb.get_mode() : 0xFFU;
-    bool     tx = cat->cb.get_tx   ? cat->cb.get_tx()   : false;
-    if (f != cat->last_freq || m != cat->last_mode || tx != cat->last_tx) {
-      cat->last_freq = f;
-      cat->last_mode = m;
-      cat->last_tx   = tx;
-      char buf[100];
-      CAT_BuildIF(cat, buf);
-      tx_enqueue(buf);
+    /* AI unsolicited IF — never inject immediately after PTT */
+    if (cat->ai_level > 0U && !skip_ai) {
+        uint32_t cur_freq = (cat->active_vfo == 1U)
+                          ? cat->vfo_b_freq
+                          : (cat->cb.get_freq ? cat->cb.get_freq() : 0U);
+        uint8_t  cur_mode = (cat->active_vfo == 1U)
+                          ? cat->vfo_b_mode
+                          : (cat->cb.get_mode ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB);
+        bool     cur_tx    = cat->cb.get_tx ? cat->cb.get_tx() : false;
+
+        if (cur_freq  != cat->last_freq  ||
+            cur_mode  != cat->last_mode  ||
+            cur_tx    != cat->last_tx    ||
+            cat->active_vfo != cat->last_vfo ||
+            cat->split_on   != cat->last_split) {
+
+            cat->last_freq  = cur_freq;
+            cat->last_mode  = cur_mode;
+            cat->last_tx    = cur_tx;
+            cat->last_vfo   = cat->active_vfo;
+            cat->last_split = cat->split_on;
+
+            char if_buf[50];
+            CAT_BuildIF(cat, if_buf);
+            cat_tx_enqueue(if_buf);
+            CAT_FlushTX(cat);
+        }
     }
-  }
-
-  /* 3. Flush TX → CDC */
-  CAT_FlushTX(cat);
 }

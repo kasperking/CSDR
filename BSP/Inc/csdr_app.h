@@ -32,6 +32,10 @@
 #ifndef __CSDR_APP_H
 #define __CSDR_APP_H
 
+/* LO offset: hardware QSD runs freq+LO_OFFSET, NCO corrects back to baseband.
+ * DC spike (LO leakage) appears at +LO_OFFSET in spectrum → outside crop window. */
+#define LO_OFFSET  18000U
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -67,6 +71,8 @@ typedef struct {
   bool        qse_on;
   uint8_t     att_db;
   bool        pwr_hold;
+  uint32_t    bw_hz;           /*!< Snapped BW Hz (from mode table)  */
+  int16_t     if_shift_hz;    /*!< IF shift Hz, applied via NCO      */
   bool        display_dirty;
   uint8_t     usb_mode;
   /* Calibration */

@@ -2,26 +2,28 @@
 /**
   ******************************************************************************
   * @file    usb_cat.h
-  * @brief   USB CAT Control – Kenwood TS-2000 Protocol over CDC VCP
+  * @brief   USB CAT Control – Kenwood TS-480 Protocol over CDC VCP
   *
   *  Transport: USB CDC Virtual COM Port (EP1 IN/OUT, 64 byte packets)
-  *  Protocol: Kenwood TS-2000 CAT commands (ASCII, semicolon terminated)
+  *  Protocol: Kenwood TS-480 CAT commands (ASCII, semicolon terminated)
   *
   *  Lệnh hỗ trợ:
   *   FA/FB;        → Đọc/đặt tần số VFO A/B   FA00007100000;
   *   MD;           → Đọc/đặt mode             MD2; (1=LSB,2=USB,3=CW,4=FM,5=AM)
   *   TX/RX;        → Đặt TX/RX mode
-  *   IF;           → Info frame (freq+mode+…)
+  *   IF;           → Info frame (freq+mode+… 38 chars, TS-480 P15 shift byte)
   *   AI<0-2>;      → Auto Info: 0=off, 1=AI1, 2=AI2
   *   AG0<3d>;      → Audio gain 000-255        AG0127;
   *   NR<0-1>;      → Noise reduction on/off
   *   NB<0-1>;      → Noise blanker on/off
-  *   FW<4d>;       → Filter width Hz           FW3000;
+  *   SH<2d>;       → IF high-cut (00-11)       SH10; (≈3000 Hz)
+  *   SL<2d>;       → IF low-cut  (00-11)       SL00;
+  *   FW<4d>;       → Filter width Hz (legacy)  FW3000;
   *   GT0<0-2>;     → AGC: 0=fast,1=slow,2=off  GT00;
   *   SQ0<3d>;      → Squelch 000-255           SQ0000;
   *   SM0;          → Đọc S-meter              SM00012;
   *   RA<02d>;      → RX attenuator            RA00; (0=off,1=6dB,2=12dB,3=18dB)
-  *   ID;           → Device ID                ID019; (TS-2000)
+  *   ID;           → Device ID                ID020; (TS-480)
   *   PS;           → Power status             PS1;
   *   PC<3d>;       → TX power (ACK only)
   *   ?;            → Error response
@@ -68,7 +70,7 @@ typedef struct {
   void (*set_mode)(uint8_t sdr_mode);
   void (*set_tx)(bool tx_on);
   void (*set_att)(uint8_t level_0_3);
-  void (*set_volume)(uint8_t vol);         /*!< AG: 0-255       */
+  void (*set_volume)(uint8_t vol);         /*!< AG: 0-100       */
   void (*set_nr)(bool on);                 /*!< NR on/off       */
   void (*set_nb)(bool on);                 /*!< NB on/off       */
   void (*set_bw)(uint32_t hz);             /*!< FW: Hz          */
@@ -76,6 +78,7 @@ typedef struct {
   void (*set_squelch)(uint8_t sq);         /*!< SQ: 0-255       */
   void (*set_rit_hz)(int32_t hz);          /*!< RIT offset Hz   */
   void (*set_step)(uint32_t hz);           /*!< Tuning step Hz  */
+  void (*set_if_shift)(int32_t hz);        /*!< IS: IF shift Hz */
   /* Getters */
   uint32_t (*get_freq)(void);
   uint8_t  (*get_mode)(void);
@@ -90,6 +93,7 @@ typedef struct {
   uint8_t  (*get_squelch)(void);
   int32_t  (*get_rit_hz)(void);            /*!< RIT offset Hz   */
   uint32_t (*get_step)(void);              /*!< Tuning step Hz  */
+  int32_t  (*get_if_shift)(void);          /*!< IS: IF shift Hz */
 } CAT_Callbacks_t;
 
 /** CAT driver state */
@@ -101,10 +105,13 @@ typedef struct {
   uint32_t last_freq;
   uint8_t  last_mode;
   bool     last_tx;                /*!< TX state tracked for AI unsolicited IF */
+  uint8_t  last_vfo;               /*!< active_vfo at last AI notification     */
+  bool     last_split;             /*!< split_on at last AI notification       */
   bool     rit_on;                 /*!< RIT on/off                */
   int16_t  if_shift;               /*!< IS: IF shift Hz           */
   uint32_t vfo_b_freq;             /*!< VFO B stored frequency    */
   uint8_t  vfo_b_mode;             /*!< VFO B stored mode (CAT code) */
+  uint32_t vfo_b_bw;               /*!< VFO B stored bandwidth Hz */
   uint8_t  active_vfo;             /*!< 0=VFO_A, 1=VFO_B (VS cmd) */
   bool     split_on;               /*!< Split: TX on VFO B        */
   CAT_Callbacks_t cb;

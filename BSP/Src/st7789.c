@@ -49,9 +49,15 @@ static uint16_t s_panel[PANEL_H * PANEL_W]
 
 /* Function bar: 38×320 = 12160B */
 
-/* Waterfall line: DISP_W×2 = 482B */
-static uint16_t s_wfline[DISP_W]
+/* Waterfall linear buffer: row[0]=oldest (top), row[H-1]=newest (bottom).
+ * memmove shifts history up by 1 each frame — always contiguous for one DMA push. */
+static uint16_t s_wf_buf[ZONE_WF_H][DISP_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
+
+/* Per-bin EMA smoothed power (linear mag²) — CPU-only, no DMA constraint */
+static float    s_wf_smooth[256];
+#define WF_SMOOTH_ALPHA  0.72f   /* 0=instant, 1=frozen; ~3.6-frame time constant */
+#define CROP_MARGIN      32U     /* bins trimmed from each edge (DC spike / filter roll-off) */
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
@@ -109,11 +115,29 @@ static void ln_bigchar(uint16_t *ln, uint16_t x, uint16_t frow,
 static void ln_bigstr(uint16_t *ln, uint16_t x, uint16_t frow,
                        const char *s, uint16_t fg, uint16_t bg);
 
-static uint16_t wf_color_mchf(float norm);
 static uint16_t spec_color_mchf(float norm);
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
+
+/* Maps raw FFT power (re²+im²) → [0,1] with log-like compression.
+ * Equivalent to normalising 10*log10(pwr) over [-80, 0] dBFS range,
+ * but uses only integer exponent extraction — no sqrtf, no log10f.
+ * Constants: LOG2_FLOOR = -80/10*log10(2) = -26.6, range same. */
+#define PWR_LOG2_FLOOR  (-26.6f)
+#define PWR_LOG2_RANGE  ( 26.6f)
+static inline float pwr_compress(float pwr)
+{
+  if (pwr < 1e-9f) return 0.0f;
+  uint32_t u; memcpy(&u, &pwr, 4U);
+  int32_t exp2 = (int32_t)(u >> 23U) - 127;
+  u = (u & 0x007FFFFFU) | 0x3F800000U;
+  float m; memcpy(&m, &u, 4U);
+  float norm = ((float)exp2 + m - 1.0f - PWR_LOG2_FLOOR) * (1.0f / PWR_LOG2_RANGE);
+  if (norm < 0.0f) return 0.0f;
+  if (norm > 1.0f) return 1.0f;
+  return norm;
+}
 
 /* ── Low-level ── */
 static void hw_cmd(ST7789_Handle_t *h, uint8_t c)
@@ -126,7 +150,14 @@ static void hw_d16(ST7789_Handle_t *h, uint16_t d)
 
 static void dma_wait(ST7789_Handle_t *h)
 { uint32_t t=HAL_GetTick();
-  while(h->dma_busy){ if((HAL_GetTick()-t)>500U){ h->dma_busy=false; break; } } }
+  while(h->dma_busy){
+    if((HAL_GetTick()-t)>500U){
+      h->dma_busy=false;
+      if(h->cs_held){ _CSH(h); h->cs_held=false; }
+      break;
+    }
+  }
+}
 
 static void dma_push(ST7789_Handle_t *h, const uint8_t *buf, uint32_t bytes)
 { SCB_CleanDCache_by_Addr((uint32_t*)(uintptr_t)buf,(int32_t)((bytes+31U)&~31U));
@@ -215,18 +246,59 @@ static void ln_bigstr(uint16_t *ln, uint16_t x, uint16_t frow,
     if(x>=LCD_W) break; }
 }
 
-/* ── Waterfall color (mcHF style) ── */
-static uint16_t wf_color_mchf(float norm)
+/* ── Waterfall fixed-range dB color LUT ──────────────────────────
+ *  Fixed scale: WF_MIN_DB (-120) to WF_MAX_DB (-20), 100 dB range.
+ *  11 stops every 10 dB; gamma=0.8 baked in at init so no powf at runtime.
+ *  LUT[0] = noise floor color, LUT[255] = peak color.
+ * ───────────────────────────────────────────────────────────────── */
+#define WF_MIN_DB    (-120.0f)
+#define WF_MAX_DB    ( -20.0f)
+#define WF_RANGE_DB  (100.0f)
+#define WF_INV_RANGE (255.0f / WF_RANGE_DB)
+/* FFT normalization: N=256, Hann window (coherent gain=0.5).
+ * Full-scale complex tone → peak bin power = (256×0.5)² = 16384 → 42.14 dB.
+ * Subtract this to convert raw 10*log10(pwr) to true dBFS. */
+#define WF_DB_OFFSET  42.14f
+
+static uint16_t s_wf_lut[256];
+
+static void wf_lut_init(void)
 {
-  uint8_t r,g,b;
-  if(norm<0.20f)      { r=0;g=0;b=(uint8_t)(norm*5.0f*15.0f); }
-  else if(norm<0.45f) { float t=(norm-0.20f)*4.0f;
-                         r=0;g=(uint8_t)(t*40.0f);b=(uint8_t)(15.0f+t*16.0f); }
-  else if(norm<0.70f) { float t=(norm-0.45f)*4.0f;
-                         r=(uint8_t)(t*20.0f);g=(uint8_t)(40.0f+t*23.0f);b=(uint8_t)(31.0f-t*31.0f); }
-  else                { float t=(norm-0.70f)/0.30f;
-                         r=(uint8_t)(20.0f+t*11.0f);g=(uint8_t)((1.0f-t)*63.0f);b=0; }
-  return SWAP16((uint16_t)((r<<11U)|(g<<5U)|b));
+  /* 11 stops: -120,-110,...,-20 dB  (R5, G6, B5 components) */
+  static const float sr[11] = { 0, 0, 0, 0, 0, 0,15,31,31,31,31};
+  static const float sg[11] = { 0, 0,15,31,63,63,63,63,32, 0,63};
+  static const float sb[11] = { 8,31,31,31,31, 0, 0, 0, 0, 0,31};
+
+  /* Catmull-Rom tangents: interior = central diff, endpoints = one-sided */
+  float mr[11], mg[11], mb[11];
+  mr[0]=sr[1]-sr[0];   mg[0]=sg[1]-sg[0];   mb[0]=sb[1]-sb[0];
+  mr[10]=sr[10]-sr[9]; mg[10]=sg[10]-sg[9]; mb[10]=sb[10]-sb[9];
+  for (int i = 1; i < 10; i++) {
+    mr[i] = 0.5f*(sr[i+1]-sr[i-1]);
+    mg[i] = 0.5f*(sg[i+1]-sg[i-1]);
+    mb[i] = 0.5f*(sb[i+1]-sb[i-1]);
+  }
+
+  for (int i = 0; i <= 255; i++) {
+    float n  = (float)i / 255.0f;
+    float ng = powf(n, 0.8f);     /* gamma lift — baked in, no powf at runtime */
+    float pos = ng * 10.0f;
+    int lo = (int)pos;
+    if (lo >= 10) { s_wf_lut[i] = SWAP16((uint16_t)((31U<<11)|(63U<<5)|31U)); continue; }
+    float t  = pos - (float)lo;
+    float t2 = t * t, t3 = t2 * t;
+    float h00 =  2*t3 - 3*t2 + 1;
+    float h10 =    t3 - 2*t2 + t;
+    float h01 = -2*t3 + 3*t2;
+    float h11 =    t3 -   t2;
+    int r = (int)(h00*sr[lo] + h10*mr[lo] + h01*sr[lo+1] + h11*mr[lo+1]);
+    int g = (int)(h00*sg[lo] + h10*mg[lo] + h01*sg[lo+1] + h11*mg[lo+1]);
+    int b = (int)(h00*sb[lo] + h10*mb[lo] + h01*sb[lo+1] + h11*mb[lo+1]);
+    if(r<0){r=0;} else if(r>31){r=31;}
+    if(g<0){g=0;} else if(g>63){g=63;}
+    if(b<0){b=0;} else if(b>31){b=31;}
+    s_wf_lut[i] = SWAP16((uint16_t)(((uint16_t)r<<11)|((uint16_t)g<<5)|(uint16_t)b));
+  }
 }
 
 /* ── Spectrum color (mcHF: blue→green→orange) ── */
@@ -248,11 +320,17 @@ static uint16_t spec_color_mchf(float norm)
  *  Core LCD
  * ════════════════════════════════════════════════════════════════ */
 
-void ST7789_DMA_TxCpltCallback(ST7789_Handle_t *lcd){ lcd->dma_busy=false; }
+void ST7789_DMA_TxCpltCallback(ST7789_Handle_t *lcd){
+  lcd->dma_busy=false;
+  if(lcd->cs_held){ _CSH(lcd); lcd->cs_held=false; }
+}
 
 void ST7789_Init(ST7789_Handle_t *lcd)
 {
-  lcd->dma_busy=false; lcd->wf_row=0;
+  lcd->dma_busy=false; lcd->cs_held=false;
+  memset(s_wf_buf,   0, sizeof(s_wf_buf));
+  memset(s_wf_smooth,0, sizeof(s_wf_smooth));
+  wf_lut_init();
 
   _RSTL(lcd); HAL_Delay(10); _RSTH(lcd); HAL_Delay(120);
   hw_cmd(lcd,ST7789_SWRESET); HAL_Delay(150);
@@ -696,10 +774,7 @@ void McHF_DrawStatusPanel(ST7789_Handle_t *lcd, const McHF_UI_State_t *ui)
   else if(st>=10U)     snprintf(buf,sizeof(buf)," 10Hz ");
   else                 snprintf(buf,sizeof(buf),"  1Hz ");
   PI(sep_step*6U,"STP",buf,MCH_FREQ_KHZ);
-  if (ui->bw_hz >= 1000U)
-    snprintf(buf, sizeof(buf), "%2ukHz", (unsigned)(ui->bw_hz / 1000U));
-  else
-    snprintf(buf, sizeof(buf), "%3uHz", (unsigned)ui->bw_hz);
+  snprintf(buf, sizeof(buf), "%uHz", (unsigned)ui->bw_hz);
   PI(sep_step*7U,"BW ",buf,MCH_FREQ_KHZ);
 #undef PI
 
@@ -719,23 +794,23 @@ void McHF_DrawSpectrum(ST7789_Handle_t *lcd,
   if(!bins) return;
   const uint16_t W = DISP_W;
   const uint16_t H = ZONE_SPEC_H;
-  const float db_range = 80.0f, db_min = -80.0f;
 
-  /* Map bins → pixel columns (stretch bins across DISP_W pixels) */
-  const float bin_per_px = (float)bins / (float)W;
+  /* Crop edges: skip CROP_MARGIN bins on each side (filter roll-off + DC spike) */
+  const uint16_t b0    = (bins > 2U * CROP_MARGIN) ? (uint16_t)CROP_MARGIN : 0U;
+  const uint16_t n_vis = (bins > 2U * CROP_MARGIN) ? (uint16_t)(bins - 2U * CROP_MARGIN) : bins;
 
-  /* Precompute bar height cho mỗi PIXEL COLUMN */
+  /* Map visible bins → pixel columns */
+  const float bin_per_px  = (float)n_vis / (float)W;
+  const float crop_scale  = (float)bins / (float)n_vis; /* BW marker pixel correction */
+
+  /* Precompute bar height per pixel column using mag²→norm compression */
   uint16_t bar_h[256U];
   if (W > 256U) { return; } /* safety */
   for (uint16_t x = 0U; x < W; x++)
   {
-    uint16_t bi = (uint16_t)((float)x * bin_per_px);
+    uint16_t bi = (uint16_t)((float)x * bin_per_px) + b0;
     if (bi >= bins) bi = bins - 1U;
-    float db = fft_db[bi];
-    if (db < db_min) db = db_min;
-    if (db > 0.0f)   db = 0.0f;
-    float norm = (db - db_min) / db_range;
-    bar_h[x] = (uint16_t)(norm * (float)H);
+    bar_h[x] = (uint16_t)(pwr_compress(fft_db[bi]) * (float)H);
   }
 
   /* Grid horizontal lines (25%, 50%, 75% dB) */
@@ -758,13 +833,13 @@ void McHF_DrawSpectrum(ST7789_Handle_t *lcd,
   uint16_t bw_lo_px = 0U, bw_hi_px = 0U;
   if (bw_lo_valid)
   {
-    uint16_t off = (uint16_t)(bw_lo_ratio * (float)W + 0.5f);
+    uint16_t off = (uint16_t)(bw_lo_ratio * (float)W * crop_scale + 0.5f);
     if (off == 0U) off = 1U;
     bw_lo_px = (cx_px > off) ? (uint16_t)(cx_px - off) : 0U;
   }
   if (bw_hi_valid)
   {
-    uint16_t off = (uint16_t)(bw_hi_ratio * (float)W + 0.5f);
+    uint16_t off = (uint16_t)(bw_hi_ratio * (float)W * crop_scale + 0.5f);
     if (off == 0U) off = 1U;
     bw_hi_px = cx_px + off;
     if (bw_hi_px >= W) bw_hi_px = W - 1U;
@@ -817,29 +892,55 @@ void McHF_DrawSpectrum(ST7789_Handle_t *lcd,
 }
 
 /* ════════════════════════════════════════════════════════════════
- *  McHF_DrawWaterfall  –  1 dòng waterfall, DISP_W px, 1 DMA call
+ *  McHF_DrawWaterfall  –  linear buffer + memmove scroll
+ *
+ *  s_wf_buf[0] = oldest row (display top), s_wf_buf[H-1] = newest (bottom).
+ *  Each call: EMA update → dma_wait → memmove up by 1 → render bottom row →
+ *  single contiguous DMA push of all H rows.  No ring-buffer wrap, no
+ *  two-segment SPI, no vertical-stripe artifact.
+ *  dBFS calibration: subtract WF_DB_OFFSET (42.14 dB = 10*log10(N²*0.25)
+ *  for N=256, Hann window) so WF_MIN/MAX_DB align to true dBFS.
  * ════════════════════════════════════════════════════════════════ */
 void McHF_DrawWaterfall(ST7789_Handle_t *lcd,
                          const float *fft_db, uint16_t bins)
 {
   if(!bins) return;
-  const float xs=(float)DISP_W/(float)bins;
-  const float db_min=-80.0f, db_range=80.0f;
-  for(uint16_t x=0;x<DISP_W;x++){
-    uint16_t bi=(uint16_t)((float)x/xs); if(bi>=bins)bi=bins-1U;
-    float db=fft_db[bi]; if(db<db_min)db=db_min;
-    float norm=(db-db_min)/db_range;
-    s_wfline[x]=wf_color_mchf(norm);
+
+  /* EMA smoothing in power domain — reduces frame-to-frame noise variance */
+  uint16_t nb = (bins <= 256U) ? bins : 256U;
+  for(uint16_t b = 0U; b < nb; b++){
+    s_wf_smooth[b] = WF_SMOOTH_ALPHA * s_wf_smooth[b]
+                   + (1.0f - WF_SMOOTH_ALPHA) * fft_db[b];
   }
-  uint16_t draw_y=(uint16_t)(ZONE_WF_Y+lcd->wf_row);
+
+  /* Crop edges to hide filter roll-off and DC spike pushed to edge by LO_OFFSET */
+  const uint16_t b0    = (nb > 2U * CROP_MARGIN) ? (uint16_t)CROP_MARGIN : 0U;
+  const uint16_t n_vis = (nb > 2U * CROP_MARGIN) ? (uint16_t)(nb - 2U * CROP_MARGIN) : nb;
+
+  /* Wait for previous DMA, then shift all rows down by 1 (oldest row discarded) */
   dma_wait(lcd);
-  hw_cmd(lcd,ST7789_CASET); hw_d16(lcd,DISP_X); hw_d16(lcd,LCD_W-1U);
-  hw_cmd(lcd,ST7789_RASET); hw_d16(lcd,draw_y); hw_d16(lcd,draw_y);
-  hw_cmd(lcd,ST7789_RAMWR);
+  memmove(&s_wf_buf[1][0], &s_wf_buf[0][0], (ZONE_WF_H - 1U) * DISP_W * 2U);
+
+  /* Render new line into the top slot with calibrated dBFS mapping */
+  const float xs = (float)DISP_W / (float)n_vis;
+  for(uint16_t x = 0U; x < DISP_W; x++){
+    uint16_t bi = (uint16_t)((float)x / xs) + b0;
+    if(bi >= nb) bi = nb - 1U;
+    float pwr = s_wf_smooth[bi];
+    float db  = (pwr > 1e-30f) ? (10.0f * log10f(pwr) - WF_DB_OFFSET) : WF_MIN_DB;
+    int   idx = (int)((db - WF_MIN_DB) * WF_INV_RANGE);
+    if(idx < 0) idx = 0; else if(idx > 255) idx = 255;
+    s_wf_buf[0][x] = s_wf_lut[idx];
+  }
+
+  /* Push all rows as one contiguous DMA block — fire-and-forget */
+  hw_cmd(lcd, ST7789_CASET); hw_d16(lcd, DISP_X); hw_d16(lcd, LCD_W - 1U);
+  hw_cmd(lcd, ST7789_RASET); hw_d16(lcd, ZONE_WF_Y);
+                              hw_d16(lcd, (uint16_t)(ZONE_WF_Y + ZONE_WF_H - 1U));
+  hw_cmd(lcd, ST7789_RAMWR);
   _CSL(lcd); _DCdat(lcd);
-  dma_push(lcd,(const uint8_t*)s_wfline,(uint32_t)DISP_W*2U);
-  dma_wait(lcd); _CSH(lcd);
-  lcd->wf_row=(uint16_t)((lcd->wf_row+1U)%ZONE_WF_H);
+  dma_push(lcd, (const uint8_t*)s_wf_buf, (uint32_t)ZONE_WF_H * DISP_W * 2U);
+  lcd->cs_held = true;
 }
 
 /* ════════════════════════════════════════════════════════════════

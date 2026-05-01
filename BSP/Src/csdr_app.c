@@ -52,7 +52,9 @@ SDR_State_t g_sdr = {
   .freq_hz       = CSDR_FREQ_DEFAULT_HZ,
   .mode          = MODE_USB,
   .band_idx      = 3U,
-  .volume        = 200U,
+  .volume        = 78U,
+  .bw_hz         = 3000U,
+  .if_shift_hz   = 0,
   .squelch       = 0U,
   .step          = STEP_100,
   .agc_fast      = true,
@@ -90,6 +92,11 @@ static volatile uint8_t dbg_i2c_found_count  = 0;
 
 /* ── CAT callbacks ── */
 static void     cat_set_freq(uint32_t f);
+static inline uint32_t csdr_nco_freq(void)
+{
+    return (uint32_t)((int32_t)g_sdr.freq_hz + (int32_t)g_sdr.if_shift_hz);
+}
+
 static void     cat_set_mode(uint8_t m);
 static void     cat_set_tx(bool tx);
 static void     cat_set_att(uint8_t lv);
@@ -101,6 +108,8 @@ static void     cat_set_agc_fast(bool fast);
 static void     cat_set_squelch(uint8_t sq);
 static void     cat_set_rit_hz(int32_t hz);
 static void     cat_set_step(uint32_t hz);
+static void     cat_set_if_shift(int32_t hz);
+static int32_t  cat_get_if_shift(void);
 static uint32_t cat_get_freq(void);
 static uint8_t  cat_get_mode(void);
 static bool     cat_get_tx(void);
@@ -118,6 +127,7 @@ static uint32_t cat_get_step(void);
 static void csdr_apply_band(uint8_t band);
 static void csdr_handle_encoder(void);
 static void csdr_handle_keys(void);
+static void csdr_update_waterfall(void);
 static void csdr_refresh_display(void);
 static void menu_apply_cb(void);
 
@@ -185,7 +195,7 @@ void CSDR_Init(void)
    * cat_set_volume: range 90-121 (−31 dB to 0 dB), 0 → hardware mute.
    * g_sdr.volume may have been overridden by Flash_LoadSettings above. */
   uint8_t wm_out_vol = (g_sdr.volume == 0U) ? 0x2FU
-                       : (uint8_t)(90U + ((uint16_t)g_sdr.volume * 31U / 255U));
+                       : (uint8_t)(90U + ((uint16_t)g_sdr.volume * 31U / 100U));
   WM8731_Config_t wm = {
     .hi2c = &hi2c1, .i2c_addr = WM8731_I2C_ADDR,
     .sample_rate = CSDR_AUDIO_SAMPLE_RATE,
@@ -197,7 +207,7 @@ void CSDR_Init(void)
   dbg_si5351_ok = (uint32_t)SI5351_Init(&g_si5351, &hi2c1, SI5351_I2C_ADDR, SI5351_XTAL_HZ);
   if (dbg_si5351_ok == HAL_OK) {
     g_sdr.si5351_ok = true;
-    SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz);
+    SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + LO_OFFSET);
   }
 
   /* PE4302 Attenuator */
@@ -210,7 +220,7 @@ void CSDR_Init(void)
 
   /* DSP */
   DSP_Init(&g_dsp, CSDR_AUDIO_SAMPLE_RATE);
-  DSP_SetFrequency(&g_dsp, g_sdr.freq_hz, g_sdr.freq_hz, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
 
   /* Encoder */
@@ -247,6 +257,8 @@ void CSDR_Init(void)
     .get_squelch   = cat_get_squelch,
     .get_rit_hz    = cat_get_rit_hz,
     .get_step      = cat_get_step,
+    .set_if_shift  = cat_set_if_shift,
+    .get_if_shift  = cat_get_if_shift,
   };
   CAT_Init(&g_cat, &cb);
 
@@ -261,7 +273,7 @@ void CSDR_Init(void)
   ui.freq_hz = g_sdr.freq_hz; ui.mode = (uint8_t)g_sdr.mode;
   ui.band_idx = g_sdr.band_idx; ui.volume = g_sdr.volume;
   ui.step = (uint32_t)g_sdr.step; ui.agc_fast = g_sdr.agc_fast;
-  ui.si5351_ok = g_sdr.si5351_ok; ui.bw_hz = (uint32_t)g_dsp.bw_hz;
+  ui.si5351_ok = g_sdr.si5351_ok; ui.bw_hz = g_sdr.bw_hz;
   McHF_DrawTopBar(&g_lcd, &ui);
   McHF_DrawStatusPanel(&g_lcd, &ui);
 
@@ -344,12 +356,14 @@ void CSDR_Loop(void)
   csdr_handle_keys();
 
   /* Timed tasks */
-  static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0;
+  static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0;
   uint32_t now = HAL_GetTick();
 
   if (now - t_analog >= 100U) { t_analog = now; Analog_Update(); }
   if (now - t_fan    >= 1000U){ t_fan    = now; Fan_Update(g_analog.temp_c); }
   if (now - t_pwr    >= 100U) { t_pwr    = now; PWR_Poll(); }
+  /* Waterfall: 25 fps cap — avoids overdraw, never touches DSP path */
+  if (now - t_wf     >= 40U)  { t_wf     = now; csdr_update_waterfall(); }
   if (now - t_disp   >= 200U) { t_disp   = now; csdr_refresh_display(); }
   /* CAT flush: gọi thường xuyên để response đến host trước timeout */
   CAT_FlushTX(&g_cat);
@@ -445,8 +459,8 @@ static void csdr_apply_band(uint8_t band)
   BPF_SetBand(band); LPF_SetBand(band);
   uint32_t f = BPF_BandToFreq(band);
   g_sdr.freq_hz = f; g_sdr.band_idx = band;
-  DSP_SetFrequency(&g_dsp, f, f, CSDR_AUDIO_SAMPLE_RATE);
-  if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, f);
+  DSP_SetFrequency(&g_dsp, csdr_nco_freq(), f, CSDR_AUDIO_SAMPLE_RATE);
+  if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, f + LO_OFFSET);
   g_sdr.display_dirty = true;
 }
 
@@ -459,8 +473,8 @@ static void csdr_handle_encoder(void)
     if (f < CSDR_FREQ_MIN_HZ) f = CSDR_FREQ_MIN_HZ;
     if (f > CSDR_FREQ_MAX_HZ) f = CSDR_FREQ_MAX_HZ;
     g_sdr.freq_hz = (uint32_t)f;
-    DSP_SetFrequency(&g_dsp, g_sdr.freq_hz, g_sdr.freq_hz, CSDR_AUDIO_SAMPLE_RATE);
-    if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz);
+    DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, CSDR_AUDIO_SAMPLE_RATE);
+    if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + LO_OFFSET);
     uint8_t b = BPF_FreqToBand(g_sdr.freq_hz);
     if (b != 0xFFU && b != g_sdr.band_idx) { BPF_SetBand(b); g_sdr.band_idx = b; }
     g_sdr.display_dirty = true;
@@ -491,7 +505,7 @@ static void csdr_handle_encoder(void)
               uint32_t xtal_corr = (uint32_t)((int32_t)SI5351_XTAL_HZ +
                 SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
               g_si5351.xtal_hz = xtal_corr;
-              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz);
+              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + LO_OFFSET);
             }
           }
         }
@@ -578,7 +592,7 @@ static void csdr_handle_keys(void)
             if (g_sdr.si5351_ok) {
               g_si5351.xtal_hz=(uint32_t)((int32_t)SI5351_XTAL_HZ+
                 SI5351_XTAL_HZ/1000000L*g_sdr.xtal_ppm);
-              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz);
+              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + LO_OFFSET);
             }
           }
         }
@@ -613,6 +627,16 @@ static void csdr_handle_keys(void)
 #undef KEY_DEBOUNCE_MS
 }
 
+static void csdr_update_waterfall(void)
+{
+  /* UI path only — never called from DSP ping/pong.
+   * Consume all pending lines, draw exactly 1 row.  Non-blocking: DMA runs
+   * in background, CS deasserted from HAL_SPI_TxCpltCallback. */
+  if (g_dsp.wf_lines == 0U || Menu_IsOpen(&g_menu)) return;
+  g_dsp.wf_lines = 0U;                   /* drop extras accumulated since last tick */
+  McHF_DrawWaterfall(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE);
+}
+
 static void csdr_refresh_display(void)
 {
   bool menu_open = Menu_IsOpen(&g_menu);
@@ -620,16 +644,12 @@ static void csdr_refresh_display(void)
   /* Spectrum + waterfall: only when menu closed */
   if (g_dsp.fft_ready && !menu_open) {
     g_dsp.fft_ready = false;
-    /* Tính bandwidth marker ratios theo mode:
-     *   LSB:   1 đường bên TRÁI (lower sideband, -BW..0)
-     *   USB/CW: 1 đường bên PHẢI (upper sideband, 0..+BW)
-     *   AM/FM: 2 đường đối xứng tại ±BW/2 (double sideband)
-     *   ratio đơn vị: fraction của full spectrum span (Fs) */
+
     float bw_lo_ratio = 0.0f, bw_hi_ratio = 0.0f;
     if (g_dsp.sample_rate > 0U && g_dsp.bw_hz > 0.0f)
     {
-      float full = g_dsp.bw_hz / (float)g_dsp.sample_rate;  /* BW / Fs */
-      float half = full * 0.5f;                              /* BW/2 / Fs */
+      float full = g_dsp.bw_hz / (float)g_dsp.sample_rate;
+      float half = full * 0.5f;
       switch (g_sdr.mode)
       {
         case MODE_LSB: bw_lo_ratio = full; bw_hi_ratio = 0.0f; break;
@@ -642,7 +662,6 @@ static void csdr_refresh_display(void)
     }
     McHF_DrawSpectrum(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE,
                       bw_lo_ratio, bw_hi_ratio, NULL);
-    McHF_DrawWaterfall(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE);
   }
 
   if (g_sdr.display_dirty) {
@@ -655,7 +674,7 @@ static void csdr_refresh_display(void)
     ui.nr_on    = g_sdr.nr_on;    ui.rit_hz     = g_sdr.rit_hz;
     ui.tx_mode  = g_sdr.tx_mode;  ui.si5351_ok  = g_sdr.si5351_ok;
     ui.qse_on   = g_sdr.qse_on;   ui.signal_db  = g_dsp.signal_power_db;
-    ui.bw_hz    = (uint32_t)g_dsp.bw_hz;
+    ui.bw_hz    = g_sdr.bw_hz;
 
     /* TopBar (y=0..61) luôn cập nhật */
     McHF_DrawTopBar(&g_lcd, &ui);
@@ -694,7 +713,7 @@ static void menu_apply_cb(void)
 }
 
 /* CAT callbacks */
-static void     cat_set_freq(uint32_t f) { g_sdr.freq_hz=f; DSP_SetFrequency(&g_dsp,f,f,CSDR_AUDIO_SAMPLE_RATE); if(g_sdr.si5351_ok)SI5351_SetQSDFrequency(&g_si5351,f); g_sdr.display_dirty=true; }
+static void     cat_set_freq(uint32_t f) { g_sdr.freq_hz=f; DSP_SetFrequency(&g_dsp,csdr_nco_freq(),f,CSDR_AUDIO_SAMPLE_RATE); if(g_sdr.si5351_ok)SI5351_SetQSDFrequency(&g_si5351,f+LO_OFFSET); g_sdr.display_dirty=true; }
 static void     cat_set_mode(uint8_t m)  { g_sdr.mode=(SDR_Mode_t)m; DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE); g_sdr.display_dirty=true; }
 static void cat_set_tx(bool tx)
 {
@@ -718,7 +737,7 @@ static void cat_set_tx(bool tx)
       g_sdr.qse_on = false;
       /* SI5351_SetQSEFrequency reprograms PLL_A (shared with QSD CLK0/CLK1).
        * Re-apply QSD frequency to restore CLK0/CLK1 to correct output. */
-      SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz);
+      SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + LO_OFFSET);
     }
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);  /* Ensure HP unmuted */
   }
@@ -727,20 +746,50 @@ static void cat_set_tx(bool tx)
 }
 static void     cat_set_att(uint8_t lv)  { static const uint8_t m[]={0,6,12,18}; PE4302_SetAttn_dB(&g_att,(lv<4)?m[lv]:0); g_sdr.att_db=g_att.current_atten_db; }
 
-/* Scale 0-255 CAT volume → WM8731 HP register.
- * Range 90-121 (−31 dB to 0 dB) so 100% slider = 0 dB reference (not +6 dB).
+/* Scale 0-100 internal volume → WM8731 HP register.
+ * Range 90-121 (−31 dB to 0 dB) so 100% = 0 dB reference.
  * vol==0 → hardware mute (register < 0x30). */
 static void cat_set_volume(uint8_t vol)
 {
+  if (vol > 100U) vol = 100U;
   g_sdr.volume = vol;
   uint8_t wm_vol = (vol == 0U) ? 0x2FU
-                                : (uint8_t)(90U + ((uint16_t)vol * 31U / 255U));
+                                : (uint8_t)(90U + ((uint16_t)vol * 31U / 100U));
   WM8731_SetVolume(&hi2c1, WM8731_I2C_ADDR, wm_vol, wm_vol);
   g_sdr.display_dirty = true;
 }
 static void     cat_set_nr(bool on)       { g_sdr.nr_on = on; g_sdr.display_dirty = true; }
 static void     cat_set_nb(bool on)       { g_sdr.nb_on = on; g_sdr.display_dirty = true; }
-static void     cat_set_bw(uint32_t hz)   { DSP_SetBW(&g_dsp, (float)hz); g_sdr.display_dirty = true; }
+/* BW lookup tables per mode (Hz) */
+static const uint16_t s_bw_ssb[] = { 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000 };
+static const uint16_t s_bw_cw[]  = {  50,  100,  200,  300,  500,  800, 1000, 1500, 2000 };
+static const uint16_t s_bw_am[]  = { 3000, 4000, 5000, 6000, 8000, 9000, 10000 };
+static const uint16_t s_bw_fm[]  = { 8000, 10000, 12000, 15000 };
+
+static uint32_t bw_snap(uint32_t hz, const uint16_t *tbl, uint8_t n)
+{
+    uint32_t best = tbl[0];
+    uint32_t best_d = (hz >= tbl[0]) ? (hz - tbl[0]) : ((uint32_t)tbl[0] - hz);
+    for (uint8_t i = 1U; i < n; i++) {
+        uint32_t d = (hz >= tbl[i]) ? (hz - tbl[i]) : ((uint32_t)tbl[i] - hz);
+        if (d < best_d) { best_d = d; best = tbl[i]; }
+    }
+    return best;
+}
+
+static void cat_set_bw(uint32_t hz)
+{
+    uint32_t snapped;
+    switch (g_sdr.mode) {
+        case MODE_CW:  snapped = bw_snap(hz, s_bw_cw,  9U);  break;
+        case MODE_AM:  snapped = bw_snap(hz, s_bw_am,  7U);  break;
+        case MODE_FM:  snapped = bw_snap(hz, s_bw_fm,  4U);  break;
+        default:       snapped = bw_snap(hz, s_bw_ssb, 12U); break;
+    }
+    g_sdr.bw_hz = snapped;
+    DSP_SetBW(&g_dsp, (float)snapped);
+    g_sdr.display_dirty = true;
+}
 static void     cat_set_agc_fast(bool f)  { g_sdr.agc_fast = f; g_sdr.display_dirty = true; }
 static void     cat_set_squelch(uint8_t s){ g_sdr.squelch = s; g_sdr.display_dirty = true; }
 
@@ -752,7 +801,7 @@ static uint8_t  cat_get_att(void)         { return g_sdr.att_db; }
 static uint8_t  cat_get_volume(void)      { return g_sdr.volume; }
 static bool     cat_get_nr(void)          { return g_sdr.nr_on; }
 static bool     cat_get_nb(void)          { return g_sdr.nb_on; }
-static uint32_t cat_get_bw(void)          { return (uint32_t)g_dsp.bw_hz; }
+static uint32_t cat_get_bw(void)          { return g_sdr.bw_hz; }
 static bool     cat_get_agc_fast(void)    { return g_sdr.agc_fast; }
 static uint8_t  cat_get_squelch(void)     { return g_sdr.squelch; }
 static int32_t  cat_get_rit_hz(void)      { return (int32_t)g_sdr.rit_hz; }
@@ -777,6 +826,17 @@ static void cat_set_step(uint32_t hz)
   g_sdr.step = st;
   g_sdr.display_dirty = true;
 }
+
+static void cat_set_if_shift(int32_t hz)
+{
+  if (hz >  9999) hz =  9999;
+  if (hz < -9999) hz = -9999;
+  g_sdr.if_shift_hz = (int16_t)hz;
+  DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, CSDR_AUDIO_SAMPLE_RATE);
+  g_sdr.display_dirty = true;
+}
+
+static int32_t cat_get_if_shift(void) { return (int32_t)g_sdr.if_shift_hz; }
 /* ── Audio buffer accessors (expose main.c static buffers) ── */
 extern int32_t tx_buf[];
 extern int32_t rx_buf[];

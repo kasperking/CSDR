@@ -3,7 +3,9 @@
     "allow": [
       "Bash(make -j4)",
       "WebSearch",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(curl -s \"https://raw.githubusercontent.com/df8oe/UHSDR/active-devel/mchf-eclipse/drivers/cat/cat_driver.c\")"
     ]
   }
 }

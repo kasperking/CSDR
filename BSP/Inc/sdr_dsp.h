@@ -113,6 +113,7 @@ typedef struct {
   float     fft_window[DSP_FFT_SIZE];
   uint16_t  fft_fill;
   bool      fft_ready;
+  uint8_t   wf_lines;   /* pending waterfall lines since last display read */
 
   /* Trạng thái */
   SDR_Mode_t mode;
