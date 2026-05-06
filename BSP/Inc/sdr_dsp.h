@@ -81,12 +81,14 @@ typedef struct {
 
 /* TX state */
 typedef struct {
-  Hilbert_t hilbert;                 /*!< 90° phase shift for Q channel */
-  float     audio_delay[HILBERT_TAPS];  /*!< Match delay cho I channel */
-  uint16_t  delay_idx;
-  float     fm_phase;                /*!< FM modulator phase accumulator */
-  uint32_t  cw_phase_acc;            /*!< CW tone NCO */
-  float     audio_gain;              /*!< TX audio gain (0..1) */
+  Hilbert_t    hilbert;                    /*!< 90° phase shift for Q channel */
+  float        audio_delay[HILBERT_TAPS];  /*!< Match delay cho I channel */
+  uint16_t     delay_idx;
+  float        fm_phase;                   /*!< FM modulator phase accumulator */
+  uint32_t     cw_phase_acc;               /*!< CW tone NCO */
+  float        audio_gain;                 /*!< TX audio gain (0..1) */
+  FIR_Filter_t fir_audio;                 /*!< TX-private audio LPF (separate from RX) */
+  IIR_Biquad_t dc_block;                  /*!< TX-private audio DC blocker (separate from RX) */
 } TX_State_t;
 
 /** Trạng thái DSP toàn bộ */
@@ -119,6 +121,10 @@ typedef struct {
   SDR_Mode_t mode;
   float      signal_power_db;
   uint32_t   sample_count;
+
+  /* CW BFO – RX demodulator */
+  uint32_t   cw_phase_acc;   /*!< RX CW BFO phase accumulator */
+  uint32_t   cw_bfo_inc;     /*!< RX CW BFO phase increment (sample-rate-derived) */
 
   /* TX state */
   TX_State_t tx;
@@ -178,7 +184,7 @@ float Demod_AM(float i, float q);
 float Demod_FM(FM_Demod_t *fm, float i, float q);
 float Demod_USB(float i, float q);
 float Demod_LSB(float i, float q);
-float Demod_CW(float i, float q, uint32_t *phase_acc);
+float Demod_CW(float i, float q, uint32_t *phase_acc, uint32_t phase_inc);
 
 #ifdef __cplusplus
 }

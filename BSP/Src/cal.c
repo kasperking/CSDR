@@ -42,7 +42,7 @@ extern TIM_HandleTypeDef htim2;   /* encoder timer */
 #define CAL_W       300U
 #define CAL_Y        ZONE_SPEC_Y      /* overlay on spectrum zone */
 #define CAL_ITEM_H   15U              /* px per row               */
-#define CAL_VISIBLE   9U              /* rows visible at once     */
+#define CAL_VISIBLE   7U              /* rows visible: 16hdr+7*15=121px <= 130px avail */
 
 #define CAL_BG        0x0841U
 #define CAL_SEL_BG    0x001FU

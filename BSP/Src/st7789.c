@@ -109,9 +109,17 @@ static void dma_wait(ST7789_Handle_t *h)
 }
 
 static void dma_push(ST7789_Handle_t *h, const uint8_t *buf, uint32_t bytes)
-{ SCB_CleanDCache_by_Addr((uint32_t*)(uintptr_t)buf,(int32_t)((bytes+31U)&~31U));
-  h->dma_busy=true;
-  HAL_SPI_Transmit_DMA(h->hspi,(uint8_t*)(uintptr_t)buf,(uint16_t)(bytes&0xFFFF)); }
+{
+  SCB_CleanDCache_by_Addr((uint32_t*)(uintptr_t)buf, (int32_t)((bytes + 31U) & ~31U));
+  while (bytes > 0U) {
+    uint16_t chunk = (bytes > 65535U) ? 65535U : (uint16_t)bytes;
+    h->dma_busy = true;
+    HAL_SPI_Transmit_DMA(h->hspi, (uint8_t*)(uintptr_t)buf, chunk);
+    if (bytes > (uint32_t)chunk) dma_wait(h);
+    buf   += chunk;
+    bytes -= chunk;
+  }
+}
 
 /* ── LCD_LineFill / Char / Str / Rect ── */
 void LCD_LineFill(uint16_t *ln, uint16_t x0, uint16_t w, uint16_t color)

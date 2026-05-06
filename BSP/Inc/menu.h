@@ -50,8 +50,8 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      14U   /* 12 settings + Diagnostics + Calibration */
-#define MENU_VISIBLE_ROWS     9U   /* Items shown at once (178px zone) */
+#define MENU_ITEM_COUNT      16U   /* 12 settings + Span + Diagnostics + Calibration + SWR Scan */
+#define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px → total 120px fits 100→232 */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
 #define MENU_W              300U   /* Width (320-2*10)      */
@@ -163,7 +163,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        bool agc_fast, bool nb, bool nr, int16_t rit,
                        uint8_t vol, uint8_t sq, uint32_t step,
                        uint8_t att, uint8_t band, uint8_t mode,
-                       uint8_t usb_mode, MenuApplyFn apply_cb);
+                       uint8_t usb_mode, uint8_t zoom, MenuApplyFn apply_cb);
 
 /**
   * @brief  Đọc giá trị từ menu ra SDR state sau khi đóng.
@@ -172,7 +172,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      bool *agc_fast, bool *nb, bool *nr, int16_t *rit,
                      uint8_t *vol, uint8_t *sq, uint32_t *step,
                      uint8_t *att, uint8_t *band, uint8_t *mode,
-                     uint8_t *usb_mode);
+                     uint8_t *usb_mode, uint8_t *zoom);
 
 #ifdef __cplusplus
 }

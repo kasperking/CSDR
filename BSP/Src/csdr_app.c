@@ -23,6 +23,7 @@
 #include "menu.h"
 #include "diag.h"
 #include "cal.h"
+#include "sdr_scan.h"
 #include <string.h>
 #include <math.h>
 
@@ -135,6 +136,7 @@ static void csdr_handle_keys(void);
 static void csdr_update_waterfall(void);
 static void csdr_refresh_display(void);
 static void menu_apply_cb(void);
+static uint8_t default_zoom_for_mode(SDR_Mode_t m);
 
 /* ══════════════════════════════════════════════════════════
  *  CSDR_Init  – gọi từ main.c USER CODE BEGIN 2
@@ -191,7 +193,7 @@ void CSDR_Init(void)
     }
     HAL_Delay(1200U);
   }
-  SDR_UI_DrawFrame(&g_lcd);
+  SDR_UI_DrawFrame(&g_lcd, CSDR_AUDIO_SAMPLE_RATE, DSP_FFT_SIZE);
 
   /* Delay nhỏ trước I2C để bus settle sau power-on */
   HAL_Delay(10);
@@ -375,7 +377,11 @@ void CSDR_Loop(void)
   static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0;
   uint32_t now = HAL_GetTick();
 
-  if (now - t_analog >= 100U) { t_analog = now; Analog_Update(); }
+  if (now - t_analog >= 100U) {
+    t_analog = now;
+    Analog_Update();
+    SDR_UI_UpdateSMeter_SetVoltage((float)g_analog.voltage_mv * 0.001f);
+  }
   if (now - t_fan    >= 1000U){ t_fan    = now; Fan_Update(g_analog.temp_c); }
   if (now - t_pwr    >= 100U) { t_pwr    = now; PWR_Poll(); }
   /* Waterfall: 25 fps cap — avoids overdraw, never touches DSP path */
@@ -533,6 +539,8 @@ static void csdr_handle_encoder(void)
               SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
             }
           }
+        } else if (strcmp(name, "SWR Scan") == 0) {
+          SWR_Scan_Run(&g_lcd);
         }
         g_sdr.display_dirty = true;
       } else {
@@ -542,10 +550,13 @@ static void csdr_handle_encoder(void)
     }
     g_sdr.mode = (SDR_Mode_t)((g_sdr.mode + 1U) % MODE_COUNT);
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
+    SDR_UI_SetSpecZoom(&g_lcd, default_zoom_for_mode(g_sdr.mode));
     g_sdr.display_dirty = true;
   }
   if (Encoder_GetLongPress(&g_encoder)) {
-    /* Long press: reserved for future use (QSE now tracks TX state) */
+    /* Long press: cycle spectrum zoom ±24k → ±12k → ±6k → ±3k → ±24k */
+    uint8_t z = (uint8_t)((SDR_UI_GetSpecZoom() + 1U) % SPEC_ZOOM_COUNT);
+    SDR_UI_SetSpecZoom(&g_lcd, z);
   }
 }
 
@@ -561,7 +572,7 @@ static void csdr_handle_keys(void)
         g_sdr.agc_fast, g_sdr.nb_on, g_sdr.nr_on, g_sdr.rit_hz,
         g_sdr.volume, g_sdr.squelch, (uint32_t)g_sdr.step,
         g_sdr.att_db, g_sdr.band_idx, (uint8_t)g_sdr.mode,
-        g_sdr.usb_mode, menu_apply_cb);
+        g_sdr.usb_mode, SDR_UI_GetSpecZoom(), menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty = true;
   }
@@ -623,6 +634,8 @@ static void csdr_handle_keys(void)
               SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
             }
           }
+        } else if (strcmp(name, "SWR Scan") == 0) {
+          SWR_Scan_Run(&g_lcd);
         }
         g_sdr.display_dirty = true;
       } else {
@@ -700,7 +713,8 @@ static void csdr_refresh_display(void)
     ui.nr_on    = g_sdr.nr_on;    ui.rit_hz     = g_sdr.rit_hz;
     ui.tx_mode  = g_sdr.tx_mode;  ui.si5351_ok  = g_sdr.si5351_ok;
     ui.qse_on   = g_sdr.qse_on;   ui.signal_db  = g_dsp.signal_power_db;
-    ui.bw_hz    = g_sdr.bw_hz;
+    ui.bw_hz    = g_sdr.bw_hz;    ui.voltage    = (float)g_analog.voltage_mv * 0.001f;
+    ui.att_db   = g_sdr.att_db;   ui.mic_gain   = g_sdr.mic_gain;
 
     /* TopBar (y=0..61) luôn cập nhật */
     SDR_UI_DrawTopBar(&g_lcd, &ui);
@@ -714,19 +728,36 @@ static void csdr_refresh_display(void)
       Menu_Render(&g_menu);
     }
   } else if (!menu_open) {
-    /* Cập nhật S-meter nhẹ – chỉ khi menu đóng */
-    SDR_UI_UpdateSMeter(&g_lcd, g_dsp.signal_power_db);
+    if (g_sdr.tx_mode) {
+      float alc_norm = (float)g_analog.alc_percent * (1.0f / 100.0f);
+      float swr      = (float)g_analog.swr_x100    * (1.0f / 100.0f);
+      SDR_UI_UpdateTXMeters(&g_lcd, alc_norm, swr);
+    } else {
+      SDR_UI_UpdateSMeter(&g_lcd, g_dsp.signal_power_db);
+    }
+  }
+}
+
+static uint8_t default_zoom_for_mode(SDR_Mode_t m)
+{
+  switch (m) {
+    case MODE_CW:            return 3U;  /* ±3k */
+    case MODE_USB:
+    case MODE_LSB:           return 2U;  /* ±6k */
+    case MODE_AM:
+    case MODE_FM:
+    default:                 return 0U;  /* ±24k */
   }
 }
 
 static void menu_apply_cb(void)
 {
   bool agc, nb, nr; int16_t rit;
-  uint8_t vol, sq, att, band, mode, usb; uint32_t step;
+  uint8_t vol, sq, att, band, mode, usb, zoom; uint32_t step;
   Menu_SaveToSDR(&g_menu, &agc, &nb, &nr, &rit,
-                  &vol, &sq, &step, &att, &band, &mode, &usb);
+                  &vol, &sq, &step, &att, &band, &mode, &usb, &zoom);
   g_sdr.agc_fast = agc; g_sdr.nb_on = nb; g_sdr.nr_on = nr;
-  g_sdr.rit_hz = rit;   g_sdr.volume = vol; g_sdr.squelch = sq;
+  g_sdr.rit_hz = rit;   cat_set_volume(vol); g_sdr.squelch = sq;
   g_sdr.step = (FreqStep_t)step;
   if (att != g_sdr.att_db) { PE4302_SetAttn_dB(&g_att, att); g_sdr.att_db = att; }
   if (band != g_sdr.band_idx) csdr_apply_band(band);
@@ -735,12 +766,13 @@ static void menu_apply_cb(void)
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
   }
   g_sdr.usb_mode = usb;
+  if (zoom != SDR_UI_GetSpecZoom()) SDR_UI_SetSpecZoom(&g_lcd, zoom);
   g_sdr.display_dirty = true;
 }
 
 /* CAT callbacks */
 static void     cat_set_freq(uint32_t f) { g_sdr.freq_hz=f; DSP_SetFrequency(&g_dsp,csdr_nco_freq(),f,g_sdr.lo_offset_hz,CSDR_AUDIO_SAMPLE_RATE); if(g_sdr.si5351_ok)SI5351_SetQSDFrequency(&g_si5351,f+g_sdr.lo_offset_hz); g_sdr.display_dirty=true; }
-static void     cat_set_mode(uint8_t m)  { g_sdr.mode=(SDR_Mode_t)m; DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE); g_sdr.display_dirty=true; }
+static void     cat_set_mode(uint8_t m)  { g_sdr.mode=(SDR_Mode_t)m; DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE); SDR_UI_SetSpecZoom(&g_lcd,default_zoom_for_mode(g_sdr.mode)); g_sdr.display_dirty=true; }
 static void cat_set_tx(bool tx)
 {
   if (tx == g_sdr.tx_mode) return;  /* no change */

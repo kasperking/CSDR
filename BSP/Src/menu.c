@@ -29,6 +29,7 @@ Menu_Handle_t g_menu;
 static int32_t _agc_val, _nb_val, _nr_val, _rit_val;
 static int32_t _vol_val, _sq_val, _step_val, _att_val;
 static int32_t _band_val, _mode_val, _bl_val, _usb_val;
+static int32_t _zoom_val;
 
 static const char *agc_strs[]  = { "SLOW", "FAST" };
 static const char *onoff_strs[]= { "OFF",  "ON"   };
@@ -37,6 +38,7 @@ static const char *band_strs[] = { "160m","80m","60m","40m","30m",
                                     "20m","17m","15m","12m","10m","6m" };
 static const char *mode_strs[] = { "AM","FM","USB","LSB","CW" };
 static const char *usb_strs[]  = { "Off","CAT","Audio" };
+static const char *zoom_strs[] = { "+/-24k","+/-12k","+/-6k","+/-3k" };
 
 /* MenuApplyFn defined in menu.h */
 static MenuApplyFn s_apply_cb = NULL;
@@ -126,8 +128,10 @@ void Menu_Init(Menu_Handle_t *m, ST7789_Handle_t *lcd)
   m->items[9]  = (MenuItem_t){ "Mode",     MENU_TYPE_ENUM, 0,0,0, &_mode_val, mode_strs, 5U,  NULL };
   m->items[10] = (MenuItem_t){ "Backlight",MENU_TYPE_INT, 0, 100,10, &_bl_val,  NULL, 0, NULL };
   m->items[11] = (MenuItem_t){ "USB",      MENU_TYPE_ENUM, 0,0,0, &_usb_val,  usb_strs,  3U,  NULL };
-  m->items[12] = (MenuItem_t){ "Diagnostics",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
-  m->items[13] = (MenuItem_t){ "Calibration",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
+  m->items[12] = (MenuItem_t){ "Span",     MENU_TYPE_ENUM, 0,0,0, &_zoom_val, zoom_strs, 4U,  NULL };
+  m->items[13] = (MenuItem_t){ "Diagnostics",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
+  m->items[14] = (MenuItem_t){ "Calibration",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
+  m->items[15] = (MenuItem_t){ "SWR Scan",     MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
   /* USER CODE END Menu_Init_0 */
 }
 
@@ -257,7 +261,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        bool agc_fast, bool nb, bool nr, int16_t rit,
                        uint8_t vol, uint8_t sq, uint32_t step,
                        uint8_t att, uint8_t band, uint8_t mode,
-                       uint8_t usb_mode, MenuApplyFn apply_cb)
+                       uint8_t usb_mode, uint8_t zoom, MenuApplyFn apply_cb)
 {
   /* USER CODE BEGIN Menu_LoadFromSDR_0 */
   (void)m;
@@ -274,6 +278,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _band_val = (int32_t)band;
   _mode_val = (int32_t)mode;
   _usb_val  = (int32_t)usb_mode;
+  _zoom_val = (int32_t)zoom;
   s_apply_cb = apply_cb;
   /* USER CODE END Menu_LoadFromSDR_0 */
 }
@@ -282,7 +287,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      bool *agc_fast, bool *nb, bool *nr, int16_t *rit,
                      uint8_t *vol, uint8_t *sq, uint32_t *step,
                      uint8_t *att, uint8_t *band, uint8_t *mode,
-                     uint8_t *usb_mode)
+                     uint8_t *usb_mode, uint8_t *zoom)
 {
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
@@ -298,6 +303,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *band     = (uint8_t)_band_val;
   *mode     = (uint8_t)_mode_val;
   *usb_mode = (uint8_t)_usb_val;
+  *zoom     = (uint8_t)(_zoom_val >= 0 && _zoom_val < 4 ? _zoom_val : 0);
   /* USER CODE END Menu_SaveToSDR_0 */
 }
 

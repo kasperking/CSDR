@@ -71,8 +71,12 @@ static void bit_reverse(Complex_f *buf, uint16_t n)
 void NCO_SetFrequency(NCO_t *nco, int32_t freq_hz, uint32_t sample_rate)
 {
   /* USER CODE BEGIN NCO_SetFrequency_0 */
-  nco->phase_inc = (uint32_t)((double)freq_hz /
-                               (double)sample_rate * 4294967296.0);
+  /* Use signed 64-bit intermediate: casting a negative double directly to
+   * uint32_t is undefined behaviour.  int64_t conversion is defined, and the
+   * subsequent truncation to uint32_t gives the correct two's-complement
+   * phase increment for negative frequencies. */
+  int64_t inc64 = (int64_t)((double)freq_hz / (double)sample_rate * 4294967296.0);
+  nco->phase_inc = (uint32_t)inc64;
   nco->phase_acc = 0U;
   nco->cos_val   = 1.0f;
   nco->sin_val   = 0.0f;
@@ -286,14 +290,12 @@ float Demod_FM(FM_Demod_t *fm, float i, float q)
 float Demod_USB(float i, float q) { return (i + q) * 0.5f; }
 float Demod_LSB(float i, float q) { return (i - q) * 0.5f; }
 
-float Demod_CW(float i, float q, uint32_t *phase_acc)
+float Demod_CW(float i, float q, uint32_t *phase_acc, uint32_t phase_inc)
 {
   /* USER CODE BEGIN Demod_CW_0 */
-  /* BFO 700Hz via NCO LUT (no per-sample cosf) */
   float amp = Demod_AM(i, q);
-  *phase_acc += 62500000UL;   /* 700/48000 * 2^32 */
+  *phase_acc += phase_inc;
   uint32_t idx = *phase_acc >> (32U - NCO_LUT_BITS);
-  /* use cos for BFO tone: cos = sin(+90°) */
   float bfo = s_nco_sin_lut[(idx + (NCO_LUT_SIZE / 4U)) & NCO_LUT_MASK];
   return amp * bfo;
   /* USER CODE END Demod_CW_0 */
@@ -346,6 +348,12 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->tx.fm_phase     = 0.0f;
   dsp->tx.cw_phase_acc = 0;
   dsp->tx.audio_gain   = 1.0f;
+  FIR_Init_LPF(&dsp->tx.fir_audio, 4000.0f / (float)sample_rate, 32U);
+  IIR_DCBlock_Init(&dsp->tx.dc_block);
+
+  /* CW BFO phase increment: 700 Hz, sample-rate-derived */
+  dsp->cw_bfo_inc  = (uint32_t)(int64_t)(700.0 / (double)sample_rate * 4294967296.0);
+  dsp->cw_phase_acc = 0U;
 
   dsp->signal_power_db = -120.0f;
   /* USER CODE END DSP_Init_0 */
@@ -388,6 +396,9 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   IIR_DCBlock_Init(&dsp->dc_block_q);
   IIR_DCBlock_Init(&dsp->dc_postmix_i);
   IIR_DCBlock_Init(&dsp->dc_postmix_q);
+
+  /* Recompute CW BFO increment for the current sample rate */
+  dsp->cw_bfo_inc = (uint32_t)(int64_t)(700.0 / (double)sample_rate * 4294967296.0);
   /* USER CODE END DSP_SetMode_0 */
 }
 
@@ -419,7 +430,6 @@ void DSP_Process(DSP_State_t *dsp,
                   uint32_t       len)
 {
   /* USER CODE BEGIN DSP_Process_0 */
-  static uint32_t cw_phase = 0U;
   float power_acc = 0.0f;
 
   for (uint32_t n = 0U; n < len; n++)
@@ -475,7 +485,7 @@ void DSP_Process(DSP_State_t *dsp,
       case MODE_FM:  audio = Demod_FM(&dsp->fm, filt_i, filt_q);   break;
       case MODE_USB: audio = Demod_USB(filt_i, filt_q);            break;
       case MODE_LSB: audio = Demod_LSB(filt_i, filt_q);            break;
-      case MODE_CW:  audio = Demod_CW(filt_i, filt_q, &cw_phase);  break;
+      case MODE_CW:  audio = Demod_CW(filt_i, filt_q, &dsp->cw_phase_acc, dsp->cw_bfo_inc);  break;
       default:       audio = filt_i;                                 break;
     }
 
@@ -611,7 +621,7 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
 
     /* ── 2. Audio DC block – remove mic/line DC offset before Hilbert.
      *       DC in audio produces a carrier tone at the TX LO frequency. */
-    audio = IIR_DCBlock_Process(&dsp->dc_block_audio, audio);
+    audio = IIR_DCBlock_Process(&dsp->tx.dc_block, audio);
 
     /* ── 3. TX audio gain */
     audio *= dsp->tx.audio_gain;
@@ -620,7 +630,7 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
      *       Filtering the real audio signal band-limits and ensures
      *       equal spectral amplitude entering both I (delay) and Q (Hilbert)
      *       branches. Do NOT add another filter after the modulator. */
-    float audio_lp = FIR_Process(&dsp->fir_audio, audio);
+    float audio_lp = FIR_Process(&dsp->tx.fir_audio, audio);
 
     /* ── 5. Modulate */
     float tx_i = 0.0f, tx_q = 0.0f;

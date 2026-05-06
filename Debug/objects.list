@@ -7,6 +7,7 @@
 "./BSP/Src/menu.o"
 "./BSP/Src/pe4302.o"
 "./BSP/Src/sdr_dsp.o"
+"./BSP/Src/sdr_scan.o"
 "./BSP/Src/sdr_ui.o"
 "./BSP/Src/si5351.o"
 "./BSP/Src/st7789.o"

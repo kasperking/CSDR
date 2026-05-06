@@ -47,7 +47,8 @@ BSP/Src/csdr_app.o: ../BSP/Src/csdr_app.c H:/CSDR/BSP/Inc/csdr_app.h \
  H:/CSDR/BSP/Inc/w25q128.h H:/CSDR/BSP/Inc/bpf_lpf.h \
  H:/CSDR/BSP/Inc/fsdr_analog.h H:/CSDR/BSP/Inc/usb_cat.h \
  H:/CSDR/BSP/Inc/usb_audio.h H:/CSDR/BSP/Inc/menu.h \
- H:/CSDR/BSP/Inc/sdr_ui.h H:/CSDR/BSP/Inc/diag.h H:/CSDR/BSP/Inc/cal.h
+ H:/CSDR/BSP/Inc/sdr_ui.h H:/CSDR/BSP/Inc/diag.h H:/CSDR/BSP/Inc/cal.h \
+ H:/CSDR/BSP/Inc/sdr_scan.h
 H:/CSDR/BSP/Inc/csdr_app.h:
 ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h:
 ../Core/Inc/stm32h7xx_hal_conf.h:
@@ -107,3 +108,4 @@ H:/CSDR/BSP/Inc/menu.h:
 H:/CSDR/BSP/Inc/sdr_ui.h:
 H:/CSDR/BSP/Inc/diag.h:
 H:/CSDR/BSP/Inc/cal.h:
+H:/CSDR/BSP/Inc/sdr_scan.h:
