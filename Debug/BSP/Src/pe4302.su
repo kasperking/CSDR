@@ -1,7 +1,0 @@
-../BSP/Src/pe4302.c:28:13:pe4302_write	16	static,ignoring_inline_asm
-../BSP/Src/pe4302.c:49:6:PE4302_Init	8	static
-../BSP/Src/pe4302.c:64:6:PE4302_SetAttn_Raw	0	static
-../BSP/Src/pe4302.c:74:6:PE4302_SetAttn_dB	0	static
-../BSP/Src/pe4302.c:82:6:PE4302_IncAttn	0	static
-../BSP/Src/pe4302.c:91:6:PE4302_DecAttn	0	static
-../BSP/Src/pe4302.c:99:6:PE4302_Bypass	0	static

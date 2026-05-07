@@ -1,7 +1,0 @@
-../BSP/Src/wm8731.c:57:26:WM8731_WriteReg	24	static
-../BSP/Src/wm8731.c:76:19:WM8731_Reset	0	static
-../BSP/Src/wm8731.c:90:19:WM8731_Init	24	static
-../BSP/Src/wm8731.c:170:19:WM8731_SetVolume	0	static
-../BSP/Src/wm8731.c:187:19:WM8731_SetMute	0	static
-../BSP/Src/wm8731.c:202:19:WM8731_SetInputGain	0	static
-../BSP/Src/wm8731.c:216:19:WM8731_PowerDown	16	static

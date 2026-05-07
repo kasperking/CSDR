@@ -1,6 +1,0 @@
-../BSP/Src/cal.c:307:16:enc_read_delta	0	static
-../BSP/Src/cal.c:62:13:push_ln	16	static
-../BSP/Src/cal.c:166:13:render_header.constprop	48	static
-../BSP/Src/cal.c:318:13:render_sublevel	112	static
-../BSP/Src/cal.c:411:13:render_toplevel	88	static
-../BSP/Src/cal.c:424:6:Cal_Run	208	static
