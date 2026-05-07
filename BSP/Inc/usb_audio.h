@@ -100,9 +100,10 @@ void USB_Audio_Init(USB_Audio_Handle_t *au);
 
 /**
   * @brief  Ghi IQ samples từ SAI DMA vào RX ring (→ USB IN).
-  *         Gọi từ HAL_SAI_RxHalfCpltCallback / HAL_SAI_RxCpltCallback.
+  *         Phải gọi từ main-loop context (CSDR_Loop), KHÔNG gọi từ DMA ISR.
+  *         Gọi từ ISR sẽ chặn USB OTG IRQ và gây hard-lock khi host mở stream.
   * @param  au        Handle
-  * @param  src       SAI DMA buffer (int32_t, 16-bit left-aligned)
+  * @param  src       SAI DMA buffer (int32_t, 16-bit right-justified)
   * @param  samples   Số sample pairs (I+Q)
   */
 void USB_Audio_WriteRX(USB_Audio_Handle_t *au,

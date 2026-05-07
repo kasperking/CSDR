@@ -100,6 +100,14 @@ static volatile uint32_t dbg_sai_error_cnt  = 0;       /* SAI error callback fir
 static volatile uint8_t dbg_i2c_devices[128] = {0};
 static volatile uint8_t dbg_i2c_found_count  = 0;
 
+/* USB watchdog counters – defined in usb_composite.c, watched here via extern */
+extern volatile uint32_t dbg_usb_sof_cnt;     /* SOF callbacks received from host      */
+extern volatile uint32_t dbg_usb_iso_in_cnt;  /* ISO IN packets successfully queued     */
+extern volatile uint32_t dbg_usb_stall_cnt;   /* ISO IN queue failures (stall/not-ready)*/
+
+/* Set to 1 in debugger to skip waterfall/LCD DMA while diagnosing USB audio. */
+static volatile uint8_t dbg_disable_lcd_dma = 0;
+
 
 
 /* ── Function key state machines ── */
@@ -361,8 +369,17 @@ void CSDR_Loop(void)
   /* DSP ping/pong */
   if (s_ping) {
     s_ping = 0;
+    /* s_rx_buf is in .DMA_SRAM (0x24000000, MPU: NON_CACHEABLE) so the
+     * invalidate below is a no-op.  Keep it for safety if MPU config ever
+     * changes.  Address and size are both 32-byte aligned:
+     *   addr  = s_rx_buf (aligned(32) attribute)
+     *   size  = 256 × 2 × 4 = 2048 B  (2048 / 32 = 64, exact multiple) */
     SCB_InvalidateDCache_by_Addr((uint32_t*)s_rx_buf,
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
+    /* Feed USB ring from main-loop context, not ISR, to avoid starving the
+     * USB OTG interrupt handler when the host opens the audio stream. */
+    if (g_usb_audio.usb_streaming)
+      USB_Audio_WriteRX(&g_usb_audio, s_rx_buf, CSDR_AUDIO_BLOCK_SIZE);
     dbg_rx_sample_0 = s_rx_buf[0];
     dbg_rx_sample_1 = s_rx_buf[1];
     if (g_sdr.tx_mode) {
@@ -385,13 +402,20 @@ void CSDR_Loop(void)
     }
     dbg_tx_sample_0 = s_tx_buf[0];
     dbg_tx_sample_1 = s_tx_buf[1];
+    /* s_tx_buf: aligned(32), size 2048 B — 32-byte aligned ✓ */
     SCB_CleanDCache_by_Addr((uint32_t*)s_tx_buf,
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
   }
   if (s_pong) {
     s_pong = 0;
+    /* Pong half: byte offset = 256×2×4 = 2048 B from base → still 32-byte aligned.
+     * Size 2048 B — 32-byte aligned ✓ */
     SCB_InvalidateDCache_by_Addr((uint32_t*)(s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2),
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
+    if (g_usb_audio.usb_streaming)
+      USB_Audio_WriteRX(&g_usb_audio,
+                         s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
+                         CSDR_AUDIO_BLOCK_SIZE);
     if (g_sdr.tx_mode) {
       DSP_ProcessTX(&g_dsp, s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                      CSDR_AUDIO_BLOCK_SIZE);
@@ -399,6 +423,7 @@ void CSDR_Loop(void)
       DSP_Process(&g_dsp, s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                    s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2, CSDR_AUDIO_BLOCK_SIZE);
     }
+    /* s_tx_buf pong: byte offset 2048, size 2048 — 32-byte aligned ✓ */
     SCB_CleanDCache_by_Addr((uint32_t*)(s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2),
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
   }
@@ -418,9 +443,10 @@ void CSDR_Loop(void)
   }
   if (now - t_fan    >= 1000U){ t_fan    = now; Fan_Update(g_analog.temp_c); }
   if (now - t_pwr    >= 100U) { t_pwr    = now; PWR_Poll(); }
-  /* Waterfall: 25 fps cap — avoids overdraw, never touches DSP path */
-  if (now - t_wf     >= 40U)  { t_wf     = now; csdr_update_waterfall(); }
-  if (now - t_disp   >= 200U) { t_disp   = now; csdr_refresh_display(); }
+  /* Waterfall: 25 fps cap.  Set dbg_disable_lcd_dma=1 in debugger to suppress
+   * SPI DMA activity while tracing USB audio issues. */
+  if (now - t_wf     >= 40U)  { t_wf     = now; if (!dbg_disable_lcd_dma) csdr_update_waterfall(); }
+  if (now - t_disp   >= 200U) { t_disp   = now; if (!dbg_disable_lcd_dma) csdr_refresh_display(); }
   /* CAT flush: gọi thường xuyên để response đến host trước timeout */
   CAT_FlushTX(&g_cat);
 
@@ -467,9 +493,10 @@ void HAL_SAI_RxHalfCpltCallback(SAI_HandleTypeDef *h)
   if (h->Instance == SAI1_Block_B) {
     s_ping = 1;
     dbg_cb_half_count++;
-    /* NOTE: s_rx_buf is DMA/cached – read AFTER DCache invalidate in CSDR_Loop */
-    if (g_usb_audio.usb_streaming)
-      USB_Audio_WriteRX(&g_usb_audio, s_rx_buf, CSDR_AUDIO_BLOCK_SIZE);
+    /* USB_Audio_WriteRX is intentionally NOT called here.
+     * Calling USB functions from a DMA ISR starves the USB OTG IRQ when the
+     * host opens a stream, causing the USB audio endpoint to hard-lock.
+     * The main loop (CSDR_Loop) calls WriteRX after the s_ping flag is seen. */
   }
 }
 
@@ -478,10 +505,7 @@ void HAL_SAI_RxCpltCallback(SAI_HandleTypeDef *h)
   if (h->Instance == SAI1_Block_B) {
     s_pong = 1;
     dbg_cb_full_count++;
-    if (g_usb_audio.usb_streaming)
-      USB_Audio_WriteRX(&g_usb_audio,
-                         s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
-                         CSDR_AUDIO_BLOCK_SIZE);
+    /* USB_Audio_WriteRX moved to CSDR_Loop – see HAL_SAI_RxHalfCpltCallback. */
   }
 }
 

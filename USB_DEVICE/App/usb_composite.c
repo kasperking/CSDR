@@ -50,9 +50,17 @@ static volatile uint8_t s_as_in_alt  = 0U;
 static volatile uint8_t s_audio_in_tx_pending = 0U;
 
 /* Debug: watch these in Live Expressions to verify interface activation */
-volatile uint8_t dbg_as_out_alt = 0U;
-volatile uint8_t dbg_as_in_alt  = 0U;
-volatile uint32_t dbg_iso_out_inc = 0U;
+volatile uint8_t  dbg_as_out_alt   = 0U;
+volatile uint8_t  dbg_as_in_alt    = 0U;
+volatile uint32_t dbg_iso_out_inc  = 0U;
+
+/* USB audio watchdog counters – watched from csdr_app.c via extern.
+ * SOF should tick at exactly 1 kHz when the host is connected.
+ * iso_in_cnt should track ~1:1 with SOF while streaming.
+ * stall_cnt > 0 means USBD_LL_Transmit is rejecting packets (endpoint not ready). */
+volatile uint32_t dbg_usb_sof_cnt    = 0U;
+volatile uint32_t dbg_usb_iso_in_cnt = 0U;
+volatile uint32_t dbg_usb_stall_cnt  = 0U;
 
 static __ALIGN_BEGIN uint8_t s_audio_out_buf[COMP_EP_AUDIO_SIZE] __ALIGN_END;
 static __ALIGN_BEGIN uint8_t s_audio_in_buf [COMP_EP_AUDIO_SIZE] __ALIGN_END;
@@ -524,6 +532,10 @@ static uint8_t Comp_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
       if (USBD_LL_Transmit(pdev, COMP_EP_AUDIO_IN,
                             s_audio_in_buf, COMP_EP_AUDIO_SIZE) == USBD_OK) {
         s_audio_in_tx_pending = 1U;
+        dbg_usb_iso_in_cnt++;
+      } else {
+        /* Endpoint not ready — SOF will retry next frame. */
+        dbg_usb_stall_cnt++;
       }
     }
     return USBD_OK;
@@ -572,6 +584,7 @@ static uint8_t Comp_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
 
 static uint8_t Comp_SOF(USBD_HandleTypeDef *pdev)
 {
+  dbg_usb_sof_cnt++;
   /* Pump Audio IN: if streaming and no transfer in flight, send a packet.
    * This kick-starts the pipeline after SET_INTERFACE alt 1. */
   if (s_as_in_alt && !s_audio_in_tx_pending) {
@@ -579,6 +592,9 @@ static uint8_t Comp_SOF(USBD_HandleTypeDef *pdev)
     if (USBD_LL_Transmit(pdev, COMP_EP_AUDIO_IN,
                           s_audio_in_buf, COMP_EP_AUDIO_SIZE) == USBD_OK) {
       s_audio_in_tx_pending = 1U;
+      dbg_usb_iso_in_cnt++;
+    } else {
+      dbg_usb_stall_cnt++;
     }
   }
   return USBD_OK;
