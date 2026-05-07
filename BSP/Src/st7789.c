@@ -215,19 +215,19 @@ void ST7789_FillScreen(ST7789_Handle_t *lcd, uint16_t color)
  * ════════════════════════════════════════════════════════════════ */
 
 void ST7789_PushScanline(ST7789_Handle_t *lcd, uint16_t y, const uint16_t *line)
-{ dma_wait(lcd);
+{ dma_wait(lcd); _CSH(lcd);
   hw_cmd(lcd,ST7789_CASET); hw_d16(lcd,0); hw_d16(lcd,LCD_W-1U);
   hw_cmd(lcd,ST7789_RASET); hw_d16(lcd,y); hw_d16(lcd,y);
   hw_cmd(lcd,ST7789_RAMWR);
-  _CSL(lcd); _DCdat(lcd);
+  lcd->cs_held=true; _DCdat(lcd); _CSL(lcd);
   dma_push(lcd,(const uint8_t*)line,(uint32_t)LCD_W*2U); }
 
 void ST7789_PushBlock(ST7789_Handle_t *lcd, uint16_t y0, uint16_t y1, const uint16_t *buf)
-{ dma_wait(lcd);
+{ dma_wait(lcd); _CSH(lcd);
   hw_cmd(lcd,ST7789_CASET); hw_d16(lcd,0); hw_d16(lcd,LCD_W-1U);
   hw_cmd(lcd,ST7789_RASET); hw_d16(lcd,y0); hw_d16(lcd,y1);
   hw_cmd(lcd,ST7789_RAMWR);
-  _CSL(lcd); _DCdat(lcd);
+  _DCdat(lcd); _CSL(lcd);
   uint32_t bytes=(uint32_t)(y1-y0+1U)*LCD_W*2U;
   dma_push(lcd,(const uint8_t*)buf,bytes);
   dma_wait(lcd); _CSH(lcd); }
@@ -239,11 +239,11 @@ void ST7789_PushWindow(ST7789_Handle_t *lcd,
 { uint16_t w=(uint16_t)(x1-x0+1U);
   uint16_t h=(uint16_t)(y1-y0+1U);
   uint32_t bytes=(uint32_t)w*(uint32_t)h*2U;
-  dma_wait(lcd);
+  dma_wait(lcd); _CSH(lcd);
   hw_cmd(lcd,ST7789_CASET); hw_d16(lcd,x0); hw_d16(lcd,x1);
   hw_cmd(lcd,ST7789_RASET); hw_d16(lcd,y0); hw_d16(lcd,y1);
   hw_cmd(lcd,ST7789_RAMWR);
-  _CSL(lcd); _DCdat(lcd);
+  _DCdat(lcd); _CSL(lcd);
   dma_push(lcd,(const uint8_t*)buf,bytes);
   dma_wait(lcd); _CSH(lcd); }
 

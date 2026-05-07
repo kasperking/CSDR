@@ -166,8 +166,8 @@ static void scan_draw_zone(ST7789_Handle_t *lcd,
 
     /* ── Grid Y positions for SWR=1.5,2.0,3.0,4.0 ── */
     static const float    grid_swr[4] = {1.5f, 2.0f, 3.0f, 4.0f};
-    static const char    *grid_lbl[4] = {"1.5", "2.0", "3.0", "4.0"};
-    static const uint16_t grid_col[4] = {SC_WARN, SC_WARN, SC_BAD, SC_ALARM};
+    static const char    *grid_lbl[4] __attribute__((unused)) = {"1.5", "2.0", "3.0", "4.0"};
+    static const uint16_t grid_col[4] __attribute__((unused)) = {SC_WARN, SC_WARN, SC_BAD, SC_ALARM};
     uint16_t grid_y[4];
     for (int g = 0; g < 4; g++)
         grid_y[g] = swr_to_y((uint16_t)(grid_swr[g] * 100.0f + 0.5f));

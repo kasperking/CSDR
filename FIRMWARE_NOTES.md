@@ -8,14 +8,15 @@ Target: STM32H750VBT6 · Display: 320×240 ST7789 (SPI, DMA) · Audio: WM8731 (S
 
 ```
 Y=  0 ┌────────────────────────────────────────────────┐
-      │ HEADER  320×18  [RX/TX] ATT:n  Vbatt           │
+      │ HEADER  320×18  [RX/TX] ATT:n  BAT 13.9V      │
 Y= 18 ├────────┬──────────────────────────┬────────────┤
-      │SBL 60  │ VFO 200×36               │ SBR 60     │
+      │SBL 60  │ VFO 200×44               │ SBR 60     │
       │ Mode   │  7.100.000               │ RIT  OFF   │
-      │ VFO A  │  1kHz step               │ MIC  50    │
+      │ VFO A  │  B:7.100.000  1kHz       │ MIC  50    │
       │ NR NB  ├──────────────────────────┤ DSP  –     │
-      │ VOL 78 │ METER 200×46             │ BW  2.7k   │
-      │ SQL  0 │  S▐▐▐▐░░░  S7 –87 dBm   │            │
+      │ VOL 78 │ METER 200×38             │ BW  2.7k   │
+      │ SQL  0 │  S▐▐▐▐░░░  S7           │            │
+      │        │  BATT 13.9V              │            │
 Y=100 ├────────┴──────────────────────────┴────────────┤
       │ SPECTRUM  320×68                               │
 Y=168 ├────────────────────────────────────────────────┤
@@ -31,8 +32,8 @@ Y=240 └───────────────────────�
 |-----------|---------|----------|----------|
 | HEADER    | 0–319   | 0–17     | 320×18   |
 | SBL       | 0–59    | 18–99    | 60×82    |
-| VFO       | 60–259  | 18–53    | 200×36   |
-| METER     | 60–259  | 54–99    | 200×46   |
+| VFO       | 60–259  | 18–61    | 200×44   |
+| METER     | 60–259  | 62–99    | 200×38   |
 | SBR       | 260–319 | 18–99    | 60×82    |
 | SPECTRUM  | 0–319   | 100–167  | 320×68   |
 | WATERFALL | 0–319   | 168–229  | 320×62   |
@@ -42,7 +43,7 @@ Y=240 └───────────────────────�
 
 **SBL (sidebar left) items:** Mode badge · VFO A/B · NR/NB toggle badges · VOL value · SQL value  
 **SBR (sidebar right) items:** RIT value · MIC gain · DSP level · BW (filter bandwidth, e.g. `2.7k`, `500Hz`)  
-**VFO:** 3× scaled digits (15px wide, 24px tall), MHz·kHz·Hz groups, step label top-right, RIT offset sub-line when active.
+**VFO:** 3× scaled digits (15px wide, 24px tall), MHz·kHz·Hz groups, step label top-right. Sub-line shows inactive VFO frequency at 2× scale (12px wide, 16px tall) or RIT offset at base Font6x8 scale.
 
 ---
 
@@ -80,7 +81,7 @@ All keys are debounced via `Key_Poll` + `Key_Press` / `Key_PressOrRepeat`. Hold-
 - **Grid:** horizontal lines at 25 / 50 / 75 % height; vertical dots every 40 px.  
 - **BW markers:** cyan vertical lines at demod filter edges, derived from `bw_hz / sample_rate` ratio scaled to zoom window.  
 - **Center marker:** magenta vertical line at DC (centre bin).  
-- **Update:** fires when `dsp.fft_ready == true` and menu is closed. No rate limit beyond FFT accumulation (~187 Hz / 256 = ~0.73 Hz frame rate at 48 kHz / 256 block size). In practice limited to ~25 fps by the 40 ms waterfall tick.
+- **Update:** fires when `dsp.fft_ready == true` and menu is closed. Inherent rate is ~187.5 FFT frames/sec (48 kHz ÷ 256 samples/block = one FFT per block). In practice limited to ~25 fps by the 40 ms waterfall tick.
 
 ### Waterfall (Y=168..229)
 
@@ -100,12 +101,13 @@ The DSP always runs at ±24 kHz (full 48 kHz sample rate). Zoom is display-only:
 | Zoom level | Half-span | Visible bins | Footer label |
 |-----------|-----------|-------------|--------------|
 | 0 (default)| ±24 kHz  | 256          | −24k … +24k  |
-| 1         | ±12 kHz   | 128          | −12k … +12k  |
-| 2         | ±6 kHz    | 64           | −6k … +6k    |
-| 3         | ±3 kHz    | 32           | −3k … +3k    |
+| 1         | ±18 kHz   | 192          | −18k … +18k  |
+| 2         | ±12 kHz   | 128          | −12k … +12k  |
+| 3         | ±6 kHz    | 64           | −6k … +6k    |
+| 4         | ±3 kHz    | 32           | −3k … +3k    |
 
-**Toggle:** encoder long-press cycles 0→1→2→3→0.  
-**Default per mode:** CW=zoom 3, USB/LSB=zoom 2, AM/FM=zoom 0.  
+**Toggle:** encoder long-press cycles 0→1→2→3→4→0.  
+**Default per mode:** CW=zoom 4, USB/LSB=zoom 3, AM/FM=zoom 0.  
 Spectrum and waterfall share the same `spec_window()` call so they stay aligned.  
 Footer frequency labels are redrawn immediately on zoom change.
 
@@ -119,9 +121,10 @@ Footer frequency labels are redrawn immediately on zoom change.
 - **Bar mapping:** `bars = (signal_db + 73) / 3`, clamped 0–12.  
   - bars=0 ≈ −73 dBFS floor · bars=9 ≈ −46 dBFS · bars=10/11 ≡ S9+20/+40  
 - **Segments:** 12 × 13 px + 1 px gap; S1–S6 green, S7–S9 yellow, S9+ red.  
-- **Bar height:** 3 px thin bar (rows 10–12 of meter zone).  
-- **Value text:** S-unit string below bar (e.g. `S7`, `S9+6`).  
-- **Scale labels:** `S 1 3 5 7 9 +20 +40`. The `+20` label is rendered 4 px left of its tick position to prevent overlap with the adjacent `+40` label (both are 18 px wide but the bar pitch is only 14 px).  
+- **Bar height:** 3 px thin bar (rows 14–16 of meter zone).  
+- **Value text:** S-unit string below bar (e.g. `S7`, `S9+6`) at rows 18–25.  
+- **BATT voltage:** supply voltage shown at rows 27–34 as `BATT X.XV`; red when < 11.5 V.  
+- **Scale labels:** `S 1 3 5 7 9 +20 +40`. The `+20` label is shifted 6 px left of its tick position so it clears the adjacent `+40` label (both 18 px wide, 14 px pitch).  
 - **Update rate:** via `SDR_UI_UpdateSMeter`, called every 200 ms cycle when menu is closed and not in TX.
 
 ### TX ALC + SWR meter
@@ -235,7 +238,8 @@ Soft limiter C1-smooth at 0.95     y = 1 − 0.0025/(|x|−0.90) for |x|>0.95
 Modulate
   USB/LSB → Hilbert phasing method: 63-tap Hamming Hilbert (Q), matched delay (I)
   AM      → 0.5 + 0.5×audio  (carrier + DSB; no carrier suppression)
-  FM/CW   → audio × 0.7 on I only (basic, no FM phase integration implemented)
+  FM/CW   → audio × 0.7 on I only  ← placeholder only; not true FM modulation
+             (no phase integrator, no deviation control, no pre-emphasis)
   ↓
 FFT accumulate (TX spectrum display)
   ↓
@@ -275,7 +279,7 @@ RX and TX mixers are fed from the **same** 74LVC74 quadrature output. There is n
 
 **Quadrature method:** The 74LVC74 dual D flip-flop is wired as a Johnson (divide-by-4) counter. This produces two outputs with a precise 90° phase relationship from a single 4× clock. No Si5351 phase-offset registers are used for quadrature; this avoids the even-MS\_div constraint and gives better I/Q phase accuracy than the register method.
 
-**Phase coherence:** Because RX and TX share the same LO source, switching between RX and TX requires no Si5351 reprogramming. Only the T/R relay is toggled. The shared LO stays locked throughout.
+**Phase coherence:** RX and TX share the same LO source. In the current single-VFO implementation, switching between RX and TX only requires toggling the T/R relay — the LO frequency does not change. (A future split-frequency or independent RX/TX VFO mode would require reprogramming CLK0 on mode transitions.)
 
 **Programming API:**
 

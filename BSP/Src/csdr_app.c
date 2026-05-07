@@ -145,7 +145,8 @@ static void csdr_handle_keys(void);
 static void csdr_update_waterfall(void);
 static void csdr_refresh_display(void);
 static void menu_apply_cb(void);
-static uint8_t default_zoom_for_mode(SDR_Mode_t m);
+static uint8_t  default_zoom_for_mode(SDR_Mode_t m);
+static uint32_t default_bw_for_mode(SDR_Mode_t m);
 static void csdr_vfo_swap(void);
 static void csdr_vfo_copy_to_b(void);
 /* CAT VFO-B callbacks */
@@ -250,6 +251,7 @@ void CSDR_Init(void)
   DSP_Init(&g_dsp, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
   DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
   AGC_SetSpeed(&g_dsp.agc, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
 
@@ -581,13 +583,15 @@ static void csdr_handle_encoder(void)
       }
       return;
     }
-    g_sdr.mode = (SDR_Mode_t)((g_sdr.mode + 1U) % MODE_COUNT);
+    g_sdr.mode   = (SDR_Mode_t)((g_sdr.mode + 1U) % MODE_COUNT);
+    g_sdr.bw_hz  = default_bw_for_mode(g_sdr.mode);
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
+    DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
     SDR_UI_SetSpecZoom(&g_lcd, default_zoom_for_mode(g_sdr.mode));
     g_sdr.display_dirty = true;
   }
   if (Encoder_GetLongPress(&g_encoder)) {
-    /* Long press: cycle spectrum zoom ±24k → ±12k → ±6k → ±3k → ±24k */
+    /* Long press: cycle spectrum zoom ±24k → ±18k → ±12k → ±6k → ±3k → ±24k */
     uint8_t z = (uint8_t)((SDR_UI_GetSpecZoom() + 1U) % SPEC_ZOOM_COUNT);
     SDR_UI_SetSpecZoom(&g_lcd, z);
   }
@@ -693,8 +697,10 @@ static void csdr_handle_keys(void)
     csdr_apply_band(BPF_BandUp(g_sdr.band_idx));
 
   if (Key_Press(&k_mode)) {
-    g_sdr.mode = (SDR_Mode_t)((g_sdr.mode+1U) % MODE_COUNT);
+    g_sdr.mode  = (SDR_Mode_t)((g_sdr.mode + 1U) % MODE_COUNT);
+    g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
+    DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
     SDR_UI_SetSpecZoom(&g_lcd, default_zoom_for_mode(g_sdr.mode));
     g_sdr.display_dirty = true;
   }
@@ -723,9 +729,9 @@ static void csdr_refresh_display(void)
     g_dsp.fft_ready = false;
 
     float bw_lo_ratio = 0.0f, bw_hi_ratio = 0.0f;
-    if (g_dsp.sample_rate > 0U && g_dsp.bw_hz > 0.0f)
+    if (g_dsp.sample_rate > 0U && g_sdr.bw_hz > 0U)
     {
-      float full = g_dsp.bw_hz / (float)g_dsp.sample_rate;
+      float full = (float)g_sdr.bw_hz / (float)g_dsp.sample_rate;
       float half = full * 0.5f;
       switch (g_sdr.mode)
       {
@@ -781,12 +787,24 @@ static void csdr_refresh_display(void)
 static uint8_t default_zoom_for_mode(SDR_Mode_t m)
 {
   switch (m) {
-    case MODE_CW:            return 3U;  /* ±3k */
+    case MODE_CW:            return 4U;  /* ±3k */
     case MODE_USB:
-    case MODE_LSB:           return 2U;  /* ±6k */
+    case MODE_LSB:           return 3U;  /* ±6k */
     case MODE_AM:
     case MODE_FM:
     default:                 return 0U;  /* ±24k */
+  }
+}
+
+static uint32_t default_bw_for_mode(SDR_Mode_t m)
+{
+  switch (m) {
+    case MODE_AM:  return 6000U;
+    case MODE_FM:  return 15000U;
+    case MODE_USB:
+    case MODE_LSB: return 3000U;
+    case MODE_CW:  return 500U;
+    default:       return 4000U;
   }
 }
 
@@ -803,8 +821,10 @@ static void menu_apply_cb(void)
   if (att != g_sdr.att_db) { PE4302_SetAttn_dB(&g_att, att); g_sdr.att_db = att; }
   if (band != g_sdr.band_idx) csdr_apply_band(band);
   if (mode != (uint8_t)g_sdr.mode) {
-    g_sdr.mode = (SDR_Mode_t)mode;
+    g_sdr.mode  = (SDR_Mode_t)mode;
+    g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
+    DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
   }
   g_sdr.usb_mode = usb;
   if (zoom != SDR_UI_GetSpecZoom()) SDR_UI_SetSpecZoom(&g_lcd, zoom);
@@ -882,7 +902,7 @@ static uint8_t cat_get_active_vfo(void) { return g_sdr.active_vfo; }
 
 /* CAT callbacks */
 static void     cat_set_freq(uint32_t f) { g_sdr.freq_hz=f; DSP_SetFrequency(&g_dsp,csdr_nco_freq(),f,g_sdr.lo_offset_hz,CSDR_AUDIO_SAMPLE_RATE); if(g_sdr.si5351_ok)SI5351_SetQSDFrequency(&g_si5351,f+g_sdr.lo_offset_hz); g_sdr.display_dirty=true; }
-static void     cat_set_mode(uint8_t m)  { g_sdr.mode=(SDR_Mode_t)m; DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE); SDR_UI_SetSpecZoom(&g_lcd,default_zoom_for_mode(g_sdr.mode)); g_sdr.display_dirty=true; }
+static void     cat_set_mode(uint8_t m)  { g_sdr.mode=(SDR_Mode_t)m; DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE); DSP_SetBW(&g_dsp,(float)g_sdr.bw_hz); SDR_UI_SetSpecZoom(&g_lcd,default_zoom_for_mode(g_sdr.mode)); g_sdr.display_dirty=true; }
 static void cat_set_tx(bool tx)
 {
   if (tx == g_sdr.tx_mode) return;  /* no change */
@@ -918,34 +938,12 @@ static void cat_set_volume(uint8_t vol)
 }
 static void     cat_set_nr(bool on)       { g_sdr.nr_on = on; g_sdr.display_dirty = true; }
 static void     cat_set_nb(bool on)       { g_sdr.nb_on = on; g_sdr.display_dirty = true; }
-/* BW lookup tables per mode (Hz) */
-static const uint16_t s_bw_ssb[] = { 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000 };
-static const uint16_t s_bw_cw[]  = {  50,  100,  200,  300,  500,  800, 1000, 1500, 2000 };
-static const uint16_t s_bw_am[]  = { 3000, 4000, 5000, 6000, 8000, 9000, 10000 };
-static const uint16_t s_bw_fm[]  = { 8000, 10000, 12000, 15000 };
-
-static uint32_t bw_snap(uint32_t hz, const uint16_t *tbl, uint8_t n)
-{
-    uint32_t best = tbl[0];
-    uint32_t best_d = (hz >= tbl[0]) ? (hz - tbl[0]) : ((uint32_t)tbl[0] - hz);
-    for (uint8_t i = 1U; i < n; i++) {
-        uint32_t d = (hz >= tbl[i]) ? (hz - tbl[i]) : ((uint32_t)tbl[i] - hz);
-        if (d < best_d) { best_d = d; best = tbl[i]; }
-    }
-    return best;
-}
-
 static void cat_set_bw(uint32_t hz)
 {
-    uint32_t snapped;
-    switch (g_sdr.mode) {
-        case MODE_CW:  snapped = bw_snap(hz, s_bw_cw,  9U);  break;
-        case MODE_AM:  snapped = bw_snap(hz, s_bw_am,  7U);  break;
-        case MODE_FM:  snapped = bw_snap(hz, s_bw_fm,  4U);  break;
-        default:       snapped = bw_snap(hz, s_bw_ssb, 12U); break;
-    }
-    g_sdr.bw_hz = snapped;
-    DSP_SetBW(&g_dsp, (float)snapped);
+    if (hz < 100U)   hz = 100U;
+    if (hz > 24000U) hz = 24000U;
+    g_sdr.bw_hz = hz;
+    DSP_SetBW(&g_dsp, (float)hz);
     g_sdr.display_dirty = true;
 }
 static void     cat_set_agc_fast(bool f)  { g_sdr.agc_fast = f; g_sdr.display_dirty = true; }

@@ -5,14 +5,15 @@
   * @brief   CSDR SDR UI – 8-zone layout 320×240
   *
   *  ┌──────────────────────────────────────────────────┐  Y=0
-  *  │  HEADER  320×18    [RX] ATT:6  Si•  13.9V       │
+  *  │  HEADER  320×18    [RX] ATT:6  13.9V            │
   *  ├──────────┬─────────────────────────┬─────────────┤  Y=18
-  *  │ SBL 60   │  VFO  200×36            │ SBR 60      │
-  *  │ Mode     │  28.564.000             │ RIT  +150   │
-  *  │ VFO A/B  │  RIT+150Hz  1kHz        │ MIC  21     │
+  *  │ SBL 60   │  VFO  200×44            │ SBR 60      │
+  *  │ Mode     │  28.564.000        1kHz  │ RIT  +150   │
+  *  │ VFO A/B  │ A  B:28.564.000   2.7k  │ MIC  21     │
   *  │ NR  NB   ├─────────────────────────┤ DSP  6      │
-  *  │ VOL  78  │  METER  200×46          │ LEN  45     │
-  *  │ SQL   0  │  S▐▐▐▐▐▐░░░  S7 –87dBm │             │
+  *  │ VOL  78  │  METER  200×38          │ LEN  45     │
+  *  │ SQL   0  │  S▐▐▐▐▐▐░░░  S7        │             │
+  *  │          │                         │             │
   *  ├──────────┴─────────────────────────┴─────────────┤  Y=100
   *  │  SPECTRUM  320×68                                │
   *  ├──────────────────────────────────────────────────┤  Y=168
@@ -54,13 +55,13 @@ extern "C" {
 #define VFO_X   60U
 #define VFO_W  200U
 #define VFO_Y   18U
-#define VFO_H   36U
-#define VFO_Y2  54U
+#define VFO_H   44U
+#define VFO_Y2  62U
 
 #define MTR_X   60U
 #define MTR_W  200U
-#define MTR_Y   54U
-#define MTR_H   46U
+#define MTR_Y   62U
+#define MTR_H   38U
 #define MTR_Y2 100U
 
 #define SPEC_X    0U
@@ -68,8 +69,8 @@ extern "C" {
 #define SPEC_Y  100U
 #define SPEC_H   68U
 #define SPEC_Y2 168U
-/* Zoom levels: 0=±24k  1=±12k  2=±6k  3=±3k  (display-only, DSP unchanged) */
-#define SPEC_ZOOM_COUNT  4U
+/* Zoom levels: 0=±24k  1=±18k  2=±12k  3=±6k  4=±3k  (display-only, DSP unchanged) */
+#define SPEC_ZOOM_COUNT  5U
 
 #define WF_X     0U
 #define WF_W   320U

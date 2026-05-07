@@ -407,19 +407,22 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   dsp->mode        = mode;
   dsp->sample_rate = sample_rate;
 
-  float bw_hz;
+  float mode_bw_hz;
   switch (mode)
   {
-    case MODE_AM:  bw_hz = 6000.0f;  break;
-    case MODE_FM:  bw_hz = 15000.0f; break;
+    case MODE_AM:  mode_bw_hz = 6000.0f;  break;
+    case MODE_FM:  mode_bw_hz = 15000.0f; break;
     case MODE_USB:
-    case MODE_LSB: bw_hz = 3000.0f;  break;
-    case MODE_CW:  bw_hz = 500.0f;   break;
-    default:       bw_hz = 4000.0f;  break;
+    case MODE_LSB: mode_bw_hz = 3000.0f;  break;
+    case MODE_CW:  mode_bw_hz = 500.0f;   break;
+    default:       mode_bw_hz = 4000.0f;  break;
   }
-  dsp->bw_hz = bw_hz;
+  /* Never overwrite a caller-set bw_hz — only seed it on first init (bw_hz==0).
+   * The caller is responsible for calling DSP_SetBW() with the desired BW after
+   * this function; that is the sole place that updates dsp->bw_hz. */
+  if (dsp->bw_hz <= 0.0f) dsp->bw_hz = mode_bw_hz;
 
-  float bw_norm = bw_hz / (float)sample_rate;
+  float bw_norm = dsp->bw_hz / (float)sample_rate;
   FIR_Init_LPF(&dsp->fir_i, bw_norm, FIR_MAX_TAPS);
   FIR_Init_LPF(&dsp->fir_q, bw_norm, FIR_MAX_TAPS);
 

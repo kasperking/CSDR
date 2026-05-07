@@ -80,7 +80,7 @@ typedef struct {
   bool        si5351_ok;
   uint8_t     att_db;
   bool        pwr_hold;
-  uint32_t    bw_hz;           /*!< Snapped BW Hz (from mode table)  */
+  uint32_t    bw_hz;           /*!< User-requested BW Hz — always exact, never snapped  */
   int16_t     if_shift_hz;    /*!< IF shift Hz, applied via NCO      */
   bool        display_dirty;
   uint8_t     usb_mode;
