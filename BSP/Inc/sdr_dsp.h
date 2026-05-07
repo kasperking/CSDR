@@ -52,15 +52,17 @@ typedef struct {
   float x1, x2, y1, y2;
 } IIR_Biquad_t;
 
-/** AGC – Automatic Gain Control */
+/** AGC – Automatic Gain Control (peak-hold + hang) */
 typedef struct {
-  float gain;        /*!< Gain hiện tại       */
-  float attack;      /*!< Hằng số tấn công    */
-  float decay;       /*!< Hằng số giảm        */
-  float target;      /*!< Biên độ đích (0-1)  */
-  float max_gain;
-  float min_gain;
-  float level;       /*!< Envelope detector   */
+  float    gain;        /*!< Current gain                   */
+  float    attack;      /*!< Attack coeff  (~1 ms)          */
+  float    decay;       /*!< Release coeff (~1.5 s slow)    */
+  float    target;      /*!< Target output level (0–1)      */
+  float    max_gain;
+  float    min_gain;
+  float    level;       /*!< Peak envelope estimate         */
+  uint32_t hang_timer;  /*!< Samples remaining in hang hold */
+  uint32_t hang_time;   /*!< Hang duration (samples)        */
 } AGC_t;
 
 /** FM Demodulator (phân biệt pha tức thời) */
@@ -89,6 +91,10 @@ typedef struct {
   float        audio_gain;                 /*!< TX audio gain (0..1) */
   FIR_Filter_t fir_audio;                 /*!< TX-private audio LPF (separate from RX) */
   IIR_Biquad_t dc_block;                  /*!< TX-private audio DC blocker (separate from RX) */
+  /* Compressor/limiter – applied after FIR LPF, before modulator */
+  float        comp_env;     /*!< Compressor peak envelope            */
+  float        comp_attack;  /*!< Attack coeff  (~1 ms)               */
+  float        comp_decay;   /*!< Release coeff (~50 ms)              */
 } TX_State_t;
 
 /** Trạng thái DSP toàn bộ */
@@ -102,6 +108,9 @@ typedef struct {
   IIR_Biquad_t dc_block_audio;
   IIR_Biquad_t dc_postmix_i;   /*!< Post-mix DC removal (LO leakage) */
   IIR_Biquad_t dc_postmix_q;
+  /* IQ mismatch correction (Gram-Schmidt, applied after post-mix DC block) */
+  float        iq_g_inv;       /*!< 1/(1+gain_err): Q amplitude scale  */
+  float        iq_p;           /*!< phase_err (rad): Q -= iq_p * I     */
   FM_Demod_t   fm;
   AGC_t        agc;
 
@@ -171,7 +180,11 @@ float IIR_DCBlock_Process(IIR_Biquad_t *f, float x);
 
 /* AGC */
 void  AGC_Init(AGC_t *agc, uint32_t sample_rate);
+void  AGC_SetSpeed(AGC_t *agc, bool fast, uint32_t sample_rate);
 float AGC_Process(AGC_t *agc, float x);
+
+/* IQ correction */
+void  DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad);
 
 /* FFT */
 void  FFT_Hann_Window(float *w, uint16_t n);

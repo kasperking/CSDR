@@ -4,22 +4,21 @@
   * @file    si5351.c
   * @brief   SI5351A Programmable Clock Generator BSP Driver
   *
-  *  Luồng cài đặt tần số (ví dụ 7.1 MHz QSD):
+  *  74LVC74 divide-by-4 quadrature architecture.
+  *  Si5351 outputs a single clock at 4× LO frequency; external hardware
+  *  performs the ÷4 and generates precise 0°/90° I/Q phases.
   *
-  *  1. Tính R_div: r=1 (vì 7.1MHz × 1 × 90 = 639MHz ∈ [600,900] MHz)
-  *  2. Tính MS_div: 90 (chẵn, ≤127 để fit thanh ghi phase offset 7-bit)
-  *  3. Tính VCO_A: 7,100,000 × 90 = 639,000,000 Hz
-  *  4. Tính PLL_A params: 639,000,000 / 25,000,000 = 25 + 14/25
-  *     P3=25, b=14, P2=128×14-25×floor(1792/25)=1792-1775=17, P1=2759
-  *  5. Ghi PLL_A (Reg 26-33)
-  *  6. Ghi MS0 (Reg 42-49): P1=128×90-512=11008, P2=0, P3=1, R_DIV=0
-  *  7. Ghi MS1 (Reg 50-57): cùng giá trị MS0
-  *  8. Phase offset CLK0 (Reg 165) = 0
-  *  9. Phase offset CLK1 (Reg 166) = 90 (= MS_div) → lệch 90°
-  * 10. CLK_CTL0 (Reg 16) = MS0_SRC=PLLA, CLK_SRC=MS, IDRV=8mA = 0x0F
-  * 11. CLK_CTL1 (Reg 17) = cùng 0x0F
-  * 12. Reset PLL_A (Reg 177 |= 0x04)
-  * 13. Enable CLK0, CLK1 (Reg 3 = ~0x03 = 0xFC)
+  *  Frequency programming example (7.1 MHz RF → 28.4 MHz CLK0):
+  *
+  *  1. clk_freq = 7,100,000 × 4 = 28,400,000 Hz
+  *  2. MS_div = 750 MHz / 28.4 MHz ≈ 26  (any integer, even not required)
+  *  3. VCO_A = 28,400,000 × 26 = 738,400,000 Hz  ∈ [600,900] MHz
+  *  4. CalcPLL: 738.4 MHz / 25 MHz = 29 + r/25 → P1, P2, P3
+  *  5. Write PLL_A (Reg 26-33)
+  *  6. Write MS0 (Reg 42-49): P1 = 128×26-512 = 2816, P2=0, P3=1
+  *  7. CLK0_CTRL (Reg 16) = PLLA, MS src, 8mA (no phase offset)
+  *  8. Reset PLL_A (Reg 177 |= 0x04)
+  *  9. Enable CLK0 only (Reg 3 = 0xFE)  – CLK1 remains powered down
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -203,20 +202,17 @@ void SI5351_CalcMS(uint32_t ms_div, SI5351_MSParams_t *params)
 }
 
 /**
-  * @brief  Tính MS_div và R_div tối ưu cho tần số output mong muốn.
+  * @brief  Compute optimal MS_div and R_div for the requested output frequency.
   *
-  *  Thuật toán:
-  *   1. Thử R_div từ 1, 2, 4, ... 128
-  *   2. Với mỗi R_div: f_eff = freq_hz × R_div_value (tần số "hiệu dụng" vào MS)
-  *   3. Tính MS_div = VCO_TARGET / f_eff, làm tròn xuống số chẵn gần nhất
-  *   4. Kiểm tra: MS_div ≥ 6, MS_div ≤ 127, VCO = f_eff × MS_div ∈ [600,900] MHz
-  *   5. Lấy R_div nhỏ nhất thỏa mãn
+  *  Even-MS_div constraint removed: the external 74LVC74 ÷4 generates
+  *  quadrature in hardware, so any integer MS_div is valid.
+  *  Max MS_div raised to 2047 (18-bit P1 field limit of the Si5351).
   *
-  * @param  freq_hz     Tần số output mong muốn (Hz)
-  * @param  xtal_hz     Tần số XTAL (Hz)
-  * @param  r_div_code  [out] Mã R_DIV (SI5351_R_DIV_x)
-  * @param  vco_hz      [out] Tần số VCO_A thực tế sẽ dùng
-  * @retval uint32_t    MS_div (0 nếu không tìm được)
+  * @param  freq_hz     Desired output frequency (Hz) – already ×4 for LO use
+  * @param  xtal_hz     XTAL frequency (Hz)
+  * @param  r_div_code  [out] R_DIV code (SI5351_R_DIV_x)
+  * @param  vco_hz      [out] Actual VCO_A frequency to be programmed
+  * @retval uint32_t    MS_div (0 if no valid combination found)
   */
 uint32_t SI5351_CalcMSDiv(uint32_t freq_hz, uint32_t xtal_hz,
                             uint8_t *r_div_code, uint32_t *vco_hz)
@@ -226,28 +222,25 @@ uint32_t SI5351_CalcMSDiv(uint32_t freq_hz, uint32_t xtal_hz,
 
   for (uint8_t ri = 0U; ri < 8U; ri++)
   {
-    uint32_t f_eff = freq_hz * r_vals[ri];   /* Hz sau khi đảo R_div */
+    uint32_t f_eff = freq_hz * r_vals[ri];
+    if (f_eff == 0U) { continue; }
 
-    /* Tính MS_div tại VCO_TARGET */
+    /* MS_div nearest to VCO_TARGET */
     uint32_t ms = SI5351_VCO_TARGET_HZ / f_eff;
 
-    /* Làm tròn xuống số chẵn gần nhất (yêu cầu cho quadrature) */
-    if (ms % 2U != 0U) { ms--; }
-
-    /* Kiểm tra ràng buộc */
-    if (ms < 6U)   { ms = 6U;  if (ms % 2U != 0U) { ms = 8U;  } }
-    if (ms > 127U) { continue; }
+    /* Clamp to hardware limits (min=6, max=2047 for 18-bit integer P1) */
+    if (ms < 6U)    { ms = 6U;    }
+    if (ms > 2047U) { continue;   }
 
     uint32_t vco = f_eff * ms;
     if (vco < SI5351_VCO_MIN_HZ || vco > SI5351_VCO_MAX_HZ) { continue; }
 
-    /* Tìm được R_div phù hợp */
     *r_div_code = ri;
     *vco_hz     = vco;
     return ms;
   }
 
-  /* Không tìm được → fallback: R_div=128, MS_div=6 */
+  /* Fallback: R_div=128, MS_div=6 */
   *r_div_code = SI5351_R_DIV_128;
   *vco_hz     = freq_hz * 128U * 6U;
   return 6U;
@@ -329,13 +322,14 @@ HAL_StatusTypeDef SI5351_Init(SI5351_Handle_t *si,
 }
 
 /**
-  * @brief  Cài tần số QSD: CLK0 = 0°, CLK1 = 90°.
+  * @brief  Set RX LO frequency.
   *
-  *  Đây là hàm chính cho SDR receiver.
-  *  Cả hai CLK dùng PLL_A và cùng integer MS divider.
+  *  Programs CLK0 at freq_hz × 4 on PLL_A.
+  *  CLK1 is not used (74LVC74 external hardware generates 90° phase).
+  *  No phase-offset register is written.
   *
   * @param  si       Handle
-  * @param  freq_hz  Tần số LO (= tần số thu) Hz
+  * @param  freq_hz  RF LO frequency (Hz) – function multiplies by 4 internally
   */
 HAL_StatusTypeDef SI5351_SetQSDFrequency(SI5351_Handle_t *si, uint32_t freq_hz)
 {
@@ -344,86 +338,76 @@ HAL_StatusTypeDef SI5351_SetQSDFrequency(SI5351_Handle_t *si, uint32_t freq_hz)
 
   HAL_StatusTypeDef ret;
 
-  /* ── 1. Tính tham số ───────────────────────────────────── */
+  /* ── 1. CLK output frequency = RF LO × 4 ─────────────── */
+  uint32_t clk_freq = freq_hz * 4U;
+
+  /* ── 2. Compute PLL_A / MS0 parameters ───────────────── */
   uint8_t  r_div_code;
   uint32_t vco_hz;
-  uint32_t ms_div = SI5351_CalcMSDiv(freq_hz, si->xtal_hz, &r_div_code, &vco_hz);
+  uint32_t ms_div = SI5351_CalcMSDiv(clk_freq, si->xtal_hz, &r_div_code, &vco_hz);
   if (ms_div == 0U) { return HAL_ERROR; }
 
-  /* ── 2. Tắt CLK0, CLK1 tạm thời ──────────────────────── */
+  /* ── 3. Disable outputs while reprogramming ──────────── */
   ret = SI5351_WriteReg(si, SI5351_REG_OUTPUT_EN_CTRL, 0xFFU);
   if (ret != HAL_OK) { return ret; }
 
-  /* ── 3. Ghi PLL_A ─────────────────────────────────────── */
+  /* ── 4. Write PLL_A ───────────────────────────────────── */
   SI5351_MSParams_t pll_params;
   SI5351_CalcPLL(si->xtal_hz, vco_hz, &pll_params);
   ret = SI5351_WriteMS(si, SI5351_REG_MSNA_BASE, &pll_params, 0U);
   if (ret != HAL_OK) { return ret; }
 
-  /* ── 4. Ghi MS0 (CLK0 divider) ────────────────────────── */
+  /* ── 5. Write MS0 (CLK0 divider) ─────────────────────── */
   SI5351_MSParams_t ms_params;
   SI5351_CalcMS(ms_div, &ms_params);
   ret = SI5351_WriteMS(si, SI5351_REG_MS0_BASE, &ms_params, r_div_code);
   if (ret != HAL_OK) { return ret; }
 
-  /* ── 5. Ghi MS1 (CLK1 divider – cùng giá trị) ─────────── */
-  ret = SI5351_WriteMS(si, SI5351_REG_MS1_BASE, &ms_params, r_div_code);
-  if (ret != HAL_OK) { return ret; }
-
-  /* ── 6. Phase offset: CLK0=0°, CLK1=90° ──────────────── */
-  /*  Phase_reg = MS_div → lệch đúng 90° (xem header)       */
+  /* ── 6. CLK0 phase offset = 0 (no software quadrature) ── */
   ret = SI5351_WriteReg(si, SI5351_REG_CLK0_PHOFF, 0U);
   if (ret != HAL_OK) { return ret; }
-  ret = SI5351_WriteReg(si, SI5351_REG_CLK1_PHOFF, (uint8_t)(ms_div & 0x7FU));
+
+  /* ── 7. CLK0 control: PLL_A source, MS divider, 8 mA ─── */
+  ret = SI5351_WriteReg(si, SI5351_REG_CLK0_CTRL,
+                         (uint8_t)(SI5351_CLK_SRC_MS | SI5351_CLK_IDRV_8MA));
   if (ret != HAL_OK) { return ret; }
 
-  /* ── 7. CLK control: PLLA, MS src, 8mA ───────────────── */
-  uint8_t clk_ctl = (uint8_t)(SI5351_CLK_SRC_MS | SI5351_CLK_IDRV_8MA);
-  /* CLK0: không invert */
-  ret = SI5351_WriteReg(si, SI5351_REG_CLK0_CTRL, clk_ctl);
-  if (ret != HAL_OK) { return ret; }
-  /* CLK1: không invert */
-  ret = SI5351_WriteReg(si, SI5351_REG_CLK1_CTRL, clk_ctl);
-  if (ret != HAL_OK) { return ret; }
-
-  /* ── 8. Reset PLL_A (cần sau khi thay VCO) ─────────────── */
+  /* ── 8. Reset PLL_A ───────────────────────────────────── */
   ret = SI5351_WriteReg(si, SI5351_REG_PLL_RESET, SI5351_PLLA_RESET);
   if (ret != HAL_OK) { return ret; }
 
-  HAL_Delay(1U);   /* Chờ PLL lock */
+  HAL_Delay(1U);   /* Wait for PLL lock */
 
-  /* ── 9. Enable CLK0 và CLK1 ──────────────────────────── */
-  /* Reg3: 0=enable, keep CLK2-7 disabled → 0xFC */
-  ret = SI5351_WriteReg(si, SI5351_REG_OUTPUT_EN_CTRL, 0xFCU);
+  /* ── 9. Enable CLK0 only; CLK1-7 disabled → 0xFE ───────
+   *  Reg3: bit=0 enables, bit=1 disables.
+   *  0xFE = 1111 1110: CLK0 on, CLK1-7 off.
+   *  CLK2 (TX LO) is re-enabled by SI5351_SetQSEFrequency()
+   *  and disabled by SI5351_EnableOutput() before this call. */
+  ret = SI5351_WriteReg(si, SI5351_REG_OUTPUT_EN_CTRL, 0xFEU);
   if (ret != HAL_OK) { return ret; }
 
-  /* Cập nhật trạng thái */
-  si->vco_a_hz = vco_hz;
-  si->freq_hz  = freq_hz;
+  /* Update state */
+  si->vco_a_hz            = vco_hz;
+  si->freq_hz             = freq_hz;
   si->clk[0].enabled      = true;
-  si->clk[0].freq_hz      = freq_hz;
+  si->clk[0].freq_hz      = freq_hz;   /* store RF freq, not ×4 */
   si->clk[0].phase_offset = 0U;
   si->clk[0].r_div_code   = r_div_code;
   si->clk[0].ms_div       = ms_div;
-  si->clk[1].enabled      = true;
-  si->clk[1].freq_hz      = freq_hz;
-  si->clk[1].phase_offset = (uint8_t)(ms_div & 0x7FU);
-  si->clk[1].r_div_code   = r_div_code;
-  si->clk[1].ms_div       = ms_div;
+  si->clk[1].enabled      = false;     /* CLK1 unused */
 
   /* USER CODE END SI5351_SetQSDFreq_0 */
   return HAL_OK;
 }
 
 /**
-  * @brief  Cài tần số QSE trên CLK2 (TX exciter).
+  * @brief  Set TX LO frequency.
   *
-  *  CLK2 dùng PLL_B (độc lập với PLL_A → CLK0/1),
-  *  không cần phase quadrature (TX I/Q được tạo bởi DAC WM8731).
-  *  CLK2 chỉ là LO đơn cho upconversion.
+  *  Programs CLK2 at freq_hz × 4 on PLL_B (independent of PLL_A / CLK0).
+  *  External 74LVC74 divides by 4 and generates TX I/Q LO phases.
   *
   * @param  si       Handle
-  * @param  freq_hz  Tần số TX LO (Hz)
+  * @param  freq_hz  TX LO frequency (Hz) – function multiplies by 4 internally
   */
 HAL_StatusTypeDef SI5351_SetQSEFrequency(SI5351_Handle_t *si, uint32_t freq_hz)
 {
@@ -432,43 +416,47 @@ HAL_StatusTypeDef SI5351_SetQSEFrequency(SI5351_Handle_t *si, uint32_t freq_hz)
 
   HAL_StatusTypeDef ret;
 
+  /* ── 1. CLK2 output frequency = TX LO × 4 ─────────────── */
+  uint32_t clk_freq = freq_hz * 4U;
+
   uint8_t  r_div_code;
   uint32_t vco_hz;
-  uint32_t ms_div = SI5351_CalcMSDiv(freq_hz, si->xtal_hz, &r_div_code, &vco_hz);
+  uint32_t ms_div = SI5351_CalcMSDiv(clk_freq, si->xtal_hz, &r_div_code, &vco_hz);
   if (ms_div == 0U) { return HAL_ERROR; }
 
-  /* PLL_B */
+  /* ── 2. Write PLL_B ───────────────────────────────────── */
   SI5351_MSParams_t pll_params;
   SI5351_CalcPLL(si->xtal_hz, vco_hz, &pll_params);
   ret = SI5351_WriteMS(si, SI5351_REG_MSNB_BASE, &pll_params, 0U);
   if (ret != HAL_OK) { return ret; }
 
-  /* MS2 */
+  /* ── 3. Write MS2 (CLK2 divider) ─────────────────────── */
   SI5351_MSParams_t ms_params;
   SI5351_CalcMS(ms_div, &ms_params);
   ret = SI5351_WriteMS(si, SI5351_REG_MS2_BASE, &ms_params, r_div_code);
   if (ret != HAL_OK) { return ret; }
 
-  /* CLK2 control: PLLB, MS src, 8mA */
+  /* ── 4. CLK2 control: PLL_B source, MS divider, 8 mA ─── */
   ret = SI5351_WriteReg(si, SI5351_REG_CLK2_CTRL,
                          (uint8_t)(SI5351_CLK_MS_SRC_PLLB | SI5351_CLK_SRC_MS |
                                    SI5351_CLK_IDRV_8MA));
   if (ret != HAL_OK) { return ret; }
 
-  /* Reset PLL_B */
+  /* ── 5. Reset PLL_B ───────────────────────────────────── */
   ret = SI5351_WriteReg(si, SI5351_REG_PLL_RESET, SI5351_PLLB_RESET);
   if (ret != HAL_OK) { return ret; }
 
   HAL_Delay(1U);
 
-  /* Enable CLK0, CLK1, CLK2 → Reg3 = 0xF8 */
-  uint8_t en_mask = si->clk[0].enabled ? 0xFCU : 0xFFU;
-  en_mask &= ~(1U << 2U);   /* Enable CLK2 */
+  /* ── 6. Enable CLK0 (if active) + CLK2; CLK1 stays off ─ */
+  /* 0xFEU = only CLK0 on; clear bit2 to also enable CLK2   */
+  uint8_t en_mask = si->clk[0].enabled ? 0xFEU : 0xFFU;
+  en_mask &= ~(uint8_t)(1U << 2U);
   ret = SI5351_WriteReg(si, SI5351_REG_OUTPUT_EN_CTRL, en_mask);
   if (ret != HAL_OK) { return ret; }
 
   si->clk[2].enabled    = true;
-  si->clk[2].freq_hz    = freq_hz;
+  si->clk[2].freq_hz    = freq_hz;   /* store TX RF freq, not ×4 */
   si->clk[2].r_div_code = r_div_code;
   si->clk[2].ms_div     = ms_div;
 

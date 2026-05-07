@@ -90,14 +90,14 @@ static uint16_t swr_color(uint16_t swr_x100)
     return SC_ALARM;
 }
 
-/* Map SWR value → Y pixel in plot area.  1.0=top, 5.0=bottom. */
+/* Map SWR value → Y pixel in plot area.  1.0=bottom, 5.0=top. */
 static uint16_t swr_to_y(uint16_t swr_x100)
 {
     float swr = (float)swr_x100 * 0.01f;
     if (swr < SC_SWR_MIN) swr = SC_SWR_MIN;
     if (swr > SC_SWR_MAX) swr = SC_SWR_MAX;
     float norm = (swr - SC_SWR_MIN) / (SC_SWR_MAX - SC_SWR_MIN);
-    return (uint16_t)(SC_PLT_Y + (uint16_t)(norm * (float)(SC_PLT_H - 1U)));
+    return (uint16_t)(SC_PLT_Y2 - 1U - (uint16_t)(norm * (float)(SC_PLT_H - 1U)));
 }
 
 /* ════════════════════════════════════════════════
@@ -179,8 +179,8 @@ static void scan_draw_zone(ST7789_Handle_t *lcd,
     uint16_t    lbl_y0[6];
     const char *lbl_str[6] = {"1.0", "1.5", "2.0", "3.0", "4.0", "5.0"};
     uint16_t    lbl_col[6] = {SC_GOOD, SC_WARN, SC_WARN, SC_BAD, SC_ALARM, SC_ALARM};
-    uint16_t    lbl_gy[6]  = {SC_PLT_Y, grid_y[0], grid_y[1],
-                               grid_y[2], grid_y[3], SC_PLT_Y2 - 1U};
+    uint16_t    lbl_gy[6]  = {SC_PLT_Y2 - 1U, grid_y[0], grid_y[1],
+                               grid_y[2], grid_y[3], SC_PLT_Y};
     for (int l = 0; l < 6; l++) {
         int16_t y0 = (int16_t)lbl_gy[l] - (int16_t)(Font6x8.height / 2U);
         if (y0 < (int16_t)SC_PLT_Y)                         y0 = (int16_t)SC_PLT_Y;

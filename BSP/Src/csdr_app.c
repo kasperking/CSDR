@@ -230,6 +230,8 @@ void CSDR_Init(void)
   DSP_Init(&g_dsp, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
+  AGC_SetSpeed(&g_dsp.agc, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
 
   /* Encoder */
   Encoder_Init(&g_encoder, &htim2);
@@ -533,6 +535,7 @@ static void csdr_handle_encoder(void)
             g_sdr.mic_gain        = cp.mic_gain;
             g_sdr.smeter_offset_db= cp.smeter_offset_db;
             g_sdr.lo_offset_hz    = cp.lo_offset_hz;
+            DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
             if (g_sdr.si5351_ok) {
               g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
                 SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
@@ -577,23 +580,21 @@ static void csdr_handle_keys(void)
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty = true;
   }
 
-  /* F1: menu UP / ATT+ (hold-repeat while held) */
+  /* F1: menu UP / Volume Down (hold-repeat while held) */
   if (Key_PressOrRepeat(&k_f1)) {
     if (Menu_IsOpen(&g_menu)) Menu_Up(&g_menu);
     else {
-      PE4302_IncAttn(&g_att);
-      g_sdr.att_db = g_att.current_atten_db;
-      g_sdr.display_dirty = true;
+      uint8_t v = (g_sdr.volume >= 2U) ? (g_sdr.volume - 2U) : 0U;
+      cat_set_volume(v);
     }
   }
 
-  /* F2: menu DOWN / ATT- (hold-repeat while held) */
+  /* F2: menu DOWN / Volume Up (hold-repeat while held) */
   if (Key_PressOrRepeat(&k_f2)) {
     if (Menu_IsOpen(&g_menu)) Menu_Down(&g_menu);
     else {
-      PE4302_DecAttn(&g_att);
-      g_sdr.att_db = g_att.current_atten_db;
-      g_sdr.display_dirty = true;
+      uint8_t v = (g_sdr.volume <= 98U) ? (g_sdr.volume + 2U) : 100U;
+      cat_set_volume(v);
     }
   }
 
@@ -628,6 +629,7 @@ static void csdr_handle_keys(void)
             g_sdr.mic_gain        = cp.mic_gain;
             g_sdr.smeter_offset_db= cp.smeter_offset_db;
             g_sdr.lo_offset_hz    = cp.lo_offset_hz;
+            DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
             if (g_sdr.si5351_ok) {
               g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
                 SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
@@ -658,6 +660,7 @@ static void csdr_handle_keys(void)
   if (Key_Press(&k_mode)) {
     g_sdr.mode = (SDR_Mode_t)((g_sdr.mode+1U) % MODE_COUNT);
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
+    SDR_UI_SetSpecZoom(&g_lcd, default_zoom_for_mode(g_sdr.mode));
     g_sdr.display_dirty = true;
   }
 
@@ -757,6 +760,7 @@ static void menu_apply_cb(void)
   Menu_SaveToSDR(&g_menu, &agc, &nb, &nr, &rit,
                   &vol, &sq, &step, &att, &band, &mode, &usb, &zoom);
   g_sdr.agc_fast = agc; g_sdr.nb_on = nb; g_sdr.nr_on = nr;
+  AGC_SetSpeed(&g_dsp.agc, agc, CSDR_AUDIO_SAMPLE_RATE);
   g_sdr.rit_hz = rit;   cat_set_volume(vol); g_sdr.squelch = sq;
   g_sdr.step = (FreqStep_t)step;
   if (att != g_sdr.att_db) { PE4302_SetAttn_dB(&g_att, att); g_sdr.att_db = att; }
@@ -793,8 +797,9 @@ static void cat_set_tx(bool tx)
     if (g_sdr.si5351_ok) {
       SI5351_EnableOutput(&g_si5351, 2U, false);     /* CLK2 OFF */
       g_sdr.qse_on = false;
-      /* SI5351_SetQSEFrequency reprograms PLL_A (shared with QSD CLK0/CLK1).
-       * Re-apply QSD frequency to restore CLK0/CLK1 to correct output. */
+      /* Re-apply RX LO to ensure CLK0 (4× RF) is correctly programmed
+       * after the TX sequence.  PLL_A (CLK0) and PLL_B (CLK2) are
+       * independent, but an explicit reset guarantees a clean RX lock. */
       SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
     }
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);  /* Ensure HP unmuted */

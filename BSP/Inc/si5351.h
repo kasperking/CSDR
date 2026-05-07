@@ -4,27 +4,27 @@
   * @file    si5351.h
   * @brief   SI5351A Programmable Clock Generator BSP Driver
   *
-  *  Ứng dụng trong SDR:
-  *   - CLK0 (0°)  → LO I-channel → QSD Tayloe detector kênh I
-  *   - CLK1 (90°) → LO Q-channel → QSD Tayloe detector kênh Q
-  *   - CLK2        → QSE (Quadrature Sampling Exciter) TX LO, hoặc disable
+  *  Hardware architecture (74LVC74 divide-by-4 quadrature):
+  *   - CLK0  → 4 × RF LO → external 74LVC74 ÷4 → I and Q LO phases (0°/90°)
+  *   - CLK1  → unused (powered down)
+  *   - CLK2  → 4 × TX LO → external 74LVC74 ÷4 → TX I/Q mixer LO
   *
-  *  Nguyên lý tạo quadrature 90°:
-  *   • CLK0 và CLK1 dùng chung PLL_A
-  *   • Cùng integer MS_div (chia đều để giữ phase coherence)
-  *   • Thanh ghi phase offset CLK1: Reg166 = MS_div → lệch 90°
-  *   • Công thức: phase_shift = Reg166 × T_VCO/4
-  *     → Reg166 = MS_div → phase = MS_div × T_VCO/4 = T_out/4 = 90°
+  *  The 74LVC74 dual D flip-flop generates precise 90° quadrature from a
+  *  single 4× clock with no software phase-offset registers involved.
+  *  This gives better I/Q phase accuracy than the Si5351 register method
+  *  and relaxes the even-MS_div constraint.
   *
-  *  Ràng buộc:
-  *   • VCO_A phải trong [600 MHz, 900 MHz]
-  *   • MS_div phải là số chẵn (integer, ≤127 cho phase offset 7-bit)
-  *   • Nếu f_out quá thấp: dùng thêm R_div (÷1,2,4,...,128) trước output
+  *  LO programming rule:
+  *   SI5351_SetQSDFrequency(si, rf_hz)  → CLK0 = rf_hz × 4  (RX LO)
+  *   SI5351_SetQSEFrequency(si, tx_hz)  → CLK2 = tx_hz × 4  (TX LO)
+  *   Callers always pass the RF/TX frequency; the ×4 is internal.
   *
-  *  Địa chỉ I2C: 0x60 (7-bit), FS=GND → 0xC0 (8-bit write)
-  *  XTAL: 25MHz (mặc định – cấu hình được)
+  *  Constraints:
+  *   • VCO_A in [600 MHz, 900 MHz]
+  *   • MS_div: any integer ≥ 6, ≤ 2047 (even-only constraint removed)
+  *   • R_div (÷1..÷128) used for very low CLK frequencies
   *
-  *  Sử dụng chung I2C1 với WM8731 (addr khác nhau, không xung đột)
+  *  I2C: 0x60 (7-bit), shared with WM8731
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -159,10 +159,10 @@ HAL_StatusTypeDef SI5351_Init(SI5351_Handle_t *si,
                                uint8_t i2c_addr,
                                uint32_t xtal_hz);
 
-/** Cài tần số QSD: CLK0=0°, CLK1=90° (cho I/Q SDR receiver) */
+/** Set RX LO: programs CLK0 at freq_hz × 4 for 74LVC74 ÷4 quadrature. CLK1 unused. */
 HAL_StatusTypeDef SI5351_SetQSDFrequency(SI5351_Handle_t *si, uint32_t freq_hz);
 
-/** Cài tần số QSE: CLK2 (cho TX exciter, có thể cùng hoặc khác tần số) */
+/** Set TX LO: programs CLK2 at freq_hz × 4 for 74LVC74 ÷4 quadrature (PLL_B). */
 HAL_StatusTypeDef SI5351_SetQSEFrequency(SI5351_Handle_t *si, uint32_t freq_hz);
 
 /** Bật/tắt từng CLK output */

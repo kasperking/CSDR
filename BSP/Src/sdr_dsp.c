@@ -8,7 +8,7 @@
   *   - NCO   : Numerically Controlled Oscillator (32-bit acc, 1024-entry LUT)
   *   - FIR   : Lowpass filter, Hann-windowed sinc, circular buffer, 64 taps
   *   - IIR   : DC blocker  H(z)=(1-z^-1)/(1-0.995*z^-1)
-  *   - AGC   : Envelope detector + gain control, attack 10ms / decay 100ms
+  *   - AGC   : Peak-hold + hang AGC, 1ms attack; slow=500ms hang/1.5s decay, fast=100ms hang/300ms decay
   *   - FFT   : Radix-2 DIT, N=256, Hann window
   *   - DEMOD : AM, FM (atan2 differentiator), USB, LSB, CW (BFO 700Hz)
   *
@@ -169,24 +169,49 @@ float IIR_DCBlock_Process(IIR_Biquad_t *f, float x)
 void AGC_Init(AGC_t *agc, uint32_t sample_rate)
 {
   /* USER CODE BEGIN AGC_Init_0 */
-  agc->gain     = 1.0f;
-  agc->target   = 0.5f;
-  agc->max_gain = 1000.0f;
-  agc->min_gain = 0.001f;
-  agc->level    = 0.0f;
-  agc->attack   = expf(-1.0f / (0.010f * (float)sample_rate));
-  agc->decay    = expf(-1.0f / (0.100f * (float)sample_rate));
+  agc->gain       = 1.0f;
+  agc->target     = 0.5f;
+  agc->max_gain   = 1000.0f;
+  agc->min_gain   = 0.001f;
+  agc->level      = 0.0f;
+  agc->hang_timer = 0U;
+  /* Default to slow constants; caller overrides via AGC_SetSpeed() */
+  agc->attack    = expf(-1.0f / (0.001f * (float)sample_rate));  /* 1 ms   */
+  agc->decay     = expf(-1.0f / (1.500f * (float)sample_rate));  /* 1.5 s  */
+  agc->hang_time = (uint32_t)(0.500f * (float)sample_rate);      /* 500 ms */
   /* USER CODE END AGC_Init_0 */
+}
+
+/* Set AGC time constants.  Call once after AGC_Init and whenever agc_fast changes. */
+void AGC_SetSpeed(AGC_t *agc, bool fast, uint32_t sample_rate)
+{
+  /* USER CODE BEGIN AGC_SetSpeed_0 */
+  agc->attack = expf(-1.0f / (0.001f * (float)sample_rate));   /* 1 ms always */
+  if (fast) {
+    agc->decay     = expf(-1.0f / (0.300f * (float)sample_rate)); /* 300 ms */
+    agc->hang_time = (uint32_t)(0.100f * (float)sample_rate);     /* 100 ms */
+  } else {
+    agc->decay     = expf(-1.0f / (1.500f * (float)sample_rate)); /* 1.5 s  */
+    agc->hang_time = (uint32_t)(0.500f * (float)sample_rate);     /* 500 ms */
+  }
+  /* USER CODE END AGC_SetSpeed_0 */
 }
 
 float AGC_Process(AGC_t *agc, float x)
 {
   /* USER CODE BEGIN AGC_Process_0 */
   float env = fabsf(x);
-  if (env > agc->level)
-    { agc->level = agc->attack * agc->level + (1.0f - agc->attack) * env; }
-  else
-    { agc->level = agc->decay  * agc->level + (1.0f - agc->decay)  * env; }
+  if (env >= agc->level) {
+    /* Attack: signal rising – fast approach, reset hang timer */
+    agc->level      = agc->attack * agc->level + (1.0f - agc->attack) * env;
+    agc->hang_timer = agc->hang_time;
+  } else if (agc->hang_timer > 0U) {
+    /* Hang: hold level constant – no pumping between syllables */
+    agc->hang_timer--;
+  } else {
+    /* Decay: slow release after hang expires */
+    agc->level = agc->decay * agc->level;
+  }
   if (agc->level > 1e-10f) { agc->gain = agc->target / agc->level; }
   if (agc->gain > agc->max_gain) { agc->gain = agc->max_gain; }
   if (agc->gain < agc->min_gain) { agc->gain = agc->min_gain; }
@@ -330,6 +355,10 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   IIR_DCBlock_Init(&dsp->dc_postmix_i);
   IIR_DCBlock_Init(&dsp->dc_postmix_q);
 
+  /* IQ correction: identity until DSP_SetIQCorr() is called */
+  dsp->iq_g_inv = 1.0f;
+  dsp->iq_p     = 0.0f;
+
   AGC_Init(&dsp->agc, sample_rate);
   FFT_Hann_Window(dsp->fft_window, DSP_FFT_SIZE);
 
@@ -350,6 +379,9 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->tx.audio_gain   = 1.0f;
   FIR_Init_LPF(&dsp->tx.fir_audio, 4000.0f / (float)sample_rate, 32U);
   IIR_DCBlock_Init(&dsp->tx.dc_block);
+  dsp->tx.comp_env    = 0.0f;
+  dsp->tx.comp_attack = expf(-1.0f / (0.001f * (float)sample_rate)); /* 1 ms  */
+  dsp->tx.comp_decay  = expf(-1.0f / (0.050f * (float)sample_rate)); /* 50 ms */
 
   /* CW BFO phase increment: 700 Hz, sample-rate-derived */
   dsp->cw_bfo_inc  = (uint32_t)(int64_t)(700.0 / (double)sample_rate * 4294967296.0);
@@ -413,6 +445,20 @@ void DSP_SetBW(DSP_State_t *dsp, float bw_hz)
   FIR_Init_LPF(&dsp->fir_q, bw_norm, FIR_MAX_TAPS);
 }
 
+/* Load IQ calibration values into DSP state.
+ * gain_millis: Q amplitude error × 1000  (-50 → Q is 5% weak, +50 → Q is 5% strong)
+ * phase_mrad : phase error in milliradians (-50..+50, ≈ ±2.9°)
+ * Transparent when both are zero (identity correction). */
+void DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad)
+{
+  /* USER CODE BEGIN DSP_SetIQCorr_0 */
+  float g      = (float)gain_millis * 0.001f;    /* fractional gain error  */
+  float p      = (float)phase_mrad  * 0.001f;    /* phase error, radians   */
+  dsp->iq_g_inv = 1.0f / (1.0f + g);             /* Q amplitude correction */
+  dsp->iq_p     = p;                              /* Q phase correction     */
+  /* USER CODE END DSP_SetIQCorr_0 */
+}
+
 /* ============================================================
  *  DSP_Process – RX demodulation pipeline
  *
@@ -454,6 +500,12 @@ void DSP_Process(DSP_State_t *dsp,
      *        that survives the pre-mix blocker and would appear as center spike */
     mix_i = IIR_DCBlock_Process(&dsp->dc_postmix_i, mix_i);
     mix_q = IIR_DCBlock_Process(&dsp->dc_postmix_q, mix_q);
+
+    /* ── 3c. IQ mismatch correction (Gram-Schmidt orthogonalization).
+     *        Corrects QSD amplitude and phase imbalance to improve image rejection.
+     *        Identity when iq_g_inv=1.0 and iq_p=0.0 (uncalibrated default).
+     *        Cost: 2 multiplies + 1 subtract per sample. */
+    mix_q = (mix_q - dsp->iq_p * mix_i) * dsp->iq_g_inv;
 
     /* ── 4. FFT feed BEFORE FIR – full ±Fs/2 = ±24kHz bandscope */
     if (dsp->fft_fill < DSP_FFT_SIZE)
@@ -631,6 +683,41 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
      *       equal spectral amplitude entering both I (delay) and Q (Hilbert)
      *       branches. Do NOT add another filter after the modulator. */
     float audio_lp = FIR_Process(&dsp->tx.fir_audio, audio);
+
+    /* ── 4b. TX compressor + soft limiter (prevent overdrive and splatter).
+     *
+     *   Stage 1 – Peak-tracking compressor (4:1 above 0.70 threshold).
+     *             Attack 1 ms / release 50 ms.  Transparent below threshold,
+     *             gently reduces gain when speech peaks exceed it.
+     *
+     *   Stage 2 – C1-smooth soft limiter for residual peaks.
+     *             Linear to 0.95; above that asymptotically approaches 1.0
+     *             with continuous slope (no hard-clip distortion on the knee).
+     *             Formula:  y = 1 − 0.0025 / (|x| − 0.90)   for |x| > 0.95
+     *             Verified C1 at knee: dy/da|_{a=0.95} = 1.0 = incoming slope. */
+    {
+      float env = fabsf(audio_lp);
+      if (env > dsp->tx.comp_env)
+        dsp->tx.comp_env = dsp->tx.comp_attack * dsp->tx.comp_env
+                          + (1.0f - dsp->tx.comp_attack) * env;
+      else
+        dsp->tx.comp_env = dsp->tx.comp_decay  * dsp->tx.comp_env
+                          + (1.0f - dsp->tx.comp_decay)  * env;
+
+      /* 4:1 compression above 0.70 */
+      if (dsp->tx.comp_env > 0.70f) {
+        float excess     = dsp->tx.comp_env - 0.70f;
+        float compressed = 0.70f + excess * 0.25f;
+        audio_lp *= compressed / dsp->tx.comp_env;
+      }
+
+      /* Soft limiter for residual peaks: C1-continuous at knee = 0.95 */
+      float a = fabsf(audio_lp);
+      if (a > 0.95f) {
+        float s  = (audio_lp >= 0.0f) ? 1.0f : -1.0f;
+        audio_lp = s * (1.0f - 0.0025f / (a - 0.90f));
+      }
+    }
 
     /* ── 5. Modulate */
     float tx_i = 0.0f, tx_q = 0.0f;
