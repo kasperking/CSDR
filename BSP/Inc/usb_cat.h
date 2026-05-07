@@ -65,7 +65,7 @@ extern "C" {
 
 /** Callback set: CAT driver calls these to apply commands to SDR state */
 typedef struct {
-  /* Setters */
+  /* Setters – active VFO */
   void (*set_freq)(uint32_t freq_hz);
   void (*set_mode)(uint8_t sdr_mode);
   void (*set_tx)(bool tx_on);
@@ -79,7 +79,7 @@ typedef struct {
   void (*set_rit_hz)(int32_t hz);          /*!< RIT offset Hz   */
   void (*set_step)(uint32_t hz);           /*!< Tuning step Hz  */
   void (*set_if_shift)(int32_t hz);        /*!< IS: IF shift Hz */
-  /* Getters */
+  /* Getters – active VFO */
   uint32_t (*get_freq)(void);
   uint8_t  (*get_mode)(void);
   bool     (*get_tx)(void);
@@ -94,6 +94,16 @@ typedef struct {
   int32_t  (*get_rit_hz)(void);            /*!< RIT offset Hz   */
   uint32_t (*get_step)(void);              /*!< Tuning step Hz  */
   int32_t  (*get_if_shift)(void);          /*!< IS: IF shift Hz */
+  /* VFO B state – keep inactive VFO in sync with main SDR state */
+  void     (*set_vfo_b_freq)(uint32_t hz);
+  void     (*set_vfo_b_mode)(uint8_t sdr_mode);
+  void     (*set_vfo_b_bw)(uint32_t hz);
+  uint32_t (*get_vfo_b_freq)(void);
+  uint8_t  (*get_vfo_b_mode)(void);        /*!< returns SDR mode code   */
+  uint32_t (*get_vfo_b_bw)(void);
+  /* Active VFO selection – triggers hardware swap when changed */
+  void     (*set_active_vfo)(uint8_t vfo); /*!< 0=A, 1=B                */
+  uint8_t  (*get_active_vfo)(void);
 } CAT_Callbacks_t;
 
 /** CAT driver state */

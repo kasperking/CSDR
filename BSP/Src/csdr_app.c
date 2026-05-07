@@ -62,6 +62,15 @@ SDR_State_t g_sdr = {
   .display_dirty = true,
   .lo_offset_hz  = LO_OFFSET_DEFAULT,
   .mic_gain      = 50,
+  .vfo_b         = {
+    .freq_hz     = 14200000UL,   /* VFO B default: 20m */
+    .mode        = MODE_USB,
+    .band_idx    = 5U,
+    .step        = STEP_100,
+    .rit_hz      = 0,
+    .bw_hz       = 3000U,
+  },
+  .active_vfo    = 0U,
 };
 
 
@@ -137,6 +146,17 @@ static void csdr_update_waterfall(void);
 static void csdr_refresh_display(void);
 static void menu_apply_cb(void);
 static uint8_t default_zoom_for_mode(SDR_Mode_t m);
+static void csdr_vfo_swap(void);
+static void csdr_vfo_copy_to_b(void);
+/* CAT VFO-B callbacks */
+static void     cat_set_vfo_b_freq(uint32_t hz);
+static void     cat_set_vfo_b_mode(uint8_t m);
+static void     cat_set_vfo_b_bw(uint32_t hz);
+static uint32_t cat_get_vfo_b_freq(void);
+static uint8_t  cat_get_vfo_b_mode(void);
+static uint32_t cat_get_vfo_b_bw(void);
+static void     cat_set_active_vfo(uint8_t vfo);
+static uint8_t  cat_get_active_vfo(void);
 
 /* ══════════════════════════════════════════════════════════
  *  CSDR_Init  – gọi từ main.c USER CODE BEGIN 2
@@ -252,33 +272,42 @@ void CSDR_Init(void)
 
   /* USB CAT */
   CAT_Callbacks_t cb = {
-    .set_freq      = cat_set_freq,
-    .set_mode      = cat_set_mode,
-    .set_tx        = cat_set_tx,
-    .set_att       = cat_set_att,
-    .set_volume    = cat_set_volume,
-    .set_nr        = cat_set_nr,
-    .set_nb        = cat_set_nb,
-    .set_bw        = cat_set_bw,
-    .set_agc_fast  = cat_set_agc_fast,
-    .set_squelch   = cat_set_squelch,
-    .set_rit_hz    = cat_set_rit_hz,
-    .set_step      = cat_set_step,
-    .get_freq      = cat_get_freq,
-    .get_mode      = cat_get_mode,
-    .get_tx        = cat_get_tx,
-    .get_signal_db = cat_get_signal,
-    .get_att       = cat_get_att,
-    .get_volume    = cat_get_volume,
-    .get_nr        = cat_get_nr,
-    .get_nb        = cat_get_nb,
-    .get_bw        = cat_get_bw,
-    .get_agc_fast  = cat_get_agc_fast,
-    .get_squelch   = cat_get_squelch,
-    .get_rit_hz    = cat_get_rit_hz,
-    .get_step      = cat_get_step,
-    .set_if_shift  = cat_set_if_shift,
-    .get_if_shift  = cat_get_if_shift,
+    .set_freq        = cat_set_freq,
+    .set_mode        = cat_set_mode,
+    .set_tx          = cat_set_tx,
+    .set_att         = cat_set_att,
+    .set_volume      = cat_set_volume,
+    .set_nr          = cat_set_nr,
+    .set_nb          = cat_set_nb,
+    .set_bw          = cat_set_bw,
+    .set_agc_fast    = cat_set_agc_fast,
+    .set_squelch     = cat_set_squelch,
+    .set_rit_hz      = cat_set_rit_hz,
+    .set_step        = cat_set_step,
+    .get_freq        = cat_get_freq,
+    .get_mode        = cat_get_mode,
+    .get_tx          = cat_get_tx,
+    .get_signal_db   = cat_get_signal,
+    .get_att         = cat_get_att,
+    .get_volume      = cat_get_volume,
+    .get_nr          = cat_get_nr,
+    .get_nb          = cat_get_nb,
+    .get_bw          = cat_get_bw,
+    .get_agc_fast    = cat_get_agc_fast,
+    .get_squelch     = cat_get_squelch,
+    .get_rit_hz      = cat_get_rit_hz,
+    .get_step        = cat_get_step,
+    .set_if_shift    = cat_set_if_shift,
+    .get_if_shift    = cat_get_if_shift,
+    /* VFO B + active-VFO selection */
+    .set_vfo_b_freq  = cat_set_vfo_b_freq,
+    .set_vfo_b_mode  = cat_set_vfo_b_mode,
+    .set_vfo_b_bw    = cat_set_vfo_b_bw,
+    .get_vfo_b_freq  = cat_get_vfo_b_freq,
+    .get_vfo_b_mode  = cat_get_vfo_b_mode,
+    .get_vfo_b_bw    = cat_get_vfo_b_bw,
+    .set_active_vfo  = cat_set_active_vfo,
+    .get_active_vfo  = cat_get_active_vfo,
   };
   CAT_Init(&g_cat, &cb);
 
@@ -290,10 +319,11 @@ void CSDR_Init(void)
 
   /* Initial UI */
   SDR_UI_State_t ui = {0};
-  ui.freq_hz = g_sdr.freq_hz; ui.mode = (uint8_t)g_sdr.mode;
-  ui.band_idx = g_sdr.band_idx; ui.volume = g_sdr.volume;
-  ui.step = (uint32_t)g_sdr.step; ui.agc_fast = g_sdr.agc_fast;
-  ui.si5351_ok = g_sdr.si5351_ok; ui.bw_hz = g_sdr.bw_hz;
+  ui.freq_hz   = g_sdr.freq_hz;        ui.mode      = (uint8_t)g_sdr.mode;
+  ui.band_idx  = g_sdr.band_idx;       ui.volume    = g_sdr.volume;
+  ui.step      = (uint32_t)g_sdr.step; ui.agc_fast  = g_sdr.agc_fast;
+  ui.si5351_ok = g_sdr.si5351_ok;      ui.bw_hz     = g_sdr.bw_hz;
+  ui.freq_b_hz = g_sdr.vfo_b.freq_hz;  ui.active_vfo = g_sdr.active_vfo;
   SDR_UI_DrawTopBar(&g_lcd, &ui);
   SDR_UI_DrawStatusPanel(&g_lcd, &ui);
 
@@ -598,6 +628,7 @@ static void csdr_handle_keys(void)
     }
   }
 
+  /* F3: menu confirm / VFO A↔B swap */
   if (Key_Press(&k_f3)) {
     if (Menu_IsOpen(&g_menu)) {
       if (g_menu.cursor < g_menu.item_count &&
@@ -643,14 +674,18 @@ static void csdr_handle_keys(void)
       } else {
         Menu_Confirm(&g_menu);
       }
+    } else {
+      csdr_vfo_swap();   /* F3 outside menu: swap VFO A↔B */
     }
   }
 
-  /* F4: Back / Exit menu */
+  /* F4: Back / Exit menu  –or–  copy active VFO to inactive */
   if (Key_Press(&k_f4)) {
     if (Menu_IsOpen(&g_menu)) {
       Menu_Back(&g_menu);
       if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty = true;
+    } else {
+      csdr_vfo_copy_to_b();  /* F4 outside menu: copy active → inactive VFO */
     }
   }
 
@@ -709,15 +744,17 @@ static void csdr_refresh_display(void)
   if (g_sdr.display_dirty) {
     g_sdr.display_dirty = false;
     SDR_UI_State_t ui = {0};
-    ui.freq_hz  = g_sdr.freq_hz;  ui.mode      = (uint8_t)g_sdr.mode;
-    ui.band_idx = g_sdr.band_idx; ui.volume     = g_sdr.volume;
-    ui.squelch  = g_sdr.squelch;  ui.step       = (uint32_t)g_sdr.step;
-    ui.agc_fast = g_sdr.agc_fast; ui.nb_on      = g_sdr.nb_on;
-    ui.nr_on    = g_sdr.nr_on;    ui.rit_hz     = g_sdr.rit_hz;
-    ui.tx_mode  = g_sdr.tx_mode;  ui.si5351_ok  = g_sdr.si5351_ok;
-    ui.qse_on   = g_sdr.qse_on;   ui.signal_db  = g_dsp.signal_power_db;
-    ui.bw_hz    = g_sdr.bw_hz;    ui.voltage    = (float)g_analog.voltage_mv * 0.001f;
-    ui.att_db   = g_sdr.att_db;   ui.mic_gain   = g_sdr.mic_gain;
+    ui.freq_hz   = g_sdr.freq_hz;       ui.mode      = (uint8_t)g_sdr.mode;
+    ui.band_idx  = g_sdr.band_idx;      ui.volume    = g_sdr.volume;
+    ui.squelch   = g_sdr.squelch;       ui.step      = (uint32_t)g_sdr.step;
+    ui.agc_fast  = g_sdr.agc_fast;      ui.nb_on     = g_sdr.nb_on;
+    ui.nr_on     = g_sdr.nr_on;         ui.rit_hz    = g_sdr.rit_hz;
+    ui.tx_mode   = g_sdr.tx_mode;       ui.si5351_ok = g_sdr.si5351_ok;
+    ui.signal_db = g_dsp.signal_power_db;
+    ui.bw_hz     = g_sdr.bw_hz;         ui.voltage   = (float)g_analog.voltage_mv * 0.001f;
+    ui.att_db    = g_sdr.att_db;        ui.mic_gain  = g_sdr.mic_gain;
+    ui.freq_b_hz = g_sdr.vfo_b.freq_hz; /* inactive VFO shown in sub-line */
+    ui.active_vfo = g_sdr.active_vfo;
 
     /* TopBar (y=0..61) luôn cập nhật */
     SDR_UI_DrawTopBar(&g_lcd, &ui);
@@ -774,6 +811,75 @@ static void menu_apply_cb(void)
   g_sdr.display_dirty = true;
 }
 
+/* ══════════════════════════════════════════════════════════
+ *  Dual-VFO helpers
+ * ══════════════════════════════════════════════════════════ */
+
+/* Swap active ↔ inactive VFO and apply new active state to hardware */
+static void csdr_vfo_swap(void)
+{
+  VFO_State_t tmp = {
+    .freq_hz  = g_sdr.freq_hz,
+    .mode     = g_sdr.mode,
+    .band_idx = g_sdr.band_idx,
+    .step     = g_sdr.step,
+    .rit_hz   = g_sdr.rit_hz,
+    .bw_hz    = g_sdr.bw_hz,
+  };
+
+  g_sdr.freq_hz  = g_sdr.vfo_b.freq_hz;
+  g_sdr.mode     = g_sdr.vfo_b.mode;
+  g_sdr.band_idx = g_sdr.vfo_b.band_idx;
+  g_sdr.step     = g_sdr.vfo_b.step;
+  g_sdr.rit_hz   = g_sdr.vfo_b.rit_hz;
+  g_sdr.bw_hz    = g_sdr.vfo_b.bw_hz;
+
+  g_sdr.vfo_b    = tmp;
+  g_sdr.active_vfo ^= 1U;
+  /* Keep CAT routing state in sync so VS; query and AI IF-frame reflect reality */
+  g_cat.active_vfo = g_sdr.active_vfo;
+
+  BPF_SetBand(g_sdr.band_idx);
+  LPF_SetBand(g_sdr.band_idx);
+  DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
+  DSP_SetFrequency(&g_dsp, csdr_nco_freq(), g_sdr.freq_hz, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+  if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+  SDR_UI_SetSpecZoom(&g_lcd, default_zoom_for_mode(g_sdr.mode));
+  g_sdr.display_dirty = true;
+}
+
+/* Copy active VFO state into the inactive VFO slot (A→B when A active, B→A when B active) */
+static void csdr_vfo_copy_to_b(void)
+{
+  g_sdr.vfo_b.freq_hz  = g_sdr.freq_hz;
+  g_sdr.vfo_b.mode     = g_sdr.mode;
+  g_sdr.vfo_b.band_idx = g_sdr.band_idx;
+  g_sdr.vfo_b.step     = g_sdr.step;
+  g_sdr.vfo_b.rit_hz   = g_sdr.rit_hz;
+  g_sdr.vfo_b.bw_hz    = g_sdr.bw_hz;
+  g_sdr.display_dirty  = true;
+}
+
+/* ── VFO-B + active-VFO CAT callbacks ──────────────────────────────────────
+ * These keep g_sdr.vfo_b and g_sdr.active_vfo in sync with CAT commands
+ * so UI state and Hamlib/flrig/WSJT-X always agree.
+ * ─────────────────────────────────────────────────────────────────────────*/
+static void     cat_set_vfo_b_freq(uint32_t hz) { g_sdr.vfo_b.freq_hz = hz; g_sdr.display_dirty = true; }
+static void     cat_set_vfo_b_mode(uint8_t m)   { g_sdr.vfo_b.mode = (SDR_Mode_t)m; g_sdr.display_dirty = true; }
+static void     cat_set_vfo_b_bw(uint32_t hz)   { g_sdr.vfo_b.bw_hz = hz; g_sdr.display_dirty = true; }
+static uint32_t cat_get_vfo_b_freq(void)        { return g_sdr.vfo_b.freq_hz; }
+static uint8_t  cat_get_vfo_b_mode(void)        { return (uint8_t)g_sdr.vfo_b.mode; }
+static uint32_t cat_get_vfo_b_bw(void)          { return g_sdr.vfo_b.bw_hz; }
+
+/* VS/FR/DC handler: triggers a hardware VFO swap only when the selection differs
+ * from the current radio state, so VS1;VS1; is idempotent. */
+static void cat_set_active_vfo(uint8_t vfo)
+{
+  if (vfo != g_sdr.active_vfo) csdr_vfo_swap();
+}
+static uint8_t cat_get_active_vfo(void) { return g_sdr.active_vfo; }
+
 /* CAT callbacks */
 static void     cat_set_freq(uint32_t f) { g_sdr.freq_hz=f; DSP_SetFrequency(&g_dsp,csdr_nco_freq(),f,g_sdr.lo_offset_hz,CSDR_AUDIO_SAMPLE_RATE); if(g_sdr.si5351_ok)SI5351_SetQSDFrequency(&g_si5351,f+g_sdr.lo_offset_hz); g_sdr.display_dirty=true; }
 static void     cat_set_mode(uint8_t m)  { g_sdr.mode=(SDR_Mode_t)m; DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE); SDR_UI_SetSpecZoom(&g_lcd,default_zoom_for_mode(g_sdr.mode)); g_sdr.display_dirty=true; }
@@ -782,26 +888,15 @@ static void cat_set_tx(bool tx)
   if (tx == g_sdr.tx_mode) return;  /* no change */
   g_sdr.tx_mode = tx;
   if (tx) {
-    /* TX sequence: enable TX LO → switch T/R → enable PA
-     * Keep USB streaming ON so PC audio can flow through tx_ring. */
+    /* TX sequence: switch T/R relay.
+     * Shared CLK0 LO (4× RF) already running — no Si5351 change needed. */
     HAL_Delay(2);                                  /* 2ms settle   */
-    if (g_sdr.si5351_ok) {
-      SI5351_SetQSEFrequency(&g_si5351, g_sdr.freq_hz);  /* CLK2 ON */
-      g_sdr.qse_on = true;
-    }
     HAL_GPIO_WritePin(TR_SW_GPIO_Port, TR_SW_Pin, GPIO_PIN_SET);
   } else {
-    /* RX sequence: disable PA → switch T/R → disable TX LO → restore QSD */
+    /* RX sequence: switch T/R relay back.
+     * Shared LO was never changed during TX — no Si5351 restore needed. */
     HAL_GPIO_WritePin(TR_SW_GPIO_Port, TR_SW_Pin, GPIO_PIN_RESET);
     HAL_Delay(2);
-    if (g_sdr.si5351_ok) {
-      SI5351_EnableOutput(&g_si5351, 2U, false);     /* CLK2 OFF */
-      g_sdr.qse_on = false;
-      /* Re-apply RX LO to ensure CLK0 (4× RF) is correctly programmed
-       * after the TX sequence.  PLL_A (CLK0) and PLL_B (CLK2) are
-       * independent, but an explicit reset guarantees a clean RX lock. */
-      SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
-    }
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);  /* Ensure HP unmuted */
   }
   SDR_UI_UpdateSMeter_SetTX(tx);

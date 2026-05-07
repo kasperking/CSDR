@@ -354,17 +354,21 @@ void SDR_UI_DrawSidebarLeft(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
         }
         break;
 
-      /* ── VFO A/B ─────────────────────────────────────────── */
-      case 1:
+      /* ── VFO A/B – active letter highlighted ────────────── */
+      case 1: {
+        uint16_t col_a = (ui->active_vfo == 0U) ? UI_STATUS_VAL : UI_STATUS_LBL;
+        uint16_t col_b = (ui->active_vfo == 1U) ? UI_STATUS_ON  : UI_STATUS_LBL;
         for (uint16_t fr = 0; fr < Font6x8.height; fr++) {
           uint16_t r = text_y + fr;
           if (r >= 80U) break;
           uint16_t *ln = s_sbl_buf + (uint32_t)r * SBL_W;
-          LCD_LineStr(ln, 2U, fr, "VFO", &Font6x8, UI_STATUS_LBL, UI_SBL_BG);
-          LCD_LineStr(ln, 2U + 4U * Font6x8.width, fr, "A",
-                      &Font6x8, UI_STATUS_VAL, UI_SBL_BG);
+          LCD_LineStr(ln, 2U,                        fr, "VFO", &Font6x8, UI_STATUS_LBL, UI_SBL_BG);
+          LCD_LineStr(ln, 2U + 4U * Font6x8.width,  fr, "A",   &Font6x8, col_a, UI_SBL_BG);
+          LCD_LineStr(ln, 2U + 5U * Font6x8.width,  fr, "/",   &Font6x8, UI_STATUS_LBL, UI_SBL_BG);
+          LCD_LineStr(ln, 2U + 6U * Font6x8.width,  fr, "B",   &Font6x8, col_b, UI_SBL_BG);
         }
         break;
+      }
 
       /* ── NR / NB toggle badges ───────────────────────────── */
       case 2: {
@@ -420,7 +424,7 @@ void SDR_UI_DrawSidebarLeft(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
  *  SDR_UI_DrawSidebarRight  (SBR_W=60 × SBR_H=82)
  *
  *  4 items × 20px = 80px, 2px bottom border
- *  Items: RIT | MIC | DSP | LEN
+ *  Items: RIT | MIC | DSP | BW
  *  Layout per item: rows 2-9 label (gray), rows 11-18 value (right-aligned)
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawSidebarRight(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
@@ -428,9 +432,21 @@ void SDR_UI_DrawSidebarRight(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
   char rit_str[8];
   snprintf(rit_str, sizeof(rit_str), ui->rit_hz ? "%+d" : "OFF", (int)ui->rit_hz);
 
-  char mic_str[6]; snprintf(mic_str, sizeof(mic_str), "%d",  (int)ui->mic_gain);
-  char dsp_str[6]; snprintf(dsp_str, sizeof(dsp_str), "%u",  ui->dsp_level);
-  char len_str[6]; snprintf(len_str, sizeof(len_str), "%u",  ui->filter_len);
+  char mic_str[6]; snprintf(mic_str, sizeof(mic_str), "%d", (int)ui->mic_gain);
+  char dsp_str[6]; snprintf(dsp_str, sizeof(dsp_str), "%u", ui->dsp_level);
+
+  /* BW: ≥10k → "12k", ≥1k → "2.7k", <1k → "500Hz" */
+  char bw_str[8];
+  if (ui->bw_hz >= 10000U) {
+    snprintf(bw_str, sizeof(bw_str), "%luk",
+             (unsigned long)(ui->bw_hz / 1000U));
+  } else if (ui->bw_hz >= 1000U) {
+    snprintf(bw_str, sizeof(bw_str), "%lu.%luk",
+             (unsigned long)(ui->bw_hz / 1000U),
+             (unsigned long)((ui->bw_hz % 1000U) / 100U));
+  } else {
+    snprintf(bw_str, sizeof(bw_str), "%luHz", (unsigned long)ui->bw_hz);
+  }
 
   buf_fill(s_sbr_buf, (uint32_t)SBR_H * SBR_W, UI_SBR_BG);
 
@@ -440,7 +456,7 @@ void SDR_UI_DrawSidebarRight(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
     { "RIT", rit_str, ui->rit_hz ? UI_FREQ_KHZ : UI_STATUS_LBL },
     { "MIC", mic_str, UI_STATUS_VAL },
     { "DSP", dsp_str, UI_STATUS_VAL },
-    { "LEN", len_str, UI_STATUS_VAL },
+    { "BW",  bw_str,  UI_FREQ_KHZ  },
   };
 
   for (uint8_t i = 0; i < 4U; i++) {
@@ -503,14 +519,15 @@ void SDR_UI_DrawVFO(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
   else if (st >= 10U)     { snprintf(step_str, sizeof(step_str), "10"); }
   else                    { snprintf(step_str, sizeof(step_str), "1"); }
 
-  /* Sub-freq / RIT line */
+  /* Sub-freq / RIT line – shows inactive VFO frequency */
   char sub_str[22] = "";
   if (ui->freq_b_hz > 0U) {
     uint32_t bm = ui->freq_b_hz / 1000000UL;
     uint32_t bk = (ui->freq_b_hz % 1000000UL) / 1000UL;
     uint32_t bh = ui->freq_b_hz % 1000UL;
-    snprintf(sub_str, sizeof(sub_str), "B:%lu.%03lu.%03lu",
-             (unsigned long)bm, (unsigned long)bk, (unsigned long)bh);
+    const char *pfx = (ui->active_vfo == 0U) ? "B:" : "A:";
+    snprintf(sub_str, sizeof(sub_str), "%s%lu.%03lu.%03lu",
+             pfx, (unsigned long)bm, (unsigned long)bk, (unsigned long)bh);
   } else if (ui->rit_hz != 0) {
     snprintf(sub_str, sizeof(sub_str), "RIT %+d Hz", (int)ui->rit_hz);
   }
@@ -537,6 +554,13 @@ void SDR_UI_DrawVFO(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
       ln_bigstr(ln, fx, fr, khz_s, UI_FREQ_KHZ, UI_VFO_BG); fx += 3U * BIG_W;
       ln_bigstr(ln, fx, fr, ".", UI_FREQ_DOT, UI_VFO_BG); fx += 6U;
       ln_bigstr(ln, fx, fr, hz_s, UI_FREQ_HZ, UI_VFO_BG);
+    }
+
+    /* Active VFO label: top-left corner ("A" or "B") */
+    if (row >= step_y && (row - step_y) < Font6x8.height) {
+      const char *vl = (ui->active_vfo == 0U) ? "A" : "B";
+      uint16_t vc    = (ui->active_vfo == 0U) ? UI_STATUS_VAL : UI_STATUS_ON;
+      LCD_LineStr(ln, 2U, row - step_y, vl, &Font6x8, vc, UI_VFO_BG);
     }
 
     /* Step label: top-right corner */
@@ -590,6 +614,9 @@ static void draw_smeter_rows(int32_t bars)
       uint16_t fr = row - 1U;
       for (uint8_t t = 0; t < 8U; t++) {
         uint16_t lx  = (uint16_t)(SM_START_X + (uint16_t)sbar[t] * (SM_BAR_W + SM_BAR_GAP));
+        /* "+20" (t=6) is 18 px wide but only 14 px before "+40" — shift left
+         * 4 px so it ends at x=157, leaving a 1 px gap before "+40" at 158. */
+        if (t == 6U) { lx -= 4U; }
         uint16_t col = (t < 6U) ? UI_SMETER_TICK : UI_S1_6;
         LCD_LineStr(ln, lx, fr, slbls[t], &Font6x8, col, UI_MTR_BG);
       }

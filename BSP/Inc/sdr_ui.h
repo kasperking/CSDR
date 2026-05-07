@@ -152,7 +152,7 @@ extern "C" {
 /* ── SDR UI state ───────────────────────────────────── */
 typedef struct {
   uint32_t  freq_hz;
-  uint32_t  freq_b_hz;
+  uint32_t  freq_b_hz;     /*!< Inactive VFO frequency for sub-line display */
   uint8_t   mode;
   uint8_t   band_idx;
   float     signal_db;
@@ -165,13 +165,13 @@ typedef struct {
   int16_t   rit_hz;
   bool      tx_mode;
   bool      si5351_ok;
-  bool      qse_on;
   uint32_t  bw_hz;
   float     voltage;
   uint8_t   att_db;
   int16_t   mic_gain;
   uint16_t  filter_len;
   uint8_t   dsp_level;
+  uint8_t   active_vfo;    /*!< 0 = VFO A active, 1 = VFO B active */
 } SDR_UI_State_t;
 
 /* ── API ────────────────────────────────────────────── */

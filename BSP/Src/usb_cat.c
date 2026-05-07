@@ -215,11 +215,13 @@ void CAT_BuildIF(CAT_Handle_t *cat, char *buf)
     char *p = buf;
 
     uint32_t f = (cat->active_vfo == 1U)
-               ? cat->vfo_b_freq
-               : (cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL);
+               ? (cat->cb.get_vfo_b_freq ? cat->cb.get_vfo_b_freq() : cat->vfo_b_freq)
+               : (cat->cb.get_freq       ? cat->cb.get_freq()        : 7100000UL);
 
     uint8_t mode = (cat->active_vfo == 1U)
-                 ? cat->vfo_b_mode
+                 ? (cat->cb.get_vfo_b_mode
+                    ? CAT_SDRModeToCat(cat->cb.get_vfo_b_mode())
+                    : cat->vfo_b_mode)
                  : (cat->cb.get_mode ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB);
 
     bool tx = cat->cb.get_tx ? cat->cb.get_tx() : false;
@@ -252,8 +254,8 @@ static void cat_build_FA(CAT_Handle_t *cat, char *buf)
 {
     char *p = buf;
     uint32_t f = (cat->active_vfo == 1U)
-               ? cat->vfo_b_freq
-               : (cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL);
+               ? (cat->cb.get_vfo_b_freq ? cat->cb.get_vfo_b_freq() : cat->vfo_b_freq)
+               : (cat->cb.get_freq       ? cat->cb.get_freq()        : 7100000UL);
 
     *p++ = 'F'; *p++ = 'A';
     p = cat_put_u32(p, f, 11U);
@@ -264,8 +266,9 @@ static void cat_build_FA(CAT_Handle_t *cat, char *buf)
 static void cat_build_FB(CAT_Handle_t *cat, char *buf)
 {
     char *p = buf;
+    uint32_t f = cat->cb.get_vfo_b_freq ? cat->cb.get_vfo_b_freq() : cat->vfo_b_freq;
     *p++ = 'F'; *p++ = 'B';
-    p = cat_put_u32(p, cat->vfo_b_freq, 11U);
+    p = cat_put_u32(p, f, 11U);
     *p++ = ';';
     *p = '\0';
 }
@@ -274,7 +277,9 @@ static void cat_build_MD(CAT_Handle_t *cat, char *buf)
 {
     char *p = buf;
     uint8_t mode = (cat->active_vfo == 1U)
-                 ? cat->vfo_b_mode
+                 ? (cat->cb.get_vfo_b_mode
+                    ? CAT_SDRModeToCat(cat->cb.get_vfo_b_mode())
+                    : cat->vfo_b_mode)
                  : (cat->cb.get_mode ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB);
 
     *p++ = 'M'; *p++ = 'D';
@@ -323,8 +328,8 @@ static void cat_build_FW(CAT_Handle_t *cat, char *buf)
 {
     char *p = buf;
     uint32_t bw = (cat->active_vfo == 1U)
-                ? cat->vfo_b_bw
-                : (cat->cb.get_bw ? cat->cb.get_bw() : 3000U);
+                ? (cat->cb.get_vfo_b_bw ? cat->cb.get_vfo_b_bw() : cat->vfo_b_bw)
+                : (cat->cb.get_bw       ? cat->cb.get_bw()        : 3000U);
     *p++ = 'F'; *p++ = 'W';
     p = cat_put_u32(p, bw, 4U);
     *p++ = ';';
@@ -349,8 +354,8 @@ static void cat_build_SH(CAT_Handle_t *cat, char *buf)
 {
     char *p = buf;
     uint32_t bw = (cat->active_vfo == 1U)
-                ? cat->vfo_b_bw
-                : (cat->cb.get_bw ? cat->cb.get_bw() : 3000U);
+                ? (cat->cb.get_vfo_b_bw ? cat->cb.get_vfo_b_bw() : cat->vfo_b_bw)
+                : (cat->cb.get_bw       ? cat->cb.get_bw()        : 3000U);
     uint8_t idx = cat_bw_to_sh(bw);
     *p++ = 'S'; *p++ = 'H';
     *p++ = (char)('0' + (idx / 10U));
@@ -427,6 +432,7 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
             uint32_t f = cat_parse_u(&cmd[2], 11U);
             if (cat->active_vfo == 1U) {
                 cat->vfo_b_freq = f;
+                if (cat->cb.set_vfo_b_freq) cat->cb.set_vfo_b_freq(f);
             } else if (cat->cb.set_freq) {
                 cat->cb.set_freq(f);
             }
@@ -439,7 +445,9 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         if (cmd[2] == '\0') {
             cat_build_FB(cat, resp);
         } else {
-            cat->vfo_b_freq = cat_parse_u(&cmd[2], 11U);
+            uint32_t f = cat_parse_u(&cmd[2], 11U);
+            cat->vfo_b_freq = f;
+            if (cat->cb.set_vfo_b_freq) cat->cb.set_vfo_b_freq(f);
             /* ACK-only: no response */
         }
     }
@@ -452,6 +460,7 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
             uint8_t m = (uint8_t)(cmd[2] - '0');
             if (cat->active_vfo == 1U) {
                 cat->vfo_b_mode = m;
+                if (cat->cb.set_vfo_b_mode) cat->cb.set_vfo_b_mode(CAT_CatModeToSDR(m));
             } else if (cat->cb.set_mode) {
                 cat->cb.set_mode(CAT_CatModeToSDR(m));
             }
@@ -542,6 +551,7 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
             if (bw > 9999U) bw = 9999U;
             if (cat->active_vfo == 1U) {
                 cat->vfo_b_bw = bw;
+                if (cat->cb.set_vfo_b_bw) cat->cb.set_vfo_b_bw(bw);
             } else if (cat->cb.set_bw) {
                 cat->cb.set_bw(bw);
             }
@@ -559,6 +569,7 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
             uint32_t bw = s_sh_tbl[idx];
             if (cat->active_vfo == 1U) {
                 cat->vfo_b_bw = bw;
+                if (cat->cb.set_vfo_b_bw) cat->cb.set_vfo_b_bw(bw);
             } else if (cat->cb.set_bw) {
                 cat->cb.set_bw(bw);
             }
@@ -647,29 +658,32 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         cat_build_BC(resp);
     }
 
-    /* VS — GET returns active VFO; SET is ACK-only */
+    /* VS — GET returns active VFO; SET selects active VFO (triggers hardware swap) */
     else if (cmd[0] == 'V' && cmd[1] == 'S') {
         if (cmd[2] != '\0') {
             cat->active_vfo = cat_clamp_vfo((uint8_t)(cmd[2] - '0'));
+            if (cat->cb.set_active_vfo) cat->cb.set_active_vfo(cat->active_vfo);
         } else {
             cat_build_VS(cat, resp);
         }
     }
 
-    /* DC — GET returns VFO+split routing; SET is ACK-only */
+    /* DC — GET returns VFO+split routing; SET selects active VFO */
     else if (cmd[0] == 'D' && cmd[1] == 'C') {
         if (cmd[2] != '\0') {
             cat->active_vfo = cat_clamp_vfo((uint8_t)(cmd[2] - '0'));
             if (cmd[3] != '\0') cat->split_on = (cmd[3] == '1');
+            if (cat->cb.set_active_vfo) cat->cb.set_active_vfo(cat->active_vfo);
         } else {
             cat_build_DC(cat, resp);
         }
     }
 
-    /* FR — GET returns current VFO; SET is ACK-only (Hamlib sends NULL expected) */
+    /* FR — GET returns current VFO; SET selects active VFO */
     else if (cmd[0] == 'F' && cmd[1] == 'R') {
         if (cmd[2] != '\0') {
             cat->active_vfo = cat_clamp_vfo((uint8_t)(cmd[2] - '0'));
+            if (cat->cb.set_active_vfo) cat->cb.set_active_vfo(cat->active_vfo);
         } else {
             resp[0] = 'F'; resp[1] = 'R';
             resp[2] = cat_vfo_digit(cat->active_vfo); resp[3] = ';'; resp[4] = '\0';
@@ -793,10 +807,14 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* VV */
+    /* VV — copy active VFO freq+mode to VFO B */
     else if (cmd[0] == 'V' && cmd[1] == 'V') {
-        cat->vfo_b_freq = cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL;
-        cat->vfo_b_mode = cat->cb.get_mode ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB;
+        uint32_t f   = cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL;
+        uint8_t  m   = cat->cb.get_mode ? cat->cb.get_mode() : 2U; /* SDR mode code */
+        cat->vfo_b_freq = f;
+        cat->vfo_b_mode = CAT_SDRModeToCat(m);
+        if (cat->cb.set_vfo_b_freq) cat->cb.set_vfo_b_freq(f);
+        if (cat->cb.set_vfo_b_mode) cat->cb.set_vfo_b_mode(m);
         cat_copy(resp, "VV;");
     }
 
@@ -859,24 +877,28 @@ void CAT_Process(CAT_Handle_t *cat)
      * Injecting here while responses are queued would interleave with
      * command-response pairs and break kenwood_transaction verification. */
     if (cat->ai_level > 0U && !skip_ai && (s_tx_head == s_tx_tail)) {
+        /* Always read live data through callbacks so AI fires after UI VFO swaps too */
         uint32_t cur_freq = (cat->active_vfo == 1U)
-                          ? cat->vfo_b_freq
-                          : (cat->cb.get_freq ? cat->cb.get_freq() : 0U);
+                          ? (cat->cb.get_vfo_b_freq ? cat->cb.get_vfo_b_freq() : cat->vfo_b_freq)
+                          : (cat->cb.get_freq        ? cat->cb.get_freq()        : 0U);
         uint8_t  cur_mode = (cat->active_vfo == 1U)
-                          ? cat->vfo_b_mode
+                          ? (cat->cb.get_vfo_b_mode
+                             ? CAT_SDRModeToCat(cat->cb.get_vfo_b_mode())
+                             : cat->vfo_b_mode)
                           : (cat->cb.get_mode ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB);
-        bool     cur_tx    = cat->cb.get_tx ? cat->cb.get_tx() : false;
+        bool     cur_tx   = cat->cb.get_tx ? cat->cb.get_tx() : false;
+        uint8_t  cur_vfo  = cat->cb.get_active_vfo ? cat->cb.get_active_vfo() : cat->active_vfo;
 
         if (cur_freq  != cat->last_freq  ||
             cur_mode  != cat->last_mode  ||
             cur_tx    != cat->last_tx    ||
-            cat->active_vfo != cat->last_vfo ||
-            cat->split_on   != cat->last_split) {
+            cur_vfo   != cat->last_vfo   ||
+            cat->split_on != cat->last_split) {
 
             cat->last_freq  = cur_freq;
             cat->last_mode  = cur_mode;
             cat->last_tx    = cur_tx;
-            cat->last_vfo   = cat->active_vfo;
+            cat->last_vfo   = cur_vfo;
             cat->last_split = cat->split_on;
 
             char if_buf[50];

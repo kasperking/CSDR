@@ -107,7 +107,7 @@ static void scan_tx_on(uint32_t freq_hz)
 {
     HAL_Delay(2U);
     if (g_sdr.si5351_ok)
-        SI5351_SetQSEFrequency(&g_si5351, freq_hz);
+        SI5351_SetQSDFrequency(&g_si5351, freq_hz);  /* shared LO to scan freq */
     HAL_GPIO_WritePin(TR_SW_GPIO_Port, TR_SW_Pin, GPIO_PIN_SET);
 }
 
@@ -115,10 +115,8 @@ static void scan_tx_off(uint32_t restore_rx_hz)
 {
     HAL_GPIO_WritePin(TR_SW_GPIO_Port, TR_SW_Pin, GPIO_PIN_RESET);
     HAL_Delay(2U);
-    if (g_sdr.si5351_ok) {
-        SI5351_EnableOutput(&g_si5351, 2U, false);
+    if (g_sdr.si5351_ok)
         SI5351_SetQSDFrequency(&g_si5351, restore_rx_hz + g_sdr.lo_offset_hz);
-    }
 }
 
 /* ════════════════════════════════════════════════

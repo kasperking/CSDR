@@ -5,19 +5,18 @@
   * @brief   SI5351A Programmable Clock Generator BSP Driver
   *
   *  Hardware architecture (74LVC74 divide-by-4 quadrature):
-  *   - CLK0  → 4 × RF LO → external 74LVC74 ÷4 → I and Q LO phases (0°/90°)
+  *   - CLK0  → 4 × LO → external 74LVC74 ÷4 → I and Q phases (0°/90°)
+  *             shared by BOTH RX QSD and TX QSE
   *   - CLK1  → unused (powered down)
-  *   - CLK2  → 4 × TX LO → external 74LVC74 ÷4 → TX I/Q mixer LO
+  *   - CLK2  → unused (powered down)
   *
   *  The 74LVC74 dual D flip-flop generates precise 90° quadrature from a
   *  single 4× clock with no software phase-offset registers involved.
-  *  This gives better I/Q phase accuracy than the Si5351 register method
-  *  and relaxes the even-MS_div constraint.
+  *  RX and TX are phase-coherent because they share the same LO source.
   *
   *  LO programming rule:
-  *   SI5351_SetQSDFrequency(si, rf_hz)  → CLK0 = rf_hz × 4  (RX LO)
-  *   SI5351_SetQSEFrequency(si, tx_hz)  → CLK2 = tx_hz × 4  (TX LO)
-  *   Callers always pass the RF/TX frequency; the ×4 is internal.
+  *   SI5351_SetQSDFrequency(si, rf_hz)  → CLK0 = rf_hz × 4  (shared LO)
+  *   Callers always pass the RF frequency; the ×4 is internal.
   *
   *  Constraints:
   *   • VCO_A in [600 MHz, 900 MHz]
@@ -159,11 +158,9 @@ HAL_StatusTypeDef SI5351_Init(SI5351_Handle_t *si,
                                uint8_t i2c_addr,
                                uint32_t xtal_hz);
 
-/** Set RX LO: programs CLK0 at freq_hz × 4 for 74LVC74 ÷4 quadrature. CLK1 unused. */
+/** Set shared LO: programs CLK0 at freq_hz × 4 for 74LVC74 ÷4 quadrature.
+ *  Used for both RX QSD and TX QSE — CLK1 and CLK2 remain powered down. */
 HAL_StatusTypeDef SI5351_SetQSDFrequency(SI5351_Handle_t *si, uint32_t freq_hz);
-
-/** Set TX LO: programs CLK2 at freq_hz × 4 for 74LVC74 ÷4 quadrature (PLL_B). */
-HAL_StatusTypeDef SI5351_SetQSEFrequency(SI5351_Handle_t *si, uint32_t freq_hz);
 
 /** Bật/tắt từng CLK output */
 HAL_StatusTypeDef SI5351_EnableOutput(SI5351_Handle_t *si, uint8_t clk_num, bool enable);

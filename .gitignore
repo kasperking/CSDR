@@ -1,2 +1,10 @@
-/debug/
 .claude
+Debug/
+Release/
+.metadata/
+.settings/
+.launch
+*.log
+*.pstat
+*.su
+*.jlink

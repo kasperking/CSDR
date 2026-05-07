@@ -4,9 +4,9 @@
   * @file    si5351.c
   * @brief   SI5351A Programmable Clock Generator BSP Driver
   *
-  *  74LVC74 divide-by-4 quadrature architecture.
-  *  Si5351 outputs a single clock at 4× LO frequency; external hardware
-  *  performs the ÷4 and generates precise 0°/90° I/Q phases.
+  *  Single shared LO architecture (74LVC74 divide-by-4 quadrature).
+  *  Si5351 outputs ONE clock on CLK0 at 4× LO frequency; external 74LVC74
+  *  performs ÷4 and generates precise 0°/90° I/Q phases for both RX and TX.
   *
   *  Frequency programming example (7.1 MHz RF → 28.4 MHz CLK0):
   *
@@ -378,11 +378,10 @@ HAL_StatusTypeDef SI5351_SetQSDFrequency(SI5351_Handle_t *si, uint32_t freq_hz)
 
   HAL_Delay(1U);   /* Wait for PLL lock */
 
-  /* ── 9. Enable CLK0 only; CLK1-7 disabled → 0xFE ───────
+  /* ── 9. Enable CLK0 only; CLK1-7 remain disabled (0xFE) ─
    *  Reg3: bit=0 enables, bit=1 disables.
-   *  0xFE = 1111 1110: CLK0 on, CLK1-7 off.
-   *  CLK2 (TX LO) is re-enabled by SI5351_SetQSEFrequency()
-   *  and disabled by SI5351_EnableOutput() before this call. */
+   *  0xFE = 1111 1110: CLK0 on, CLK1/CLK2/CLK3-7 off.
+   *  CLK2 is permanently unused in the shared-LO architecture. */
   ret = SI5351_WriteReg(si, SI5351_REG_OUTPUT_EN_CTRL, 0xFEU);
   if (ret != HAL_OK) { return ret; }
 
@@ -397,70 +396,6 @@ HAL_StatusTypeDef SI5351_SetQSDFrequency(SI5351_Handle_t *si, uint32_t freq_hz)
   si->clk[1].enabled      = false;     /* CLK1 unused */
 
   /* USER CODE END SI5351_SetQSDFreq_0 */
-  return HAL_OK;
-}
-
-/**
-  * @brief  Set TX LO frequency.
-  *
-  *  Programs CLK2 at freq_hz × 4 on PLL_B (independent of PLL_A / CLK0).
-  *  External 74LVC74 divides by 4 and generates TX I/Q LO phases.
-  *
-  * @param  si       Handle
-  * @param  freq_hz  TX LO frequency (Hz) – function multiplies by 4 internally
-  */
-HAL_StatusTypeDef SI5351_SetQSEFrequency(SI5351_Handle_t *si, uint32_t freq_hz)
-{
-  /* USER CODE BEGIN SI5351_SetQSEFreq_0 */
-  if (!si->initialized) { return HAL_ERROR; }
-
-  HAL_StatusTypeDef ret;
-
-  /* ── 1. CLK2 output frequency = TX LO × 4 ─────────────── */
-  uint32_t clk_freq = freq_hz * 4U;
-
-  uint8_t  r_div_code;
-  uint32_t vco_hz;
-  uint32_t ms_div = SI5351_CalcMSDiv(clk_freq, si->xtal_hz, &r_div_code, &vco_hz);
-  if (ms_div == 0U) { return HAL_ERROR; }
-
-  /* ── 2. Write PLL_B ───────────────────────────────────── */
-  SI5351_MSParams_t pll_params;
-  SI5351_CalcPLL(si->xtal_hz, vco_hz, &pll_params);
-  ret = SI5351_WriteMS(si, SI5351_REG_MSNB_BASE, &pll_params, 0U);
-  if (ret != HAL_OK) { return ret; }
-
-  /* ── 3. Write MS2 (CLK2 divider) ─────────────────────── */
-  SI5351_MSParams_t ms_params;
-  SI5351_CalcMS(ms_div, &ms_params);
-  ret = SI5351_WriteMS(si, SI5351_REG_MS2_BASE, &ms_params, r_div_code);
-  if (ret != HAL_OK) { return ret; }
-
-  /* ── 4. CLK2 control: PLL_B source, MS divider, 8 mA ─── */
-  ret = SI5351_WriteReg(si, SI5351_REG_CLK2_CTRL,
-                         (uint8_t)(SI5351_CLK_MS_SRC_PLLB | SI5351_CLK_SRC_MS |
-                                   SI5351_CLK_IDRV_8MA));
-  if (ret != HAL_OK) { return ret; }
-
-  /* ── 5. Reset PLL_B ───────────────────────────────────── */
-  ret = SI5351_WriteReg(si, SI5351_REG_PLL_RESET, SI5351_PLLB_RESET);
-  if (ret != HAL_OK) { return ret; }
-
-  HAL_Delay(1U);
-
-  /* ── 6. Enable CLK0 (if active) + CLK2; CLK1 stays off ─ */
-  /* 0xFEU = only CLK0 on; clear bit2 to also enable CLK2   */
-  uint8_t en_mask = si->clk[0].enabled ? 0xFEU : 0xFFU;
-  en_mask &= ~(uint8_t)(1U << 2U);
-  ret = SI5351_WriteReg(si, SI5351_REG_OUTPUT_EN_CTRL, en_mask);
-  if (ret != HAL_OK) { return ret; }
-
-  si->clk[2].enabled    = true;
-  si->clk[2].freq_hz    = freq_hz;   /* store TX RF freq, not ×4 */
-  si->clk[2].r_div_code = r_div_code;
-  si->clk[2].ms_div     = ms_div;
-
-  /* USER CODE END SI5351_SetQSEFreq_0 */
   return HAL_OK;
 }
 

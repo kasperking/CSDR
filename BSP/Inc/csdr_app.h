@@ -54,6 +54,16 @@ typedef enum {
   STEP_1K=1000, STEP_10K=10000, STEP_100K=100000
 } FreqStep_t;
 
+/* Per-VFO state saved when the VFO is inactive */
+typedef struct {
+  uint32_t   freq_hz;
+  SDR_Mode_t mode;
+  uint8_t    band_idx;
+  FreqStep_t step;
+  int16_t    rit_hz;
+  uint32_t   bw_hz;
+} VFO_State_t;
+
 typedef struct {
   uint32_t    freq_hz;
   SDR_Mode_t  mode;
@@ -68,7 +78,6 @@ typedef struct {
   int16_t     rit_hz;
   bool        tx_mode;
   bool        si5351_ok;
-  bool        qse_on;
   uint8_t     att_db;
   bool        pwr_hold;
   uint32_t    bw_hz;           /*!< Snapped BW Hz (from mode table)  */
@@ -85,6 +94,9 @@ typedef struct {
   int16_t     mic_gain;          /*!< TX mic gain 0..100                */
   int16_t     smeter_offset_db;  /*!< S-meter offset -20..+20 dB        */
   uint32_t    lo_offset_hz;      /*!< LO offset Hz (default 18000)      */
+  /* Dual VFO */
+  VFO_State_t vfo_b;            /*!< Inactive VFO state storage         */
+  uint8_t     active_vfo;       /*!< 0 = VFO A active, 1 = VFO B active */
 } SDR_State_t;
 
 extern SDR_State_t g_sdr;
