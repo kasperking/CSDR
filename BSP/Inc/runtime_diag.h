@@ -20,6 +20,8 @@ typedef struct {
   uint32_t dsp_stack_words;
   uint32_t gui_stack_words;
   uint32_t cat_stack_words;
+  uint32_t rx_overrun_per_sec;
+  uint32_t tx_underrun_per_sec;
 } RuntimeDiag_Snapshot_t;
 
 extern volatile uint32_t rx_overrun_count;
@@ -36,10 +38,10 @@ void RuntimeDiag_AudioBlockEnd(void);
 void RuntimeDiag_ServiceSlow(uint32_t now_ms);
 void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out);
 
-void RuntimeDiag_RxHalfIsr(uint8_t half_index, volatile uint8_t *pending_flag);
-void RuntimeDiag_RxHalfConsumed(uint8_t half_index);
+uint32_t RuntimeDiag_RxHalfIsr(uint8_t half_index);
+void RuntimeDiag_RxHalfConsumed(uint8_t half_index, uint32_t sequence);
 void RuntimeDiag_TxHalfFilled(uint8_t half_index);
-void RuntimeDiag_TxHalfConsumedIsr(uint8_t half_index);
+void RuntimeDiag_TxHalfConsumedIsr(uint8_t half_index, bool tx_active);
 
 void RuntimeDiag_MarkAudioHealthy(void);
 void RuntimeDiag_WatchdogRefreshIfHealthy(uint32_t now_ms);
