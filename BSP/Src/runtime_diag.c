@@ -21,6 +21,8 @@ static uint32_t s_max_loop_stall_cycles = 0U;
 static uint32_t s_underrun_dsp_cycles = 0U;
 static uint32_t s_underrun_ui_cycles = 0U;
 static uint32_t s_underrun_loop_stall_cycles = 0U;
+static uint32_t s_ui_section_start_cyc[RUNTIME_DIAG_UI_SECTION_COUNT];
+static uint32_t s_ui_section_max_cyc[RUNTIME_DIAG_UI_SECTION_COUNT];
 static uint8_t  s_cpu_load_percent = 0U;
 static uint32_t s_diag_rate_window_start_ms = 0U;
 static uint32_t s_diag_rate_rx_count = 0U;
@@ -76,6 +78,10 @@ void RuntimeDiag_Init(void)
   s_underrun_dsp_cycles = 0U;
   s_underrun_ui_cycles = 0U;
   s_underrun_loop_stall_cycles = 0U;
+  for (uint8_t i = 0U; i < (uint8_t)RUNTIME_DIAG_UI_SECTION_COUNT; i++) {
+    s_ui_section_start_cyc[i] = 0U;
+    s_ui_section_max_cyc[i] = 0U;
+  }
   diag_enable_cycle_counter();
   s_cpu_window_start_ms = HAL_GetTick();
   s_cpu_window_start_cyc = DWT->CYCCNT;
@@ -133,6 +139,19 @@ void RuntimeDiag_UiRenderEnd(void)
 {
   uint32_t cycles = (uint32_t)(DWT->CYCCNT - s_ui_render_start_cyc);
   if (cycles > s_max_ui_cycles) s_max_ui_cycles = cycles;
+}
+
+void RuntimeDiag_UiSectionBegin(RuntimeDiag_UiSection_t section)
+{
+  if ((uint32_t)section >= (uint32_t)RUNTIME_DIAG_UI_SECTION_COUNT) return;
+  s_ui_section_start_cyc[section] = DWT->CYCCNT;
+}
+
+void RuntimeDiag_UiSectionEnd(RuntimeDiag_UiSection_t section)
+{
+  if ((uint32_t)section >= (uint32_t)RUNTIME_DIAG_UI_SECTION_COUNT) return;
+  uint32_t cycles = (uint32_t)(DWT->CYCCNT - s_ui_section_start_cyc[section]);
+  if (cycles > s_ui_section_max_cyc[section]) s_ui_section_max_cyc[section] = cycles;
 }
 
 void RuntimeDiag_MainLoopBeat(void)
@@ -196,6 +215,9 @@ void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out)
   out->underrun_dsp_us = diag_cycles_to_us(s_underrun_dsp_cycles);
   out->underrun_ui_us = diag_cycles_to_us(s_underrun_ui_cycles);
   out->underrun_loop_stall_us = diag_cycles_to_us(s_underrun_loop_stall_cycles);
+  for (uint8_t i = 0U; i < (uint8_t)RUNTIME_DIAG_UI_SECTION_COUNT; i++) {
+    out->ui_section_max_us[i] = diag_cycles_to_us(s_ui_section_max_cyc[i]);
+  }
 }
 
 uint32_t RuntimeDiag_RxHalfIsr(uint8_t half_index)

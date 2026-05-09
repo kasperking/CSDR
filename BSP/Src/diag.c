@@ -16,8 +16,8 @@
 #define DIAG_X          8U
 #define DIAG_Y          62U
 #define DIAG_W          112U
-#define DIAG_ROW_H      10U
-#define DIAG_ROWS       10U
+#define DIAG_ROW_H      9U
+#define DIAG_ROWS       19U
 #define DIAG_BG         0x0000U
 #define DIAG_FG         0x07E0U
 #define DIAG_WARN_FG    0xFFE0U
@@ -176,6 +176,24 @@ void Diag_Process(void)
   diag_update_row(8U, line, DIAG_FG);
   diag_make_line(line, sizeof(line), "UUIus", snap.underrun_ui_us);
   diag_update_row(9U, line, (snap.tx_underrun_per_sec != 0U) ? DIAG_WARN_FG : DIAG_FG);
+  diag_make_line(line, sizeof(line), "WFus", snap.ui_section_max_us[RUNTIME_DIAG_UI_WATERFALL]);
+  diag_update_row(10U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "SPECus", snap.ui_section_max_us[RUNTIME_DIAG_UI_SPECTRUM]);
+  diag_update_row(11U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "LCDus", snap.ui_section_max_us[RUNTIME_DIAG_UI_LCD_FLUSH]);
+  diag_update_row(12U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "TXTus", snap.ui_section_max_us[RUNTIME_DIAG_UI_TEXT]);
+  diag_update_row(13U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "STATus", snap.ui_section_max_us[RUNTIME_DIAG_UI_STATUS_BAR]);
+  diag_update_row(14U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "VMODus", snap.ui_section_max_us[RUNTIME_DIAG_UI_VOLUME_MODE]);
+  diag_update_row(15U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "SPIus", snap.ui_section_max_us[RUNTIME_DIAG_UI_SPI_TRANSFER]);
+  diag_update_row(16U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "WFPRE", snap.ui_section_max_us[RUNTIME_DIAG_UI_WF_PRECOMPUTE]);
+  diag_update_row(17U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "WFSC", snap.ui_section_max_us[RUNTIME_DIAG_UI_WF_SCROLL]);
+  diag_update_row(18U, line, DIAG_FG);
 
   RuntimeDiag_UiRenderEnd();
 }

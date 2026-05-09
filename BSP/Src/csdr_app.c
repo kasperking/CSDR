@@ -82,6 +82,7 @@ static int32_t s_tx_buf[CSDR_AUDIO_BUF_TOTAL * 2U]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 
 static volatile uint32_t s_rx_ready_seq[2] = { 0U, 0U };
+static uint32_t s_rx_done_seq[2] = { 0U, 0U };
 
 /* ════ DEBUG COUNTERS - xóa sau khi FFT chạy ════ */
 static volatile uint32_t dbg_sai_init_ret    = 0xFFFF;  /* HAL return of SAI DMA start */
@@ -157,6 +158,7 @@ static uint32_t cat_get_step(void);
 static void csdr_apply_band(uint8_t band);
 static void csdr_handle_encoder(void);
 static void csdr_handle_keys(void);
+static void csdr_process_audio_pending(void);
 static void csdr_update_waterfall(void);
 static void csdr_refresh_display(void);
 static void menu_apply_cb(void);
@@ -386,12 +388,9 @@ void CSDR_Init(void)
 /* ══════════════════════════════════════════════════════════
  *  CSDR_Loop  – gọi trong while(1) của main.c
  * ══════════════════════════════════════════════════════════ */
-void CSDR_Loop(void)
+static void csdr_process_audio_pending(void)
 {
-  RuntimeDiag_MainLoopBeat();
-
   /* DSP ping/pong */
-  static uint32_t s_rx_done_seq[2] = { 0U, 0U };
   uint32_t rx_seq = s_rx_ready_seq[0];
   if (rx_seq != s_rx_done_seq[0]) {
     /* s_rx_buf is in .DMA_SRAM (0x24000000, MPU: NON_CACHEABLE) so the
@@ -463,6 +462,14 @@ void CSDR_Loop(void)
     s_rx_done_seq[1] = rx_seq;
   }
 
+}
+
+void CSDR_Loop(void)
+{
+  RuntimeDiag_MainLoopBeat();
+
+  csdr_process_audio_pending();
+
   /* Input */
   csdr_handle_encoder();
   csdr_handle_keys();
@@ -484,6 +491,7 @@ void CSDR_Loop(void)
   if (!g_sdr.tx_mode && (now - t_wf >= CSDR_UI_WF_RX_PERIOD_MS)) {
     t_wf = now;
     if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
+      csdr_process_audio_pending();
       RuntimeDiag_UiRenderBegin();
       csdr_update_waterfall();
       RuntimeDiag_UiRenderEnd();
@@ -503,6 +511,7 @@ void CSDR_Loop(void)
   if (disp_due || dirty_due) {
     t_disp = now;
     if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
+      csdr_process_audio_pending();
       RuntimeDiag_UiRenderBegin();
       csdr_refresh_display();
       RuntimeDiag_UiRenderEnd();
@@ -820,9 +829,11 @@ static void csdr_update_waterfall(void)
   /* UI path only — never called from DSP ping/pong.
    * Consume all pending lines, draw exactly 1 row.  Non-blocking: DMA runs
    * in background, CS deasserted from HAL_SPI_TxCpltCallback. */
-  if (g_dsp.wf_lines == 0U || Menu_IsOpen(&g_menu)) return;
+  if (g_sdr.tx_mode || g_dsp.wf_lines == 0U || Menu_IsOpen(&g_menu)) return;
+  RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_WATERFALL);
   g_dsp.wf_lines = 0U;                   /* drop extras accumulated since last tick */
   SDR_UI_DrawWaterfall(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE);
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_WATERFALL);
 }
 
 static void csdr_refresh_display(void)
@@ -850,8 +861,10 @@ static void csdr_refresh_display(void)
         default:       bw_lo_ratio = half; bw_hi_ratio = half; break;
       }
     }
+    RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_SPECTRUM);
     SDR_UI_DrawSpectrum(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE,
                         bw_lo_ratio, bw_hi_ratio, NULL);
+    RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_SPECTRUM);
   }
 
   if (g_sdr.display_dirty) {
@@ -873,9 +886,13 @@ static void csdr_refresh_display(void)
      * top bar is three SPI windows (~41 kB) and knob events can otherwise
      * land inside the 5.33 ms TX half-buffer deadline. */
     if (g_sdr.tx_mode) {
+      RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
       SDR_UI_DrawHeader(&g_lcd, &ui);
+      RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     } else {
+      RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_STATUS_BAR);
       SDR_UI_DrawTopBar(&g_lcd, &ui);
+      RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
     }
 
     /* StatusPanel (y=62+) và S-meter chỉ khi menu ĐÓNG
@@ -883,7 +900,9 @@ static void csdr_refresh_display(void)
      * In TX, avoid repainting sidebars on the dirty transition; they are
      * cosmetic and add two extra 60x82 SPI pushes while audio timing is tight. */
     if (!menu_open && !g_sdr.tx_mode) {
+      RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_STATUS_BAR);
       SDR_UI_DrawStatusPanel(&g_lcd, &ui);
+      RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
     } else if (menu_open) {
       /* Menu đang mở: re-render để đảm bảo không bị xóa */
       Menu_Render(&g_menu);
@@ -892,9 +911,13 @@ static void csdr_refresh_display(void)
     if (g_sdr.tx_mode) {
       float alc_norm = (float)g_analog.alc_percent * (1.0f / 100.0f);
       float swr      = (float)g_analog.swr_x100    * (1.0f / 100.0f);
+      RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
       SDR_UI_UpdateTXMeters(&g_lcd, alc_norm, swr);
+      RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     } else {
+      RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
       SDR_UI_UpdateSMeter(&g_lcd, g_dsp.signal_power_db);
+      RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     }
   }
 }

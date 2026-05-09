@@ -14,6 +14,19 @@ extern "C" {
 #define FAULT_CODEC       (1UL << 2)
 #define FAULT_PLL         (1UL << 3)
 
+typedef enum {
+  RUNTIME_DIAG_UI_WATERFALL = 0,
+  RUNTIME_DIAG_UI_SPECTRUM,
+  RUNTIME_DIAG_UI_LCD_FLUSH,
+  RUNTIME_DIAG_UI_TEXT,
+  RUNTIME_DIAG_UI_STATUS_BAR,
+  RUNTIME_DIAG_UI_VOLUME_MODE,
+  RUNTIME_DIAG_UI_SPI_TRANSFER,
+  RUNTIME_DIAG_UI_WF_PRECOMPUTE,
+  RUNTIME_DIAG_UI_WF_SCROLL,
+  RUNTIME_DIAG_UI_SECTION_COUNT
+} RuntimeDiag_UiSection_t;
+
 typedef struct {
   uint32_t fault_flags;
   uint8_t  cpu_load_percent;
@@ -28,6 +41,7 @@ typedef struct {
   uint32_t underrun_dsp_us;
   uint32_t underrun_ui_us;
   uint32_t underrun_loop_stall_us;
+  uint32_t ui_section_max_us[RUNTIME_DIAG_UI_SECTION_COUNT];
 } RuntimeDiag_Snapshot_t;
 
 extern volatile uint32_t rx_overrun_count;
@@ -43,6 +57,8 @@ void RuntimeDiag_AudioBlockBegin(void);
 void RuntimeDiag_AudioBlockEnd(void);
 void RuntimeDiag_UiRenderBegin(void);
 void RuntimeDiag_UiRenderEnd(void);
+void RuntimeDiag_UiSectionBegin(RuntimeDiag_UiSection_t section);
+void RuntimeDiag_UiSectionEnd(RuntimeDiag_UiSection_t section);
 void RuntimeDiag_MainLoopBeat(void);
 void RuntimeDiag_ServiceSlow(uint32_t now_ms);
 void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out);
