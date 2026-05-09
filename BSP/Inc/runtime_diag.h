@@ -22,6 +22,12 @@ typedef struct {
   uint32_t cat_stack_words;
   uint32_t rx_overrun_per_sec;
   uint32_t tx_underrun_per_sec;
+  uint32_t max_dsp_us;
+  uint32_t max_ui_us;
+  uint32_t max_loop_stall_us;
+  uint32_t underrun_dsp_us;
+  uint32_t underrun_ui_us;
+  uint32_t underrun_loop_stall_us;
 } RuntimeDiag_Snapshot_t;
 
 extern volatile uint32_t rx_overrun_count;
@@ -35,6 +41,9 @@ uint32_t RuntimeDiag_GetFaults(void);
 
 void RuntimeDiag_AudioBlockBegin(void);
 void RuntimeDiag_AudioBlockEnd(void);
+void RuntimeDiag_UiRenderBegin(void);
+void RuntimeDiag_UiRenderEnd(void);
+void RuntimeDiag_MainLoopBeat(void);
 void RuntimeDiag_ServiceSlow(uint32_t now_ms);
 void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out);
 

@@ -114,6 +114,7 @@ static volatile uint8_t dbg_disable_lcd_dma = 0;
 #define CSDR_UI_WF_RX_PERIOD_MS       40U   /* 25 fps waterfall in RX */
 #define CSDR_UI_DISPLAY_RX_PERIOD_MS 200U   /* 5 Hz spectrum/meter in RX */
 #define CSDR_UI_DISPLAY_TX_PERIOD_MS 1000U  /* 1 Hz compact TX meter refresh */
+#define CSDR_UI_TX_DIRTY_MIN_MS      1000U  /* defer knob/menu redraws while TX audio is time-critical */
 
 
 /* ── Function key state machines ── */
@@ -387,6 +388,8 @@ void CSDR_Init(void)
  * ══════════════════════════════════════════════════════════ */
 void CSDR_Loop(void)
 {
+  RuntimeDiag_MainLoopBeat();
+
   /* DSP ping/pong */
   static uint32_t s_rx_done_seq[2] = { 0U, 0U };
   uint32_t rx_seq = s_rx_ready_seq[0];
@@ -480,16 +483,30 @@ void CSDR_Loop(void)
    * TX audio generation at the same cadence as WSJT-X audio deadlines. */
   if (!g_sdr.tx_mode && (now - t_wf >= CSDR_UI_WF_RX_PERIOD_MS)) {
     t_wf = now;
-    if (!dbg_disable_lcd_dma && !Diag_IsActive()) csdr_update_waterfall();
+    if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
+      RuntimeDiag_UiRenderBegin();
+      csdr_update_waterfall();
+      RuntimeDiag_UiRenderEnd();
+    }
   } else if (g_sdr.tx_mode) {
     t_wf = now;
   }
 
   uint32_t disp_period = g_sdr.tx_mode ? CSDR_UI_DISPLAY_TX_PERIOD_MS
                                        : CSDR_UI_DISPLAY_RX_PERIOD_MS;
-  if ((now - t_disp >= disp_period) || g_sdr.display_dirty) {
+  bool disp_due = (now - t_disp >= disp_period);
+  bool dirty_due = g_sdr.display_dirty && !g_sdr.tx_mode;
+  if (g_sdr.display_dirty && g_sdr.tx_mode &&
+      (now - t_disp >= CSDR_UI_TX_DIRTY_MIN_MS)) {
+    dirty_due = true;
+  }
+  if (disp_due || dirty_due) {
     t_disp = now;
-    if (!dbg_disable_lcd_dma && !Diag_IsActive()) csdr_refresh_display();
+    if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
+      RuntimeDiag_UiRenderBegin();
+      csdr_refresh_display();
+      RuntimeDiag_UiRenderEnd();
+    }
   }
   RuntimeDiag_ServiceSlow(now);
   Diag_Process();
@@ -852,8 +869,14 @@ static void csdr_refresh_display(void)
     ui.freq_b_hz = g_sdr.vfo_b.freq_hz; /* inactive VFO shown in sub-line */
     ui.active_vfo = g_sdr.active_vfo;
 
-    /* TopBar (y=0..61) luôn cập nhật */
-    SDR_UI_DrawTopBar(&g_lcd, &ui);
+    /* During TX, keep dirty redraws to the smallest safe region.  A full
+     * top bar is three SPI windows (~41 kB) and knob events can otherwise
+     * land inside the 5.33 ms TX half-buffer deadline. */
+    if (g_sdr.tx_mode) {
+      SDR_UI_DrawHeader(&g_lcd, &ui);
+    } else {
+      SDR_UI_DrawTopBar(&g_lcd, &ui);
+    }
 
     /* StatusPanel (y=62+) và S-meter chỉ khi menu ĐÓNG
      * Nếu menu đang mở: tuyệt đối không ghi đè vùng y=62..
