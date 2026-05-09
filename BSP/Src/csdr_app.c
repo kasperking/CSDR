@@ -24,6 +24,7 @@
 #include "diag.h"
 #include "cal.h"
 #include "sdr_scan.h"
+#include "runtime_diag.h"
 #include <string.h>
 #include <math.h>
 
@@ -173,6 +174,8 @@ static uint8_t  cat_get_active_vfo(void);
 
 void CSDR_Init(void)
 {
+  RuntimeDiag_Init();
+
   /* Power hold */
   PWR_Init();
 
@@ -239,12 +242,15 @@ void CSDR_Init(void)
     .input_volume = 23U, .output_volume = wm_out_vol, .line_in = true
   };
   dbg_wm8731_ok = (uint32_t)WM8731_Init(&wm);  /* 0 = HAL_OK */
+  if (dbg_wm8731_ok != HAL_OK) RuntimeDiag_SetFault(FAULT_CODEC);
 
   /* SI5351 */
   dbg_si5351_ok = (uint32_t)SI5351_Init(&g_si5351, &hi2c1, SI5351_I2C_ADDR, SI5351_XTAL_HZ);
   if (dbg_si5351_ok == HAL_OK) {
     g_sdr.si5351_ok = true;
     SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+  } else {
+    RuntimeDiag_SetFault(FAULT_PLL);
   }
 
   /* PE4302 Attenuator */
@@ -340,6 +346,8 @@ void CSDR_Init(void)
   /* Start SAI DMA (provides BCLK/LRCK to WM8731) */
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   /* Start TX first - it's MASTER and generates BCLK/LRCK for RX */
+  RuntimeDiag_TxHalfFilled(0U);
+  RuntimeDiag_TxHalfFilled(1U);
   HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t*)s_tx_buf,
       CSDR_AUDIO_BUF_TOTAL * 2U);
   HAL_Delay(10U);
@@ -382,11 +390,13 @@ void CSDR_Loop(void)
       USB_Audio_WriteRX(&g_usb_audio, s_rx_buf, CSDR_AUDIO_BLOCK_SIZE);
     dbg_rx_sample_0 = s_rx_buf[0];
     dbg_rx_sample_1 = s_rx_buf[1];
+    RuntimeDiag_AudioBlockBegin();
     if (g_sdr.tx_mode) {
       DSP_ProcessTX(&g_dsp, s_tx_buf, CSDR_AUDIO_BLOCK_SIZE);
     } else {
       DSP_Process(&g_dsp, s_rx_buf, s_tx_buf, CSDR_AUDIO_BLOCK_SIZE);
     }
+    RuntimeDiag_AudioBlockEnd();
     dbg_dsp_process_cnt++;
     /* Force 1kHz test tone directly into TX buffer when dbg_force_tone=1.
      * Set this flag in debugger to verify SAI TX → WM8731 DAC path. */
@@ -405,6 +415,8 @@ void CSDR_Loop(void)
     /* s_tx_buf: aligned(32), size 2048 B — 32-byte aligned ✓ */
     SCB_CleanDCache_by_Addr((uint32_t*)s_tx_buf,
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
+    RuntimeDiag_TxHalfFilled(0U);
+    RuntimeDiag_RxHalfConsumed(0U);
   }
   if (s_pong) {
     s_pong = 0;
@@ -416,6 +428,7 @@ void CSDR_Loop(void)
       USB_Audio_WriteRX(&g_usb_audio,
                          s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                          CSDR_AUDIO_BLOCK_SIZE);
+    RuntimeDiag_AudioBlockBegin();
     if (g_sdr.tx_mode) {
       DSP_ProcessTX(&g_dsp, s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                      CSDR_AUDIO_BLOCK_SIZE);
@@ -423,9 +436,12 @@ void CSDR_Loop(void)
       DSP_Process(&g_dsp, s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                    s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2, CSDR_AUDIO_BLOCK_SIZE);
     }
+    RuntimeDiag_AudioBlockEnd();
     /* s_tx_buf pong: byte offset 2048, size 2048 — 32-byte aligned ✓ */
     SCB_CleanDCache_by_Addr((uint32_t*)(s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2),
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
+    RuntimeDiag_TxHalfFilled(1U);
+    RuntimeDiag_RxHalfConsumed(1U);
   }
 
   /* Input */
@@ -445,8 +461,11 @@ void CSDR_Loop(void)
   if (now - t_pwr    >= 100U) { t_pwr    = now; PWR_Poll(); }
   /* Waterfall: 25 fps cap.  Set dbg_disable_lcd_dma=1 in debugger to suppress
    * SPI DMA activity while tracing USB audio issues. */
-  if (now - t_wf     >= 40U)  { t_wf     = now; if (!dbg_disable_lcd_dma) csdr_update_waterfall(); }
-  if (now - t_disp   >= 200U) { t_disp   = now; if (!dbg_disable_lcd_dma) csdr_refresh_display(); }
+  if (now - t_wf     >= 40U)  { t_wf     = now; if (!dbg_disable_lcd_dma && !Diag_IsActive()) csdr_update_waterfall(); }
+  if (now - t_disp   >= 200U) { t_disp   = now; if (!dbg_disable_lcd_dma && !Diag_IsActive()) csdr_refresh_display(); }
+  RuntimeDiag_ServiceSlow(now);
+  Diag_Process();
+  RuntimeDiag_WatchdogRefreshIfHealthy(now);
   /* CAT flush: gọi thường xuyên để response đến host trước timeout */
   CAT_FlushTX(&g_cat);
 
@@ -491,7 +510,7 @@ void CSDR_CDC_Receive(uint8_t *buf, uint32_t len)
 void HAL_SAI_RxHalfCpltCallback(SAI_HandleTypeDef *h)
 {
   if (h->Instance == SAI1_Block_B) {
-    s_ping = 1;
+    RuntimeDiag_RxHalfIsr(0U, &s_ping);
     dbg_cb_half_count++;
     /* USB_Audio_WriteRX is intentionally NOT called here.
      * Calling USB functions from a DMA ISR starves the USB OTG IRQ when the
@@ -503,9 +522,23 @@ void HAL_SAI_RxHalfCpltCallback(SAI_HandleTypeDef *h)
 void HAL_SAI_RxCpltCallback(SAI_HandleTypeDef *h)
 {
   if (h->Instance == SAI1_Block_B) {
-    s_pong = 1;
+    RuntimeDiag_RxHalfIsr(1U, &s_pong);
     dbg_cb_full_count++;
     /* USB_Audio_WriteRX moved to CSDR_Loop – see HAL_SAI_RxHalfCpltCallback. */
+  }
+}
+
+void HAL_SAI_TxHalfCpltCallback(SAI_HandleTypeDef *h)
+{
+  if (h->Instance == SAI1_Block_A) {
+    RuntimeDiag_TxHalfConsumedIsr(0U);
+  }
+}
+
+void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *h)
+{
+  if (h->Instance == SAI1_Block_A) {
+    RuntimeDiag_TxHalfConsumedIsr(1U);
   }
 }
 
@@ -513,10 +546,13 @@ void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *h)
 {
   (void)h;
   dbg_sai_error_cnt++;
+  RuntimeDiag_SetFault(FAULT_CODEC);
   /* Stop both blocks */
   HAL_SAI_DMAStop(&hsai_BlockA1);   /* TX master first */
   HAL_SAI_DMAStop(&hsai_BlockB1);   /* then RX slave  */
   /* Restart TX master first – it generates BCLK/LRCK for the slave */
+  RuntimeDiag_TxHalfFilled(0U);
+  RuntimeDiag_TxHalfFilled(1U);
   HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t*)s_tx_buf,
       CSDR_AUDIO_BUF_TOTAL * 2U);
   /* Small wait for BCLK/LRCK to stabilise (~10 µs @ 480 MHz) */

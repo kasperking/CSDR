@@ -69,6 +69,8 @@ typedef struct {
 
 /* ── API ── */
 void Diag_Run(ST7789_Handle_t *lcd);
+bool Diag_IsActive(void);
+void Diag_Process(void);
 
 #ifdef __cplusplus
 }
