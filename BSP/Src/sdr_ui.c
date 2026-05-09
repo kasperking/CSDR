@@ -55,6 +55,11 @@ static float    s_wf_smooth[256];
 static uint16_t s_wf_lut[256];
 static uint8_t  s_wf_head = 0;
 static float    s_smeter_voltage = 0.0f;
+static int32_t  s_rx_meter_bars = -1;
+static bool     s_tx_meter_active = false;
+static int32_t  s_tx_alc_bars = -1;
+static int32_t  s_tx_alc_pct = -1;
+static int32_t  s_tx_swr_x10 = -1;
 
 /* ── pwr_compress: fast log2-based amplitude normalise ───────────────────── */
 #define PWR_LOG2_FLOOR  (-26.6f)
@@ -716,6 +721,7 @@ void SDR_UI_DrawMeter(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
   int32_t bars = (int32_t)((ui->signal_db + 73.0f) / 3.0f);
   if (bars < 0) bars = 0;
   if (bars > (int32_t)SM_BARS) bars = (int32_t)SM_BARS;
+  s_rx_meter_bars = bars;
   draw_smeter_rows(bars);
   ST7789_PushWindow(lcd, MTR_X, (uint16_t)(MTR_X + MTR_W - 1U),
                     MTR_Y, MTR_Y2 - 1U, s_mtr_buf);
@@ -724,7 +730,15 @@ void SDR_UI_DrawMeter(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_UpdateSMeter  – fast meter refresh (10 Hz, RX)
  * ════════════════════════════════════════════════════════════════════════════ */
-void SDR_UI_UpdateSMeter_SetTX(bool tx)      { (void)tx; }
+void SDR_UI_UpdateSMeter_SetTX(bool tx)
+{
+  (void)tx;
+  s_tx_meter_active = false;
+  s_tx_alc_bars = -1;
+  s_tx_alc_pct = -1;
+  s_tx_swr_x10 = -1;
+  s_rx_meter_bars = -1;
+}
 void SDR_UI_UpdateSMeter_SetVoltage(float v) { s_smeter_voltage = v; }
 
 void SDR_UI_UpdateSMeter(ST7789_Handle_t *lcd, float signal_db)
@@ -732,37 +746,32 @@ void SDR_UI_UpdateSMeter(ST7789_Handle_t *lcd, float signal_db)
   int32_t bars = (int32_t)((signal_db + 73.0f) / 3.0f);
   if (bars < 0) bars = 0;
   if (bars > (int32_t)SM_BARS) bars = (int32_t)SM_BARS;
+  if (bars == s_rx_meter_bars) return;
+  s_rx_meter_bars = bars;
   draw_smeter_rows(bars);
   ST7789_PushWindow(lcd, MTR_X, (uint16_t)(MTR_X + MTR_W - 1U),
                     MTR_Y, MTR_Y2 - 1U, s_mtr_buf);
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
- *  SDR_UI_UpdateTXMeters  – ALC (top half) + SWR (bottom half)
+ *  TX meter helpers – render only the row span that will be pushed
  * ════════════════════════════════════════════════════════════════════════════ */
-void SDR_UI_UpdateTXMeters(ST7789_Handle_t *lcd, float alc_norm, float swr)
+static void tx_meter_render_rows(uint16_t row0, uint16_t row1,
+                                 int32_t alc_b, int32_t alc_pct,
+                                 int32_t swr_x10)
 {
-  /* TX layout – ALC is the primary thin-bar element; SWR is compact text only.
-   *  rows  5-12: ALC scale labels
-   *  row  13   : tick marks
-   *  rows 14-16: 3-px thin ALC bar
-   *  rows 18-25: "ALC XX%" value text
-   *  rows 28-35: "SWR X.X" compact text, no bar
-   */
-  int32_t alc_b = (int32_t)(alc_norm * (float)SM_BARS + 0.5f);
-  if (alc_b < 0) alc_b = 0;
-  if (alc_b > (int32_t)SM_BARS) alc_b = (int32_t)SM_BARS;
   uint16_t alc_fill = (uint16_t)(SM_START_X + (uint16_t)alc_b * (SM_BAR_W + SM_BAR_GAP));
   uint16_t x_end    = (uint16_t)(SM_START_X + SM_TOTAL_W);
-
-  char alc_val[6]; snprintf(alc_val, sizeof(alc_val), "%d%%", (int)(alc_norm * 100.0f + 0.5f));
-  char swr_val[6]; snprintf(swr_val, sizeof(swr_val), "%.1f", swr);
-  uint16_t swr_col = (swr >= 3.0f) ? UI_S9P : (swr >= 2.0f) ? UI_S7_9 : UI_S1_6;
+  char alc_val[6]; snprintf(alc_val, sizeof(alc_val), "%ld%%", (long)alc_pct);
+  char swr_val[6]; snprintf(swr_val, sizeof(swr_val), "%ld.%ld",
+                            (long)(swr_x10 / 10), (long)(swr_x10 % 10));
+  uint16_t swr_col = (swr_x10 >= 30) ? UI_S9P : (swr_x10 >= 20) ? UI_S7_9 : UI_S1_6;
 
   static const char *const slbls[] = {"0","25","50","75","100"};
   static const uint8_t     spos[]  = { 0,   3,   6,   9,  11 };
 
-  for (uint16_t row = 0; row < MTR_H; row++) {
+  if (row1 >= MTR_H) row1 = MTR_H - 1U;
+  for (uint16_t row = row0; row <= row1; row++) {
     uint16_t *ln = s_mtr_buf + (uint32_t)row * MTR_W;
     LCD_LineFill(ln, 0, MTR_W, UI_MTR_BG);
 
@@ -813,9 +822,69 @@ void SDR_UI_UpdateTXMeters(ST7789_Handle_t *lcd, float alc_norm, float swr)
                   &Font6x8, swr_col, UI_MTR_BG);
     }
   }
+}
 
+static void tx_meter_push_rows(ST7789_Handle_t *lcd, uint16_t row0, uint16_t row1)
+{
   ST7789_PushWindow(lcd, MTR_X, (uint16_t)(MTR_X + MTR_W - 1U),
-                    MTR_Y, MTR_Y2 - 1U, s_mtr_buf);
+                    (uint16_t)(MTR_Y + row0), (uint16_t)(MTR_Y + row1),
+                    s_mtr_buf + (uint32_t)row0 * MTR_W);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ *  SDR_UI_UpdateTXMeters  – dirty, row-bounded ALC/SWR refresh for TX
+ * ════════════════════════════════════════════════════════════════════════════ */
+void SDR_UI_UpdateTXMeters(ST7789_Handle_t *lcd, float alc_norm, float swr)
+{
+  int32_t alc_b = (int32_t)(alc_norm * (float)SM_BARS + 0.5f);
+  if (alc_b < 0) alc_b = 0;
+  if (alc_b > (int32_t)SM_BARS) alc_b = (int32_t)SM_BARS;
+
+  int32_t alc_pct = (int32_t)(alc_norm * 100.0f + 0.5f);
+  if (alc_pct < 0) alc_pct = 0;
+  if (alc_pct > 999) alc_pct = 999;
+
+  int32_t swr_x10 = (int32_t)(swr * 10.0f + 0.5f);
+  if (swr_x10 < 0) swr_x10 = 0;
+  if (swr_x10 > 999) swr_x10 = 999;
+
+  /* First TX meter draw is intentionally split into small SPI windows.  The
+   * old path pushed all 200x38 pixels (15.2 kB) synchronously; each dirty
+   * region below is <= 3.2 kB (blank gaps split out separately), so one
+   * LCD wait is much less likely to straddle a 5.33 ms audio deadline. */
+  bool first = !s_tx_meter_active;
+  if (first) s_tx_meter_active = true;
+
+  if (first) {
+    tx_meter_render_rows(0U, 4U, alc_b, alc_pct, swr_x10);
+    tx_meter_push_rows(lcd, 0U, 4U);
+    tx_meter_render_rows(5U, 12U, alc_b, alc_pct, swr_x10);
+    tx_meter_push_rows(lcd, 5U, 12U);
+    tx_meter_render_rows(13U, 13U, alc_b, alc_pct, swr_x10);
+    tx_meter_push_rows(lcd, 13U, 13U);
+    tx_meter_render_rows(26U, 27U, alc_b, alc_pct, swr_x10);
+    tx_meter_push_rows(lcd, 26U, 27U);
+    tx_meter_render_rows(36U, 37U, alc_b, alc_pct, swr_x10);
+    tx_meter_push_rows(lcd, 36U, 37U);
+  }
+
+  if (first || alc_b != s_tx_alc_bars) {
+    tx_meter_render_rows(14U, 16U, alc_b, alc_pct, swr_x10);
+    tx_meter_push_rows(lcd, 14U, 16U);
+    s_tx_alc_bars = alc_b;
+  }
+
+  if (first || alc_pct != s_tx_alc_pct) {
+    tx_meter_render_rows(18U, 25U, alc_b, alc_pct, swr_x10);
+    tx_meter_push_rows(lcd, 18U, 25U);
+    s_tx_alc_pct = alc_pct;
+  }
+
+  if (first || swr_x10 != s_tx_swr_x10) {
+    tx_meter_render_rows(28U, 35U, alc_b, alc_pct, swr_x10);
+    tx_meter_push_rows(lcd, 28U, 35U);
+    s_tx_swr_x10 = swr_x10;
+  }
 }
 
 /* ── Compat wrappers ─────────────────────────────────────────────────────── */
