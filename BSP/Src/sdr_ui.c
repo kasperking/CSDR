@@ -12,6 +12,7 @@
 /* USER CODE END Header */
 
 #include "sdr_ui.h"
+#include "runtime_diag.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -910,7 +911,6 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
                           SDR_UI_State_t *ui)
 {
   if (!bins) return;
-
   uint16_t b0, n_vis;
   spec_window(bins, &b0, &n_vis);
   const float bpp    = (float)n_vis / (float)SPEC_W;
@@ -1023,6 +1023,7 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
  * ════════════════════════════════════════════════════════════════════════════ */
 uint8_t SDR_UI_WaterfallPrecompute(const float *fft_db, uint16_t bins)
 {
+  RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_WF_PRECOMPUTE);
   uint8_t fill = (uint8_t)(s_wf_fill ^ 1U);
   uint8_t *dst = s_wf_idx[fill];
 
@@ -1046,6 +1047,7 @@ uint8_t SDR_UI_WaterfallPrecompute(const float *fft_db, uint16_t bins)
   }
 
   s_wf_fill = fill;
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_WF_PRECOMPUTE);
   return fill;
 }
 
@@ -1059,6 +1061,7 @@ uint8_t SDR_UI_WaterfallPrecompute(const float *fft_db, uint16_t bins)
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_WaterfallPush(ST7789_Handle_t *lcd, uint8_t buf_idx)
 {
+  RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_WF_SCROLL);
   /* Decrement head first so newest row sits at head → displayed at top */
   s_wf_head = (s_wf_head == 0U) ? (uint8_t)(WF_H - 1U) : (uint8_t)(s_wf_head - 1U);
 
@@ -1077,6 +1080,7 @@ void SDR_UI_WaterfallPush(ST7789_Handle_t *lcd, uint8_t buf_idx)
     ST7789_PushWindow(lcd, WF_X, (uint16_t)(WF_X + WF_W - 1U),
                       (uint16_t)(WF_Y + a), WF_Y2 - 1U,
                       &s_wf_buf[0][0]);
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_WF_SCROLL);
 }
 
 /* ── Compat: Precompute + Push in one call ───────────────────────────────── */

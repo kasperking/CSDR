@@ -12,6 +12,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "st7789.h"
+#include "runtime_diag.h"
 #include <string.h>
 
 /* Private define ------------------------------------------------------------*/
@@ -90,15 +91,22 @@ static void dma_push(ST7789_Handle_t *h, const uint8_t *buf, uint32_t bytes);
 
 /* ── Low-level ── */
 static void hw_cmd(ST7789_Handle_t *h, uint8_t c)
-{ _CSL(h); _DCcmd(h); HAL_SPI_Transmit(h->hspi,&c,1,SPI_TO); _CSH(h); }
+{ RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_SPI_TRANSFER);
+  _CSL(h); _DCcmd(h); HAL_SPI_Transmit(h->hspi,&c,1,SPI_TO); _CSH(h);
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_SPI_TRANSFER); }
 static void hw_d8(ST7789_Handle_t *h, uint8_t d)
-{ _CSL(h); _DCdat(h); HAL_SPI_Transmit(h->hspi,&d,1,SPI_TO); _CSH(h); }
+{ RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_SPI_TRANSFER);
+  _CSL(h); _DCdat(h); HAL_SPI_Transmit(h->hspi,&d,1,SPI_TO); _CSH(h);
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_SPI_TRANSFER); }
 static void hw_d16(ST7789_Handle_t *h, uint16_t d)
 { uint8_t b[2]={(uint8_t)(d>>8),(uint8_t)d};
-  _CSL(h); _DCdat(h); HAL_SPI_Transmit(h->hspi,b,2,SPI_TO); _CSH(h); }
+  RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_SPI_TRANSFER);
+  _CSL(h); _DCdat(h); HAL_SPI_Transmit(h->hspi,b,2,SPI_TO); _CSH(h);
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_SPI_TRANSFER); }
 
 static void dma_wait(ST7789_Handle_t *h)
-{ uint32_t t=HAL_GetTick();
+{ RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_LCD_FLUSH);
+  uint32_t t=HAL_GetTick();
   while(h->dma_busy){
     if((HAL_GetTick()-t)>500U){
       h->dma_busy=false;
@@ -106,10 +114,12 @@ static void dma_wait(ST7789_Handle_t *h)
       break;
     }
   }
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_LCD_FLUSH);
 }
 
 static void dma_push(ST7789_Handle_t *h, const uint8_t *buf, uint32_t bytes)
 {
+  RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_SPI_TRANSFER);
   SCB_CleanDCache_by_Addr((uint32_t*)(uintptr_t)buf, (int32_t)((bytes + 31U) & ~31U));
   while (bytes > 0U) {
     uint16_t chunk = (bytes > 65535U) ? 65535U : (uint16_t)bytes;
@@ -119,6 +129,7 @@ static void dma_push(ST7789_Handle_t *h, const uint8_t *buf, uint32_t bytes)
     buf   += chunk;
     bytes -= chunk;
   }
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_SPI_TRANSFER);
 }
 
 /* ── LCD_LineFill / Char / Str / Rect ── */
@@ -140,7 +151,9 @@ void LCD_LineChar(uint16_t *ln, uint16_t x, uint16_t frow,
 
 void LCD_LineStr(uint16_t *ln, uint16_t x, uint16_t frow,
                  const char *s, const Font_t *f, uint16_t fg, uint16_t bg)
-{ while(*s&&x<LCD_W){ LCD_LineChar(ln,x,frow,*s++,f,fg,bg); x+=(uint16_t)f->width; } }
+{ RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_TEXT);
+  while(*s&&x<LCD_W){ LCD_LineChar(ln,x,frow,*s++,f,fg,bg); x+=(uint16_t)f->width; }
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_TEXT); }
 
 void LCD_LineRect(uint16_t *ln, uint16_t x0, uint16_t w,
                   uint16_t row, uint16_t total_h,
