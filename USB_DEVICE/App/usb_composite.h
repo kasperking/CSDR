@@ -67,10 +67,10 @@ extern "C" {
  *  IF AC:     9
  *  AC Hdr:   10  (wTotalLength + 2 IFs)
  *  Input T OUT:  12
- *  Feature OUT:   9  (2 channels = 3+2+ctl*2+7 = 10... giản: 9)
+ *  Feature OUT:  10  (master + left + right bmaControls + iFeature)
  *  Output T OUT: 9
  *  Input T IN:  12
- *  Feature IN:  9
+ *  Feature IN:  10
  *  Output T IN: 9
  *  AS OUT: IF alt0 (9) + IF alt1 (9) + AS general (7) + AS format I (11) + EP std (9) + EP ISO spec (7) = 52
  *  AS IN:  same = 52
@@ -84,10 +84,10 @@ extern "C" {
  *  CDC data IF: 9
  *  EP CDC IN:   7
  *  EP CDC OUT:  7
- *  = 9 + 8 + 9 + 10 + 12+9+9 + 12+9+9 + 52 + 52 + 8 + 9+5+5+4+5+7 + 9+7+7
- *  = 263 (ước tính; sẽ tính chính xác qua macro trong .c)
+ *  = 9 + 8 + 9 + 10 + 12+10+9 + 12+10+9 + 52 + 52 + 8 + 9+5+5+4+5+7 + 9+7+7
+ *  = 268
  */
-#define COMP_CFG_DESC_SIZ   263U
+#define COMP_CFG_DESC_SIZ   268U
 
 /* ───────────── Exported class driver ───────────── */
 extern USBD_ClassTypeDef USBD_Composite;

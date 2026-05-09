@@ -116,9 +116,9 @@ USBD_ClassTypeDef USBD_Composite =
 
 __ALIGN_BEGIN static const uint8_t s_cfg_desc[] __ALIGN_END =
 {
-  /* Configuration (9), wTotalLength = 266 */
+  /* Configuration (9), wTotalLength = 268 */
   0x09, USB_DESC_TYPE_CONFIGURATION,
-  10, 1,
+  (uint8_t)(COMP_CFG_DESC_SIZ & 0xFFU), (uint8_t)(COMP_CFG_DESC_SIZ >> 8),
   COMP_NUM_INTERFACES, 0x01, 0x00, 0xC0, 0x32,
 
   /* IAD Audio (8) */
@@ -128,8 +128,8 @@ __ALIGN_BEGIN static const uint8_t s_cfg_desc[] __ALIGN_END =
   0x09, USB_DESC_TYPE_INTERFACE,
   COMP_IF_AC, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00,
 
-  /* AC Header (10) */
-  0x0A, 0x24, 0x01, 0x00, 0x01, 0x46, 0x00, 0x02,
+  //* AC Header (10), class-specific AC wTotalLength = 72 */
+  0x0A, 0x24, 0x01, 0x00, 0x01, 0x48, 0x00, 0x02,
   COMP_IF_AS_OUT, COMP_IF_AS_IN,
 
   /* IT OUT (12) */
@@ -137,9 +137,9 @@ __ALIGN_BEGIN static const uint8_t s_cfg_desc[] __ALIGN_END =
   (uint8_t)(TT_USB_STREAMING & 0xFF), (uint8_t)(TT_USB_STREAMING >> 8),
   0x00, 0x02, 0x03, 0x00, 0x00, 0x00,
 
-  /* FU OUT (9) */
-  0x09, 0x24, 0x06, UNIT_FU_OUT, UNIT_IT_OUT,
-  0x01, 0x01, 0x00, 0x00,
+  /* FU OUT (10): master + left + right controls */
+  0x0A, 0x24, 0x06, UNIT_FU_OUT, UNIT_IT_OUT,
+  0x01, 0x01, 0x00, 0x00, 0x00,
 
   /* OT OUT (9) */
   0x09, 0x24, 0x03, UNIT_OT_OUT,
@@ -151,9 +151,9 @@ __ALIGN_BEGIN static const uint8_t s_cfg_desc[] __ALIGN_END =
   (uint8_t)(TT_MICROPHONE & 0xFF), (uint8_t)(TT_MICROPHONE >> 8),
   0x00, 0x02, 0x03, 0x00, 0x00, 0x00,
 
-  /* FU IN (9) */
-  0x09, 0x24, 0x06, UNIT_FU_IN, UNIT_IT_IN,
-  0x01, 0x01, 0x00, 0x00,
+   /* FU IN (10): master + left + right controls */
+  0x0A, 0x24, 0x06, UNIT_FU_IN, UNIT_IT_IN,
+  0x01, 0x01, 0x00, 0x00, 0x00,
 
   /* OT IN (9) */
   0x09, 0x24, 0x03, UNIT_OT_IN,
@@ -254,6 +254,8 @@ __ALIGN_BEGIN static const uint8_t s_cfg_desc[] __ALIGN_END =
   (uint8_t)(COMP_EP_CDC_SIZE >> 8),
   0x00,
 };
+
+enum { COMP_CFG_DESC_SIZE_CHECK = 1 / ((sizeof(s_cfg_desc) == COMP_CFG_DESC_SIZ) ? 1 : 0) };
 
 static uint8_t *Comp_GetCfg(uint16_t *length)
 {
