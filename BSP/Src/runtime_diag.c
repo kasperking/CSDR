@@ -13,6 +13,14 @@ static uint32_t s_cpu_window_start_ms = 0U;
 static uint32_t s_cpu_window_start_cyc = 0U;
 static uint32_t s_cpu_active_cycles = 0U;
 static uint32_t s_audio_block_start_cyc = 0U;
+static uint32_t s_ui_render_start_cyc = 0U;
+static uint32_t s_main_loop_last_cyc = 0U;
+static uint32_t s_max_dsp_cycles = 0U;
+static uint32_t s_max_ui_cycles = 0U;
+static uint32_t s_max_loop_stall_cycles = 0U;
+static uint32_t s_underrun_dsp_cycles = 0U;
+static uint32_t s_underrun_ui_cycles = 0U;
+static uint32_t s_underrun_loop_stall_cycles = 0U;
 static uint8_t  s_cpu_load_percent = 0U;
 static uint32_t s_diag_rate_window_start_ms = 0U;
 static uint32_t s_diag_rate_rx_count = 0U;
@@ -59,6 +67,15 @@ void RuntimeDiag_Init(void)
   s_diag_rate_tx_count = 0U;
   s_rx_overrun_per_sec = 0U;
   s_tx_underrun_per_sec = 0U;
+  s_audio_block_start_cyc = 0U;
+  s_ui_render_start_cyc = 0U;
+  s_main_loop_last_cyc = 0U;
+  s_max_dsp_cycles = 0U;
+  s_max_ui_cycles = 0U;
+  s_max_loop_stall_cycles = 0U;
+  s_underrun_dsp_cycles = 0U;
+  s_underrun_ui_cycles = 0U;
+  s_underrun_loop_stall_cycles = 0U;
   diag_enable_cycle_counter();
   s_cpu_window_start_ms = HAL_GetTick();
   s_cpu_window_start_cyc = DWT->CYCCNT;
@@ -92,10 +109,40 @@ void RuntimeDiag_AudioBlockBegin(void)
   s_audio_block_start_cyc = DWT->CYCCNT;
 }
 
+static uint32_t diag_cycles_to_us(uint32_t cycles)
+{
+  uint32_t hz_per_us = SystemCoreClock / 1000000U;
+  if (hz_per_us == 0U) return 0U;
+  return cycles / hz_per_us;
+}
+
 void RuntimeDiag_AudioBlockEnd(void)
 {
-  s_cpu_active_cycles += (uint32_t)(DWT->CYCCNT - s_audio_block_start_cyc);
+  uint32_t cycles = (uint32_t)(DWT->CYCCNT - s_audio_block_start_cyc);
+  s_cpu_active_cycles += cycles;
+  if (cycles > s_max_dsp_cycles) s_max_dsp_cycles = cycles;
   RuntimeDiag_MarkAudioHealthy();
+}
+
+void RuntimeDiag_UiRenderBegin(void)
+{
+  s_ui_render_start_cyc = DWT->CYCCNT;
+}
+
+void RuntimeDiag_UiRenderEnd(void)
+{
+  uint32_t cycles = (uint32_t)(DWT->CYCCNT - s_ui_render_start_cyc);
+  if (cycles > s_max_ui_cycles) s_max_ui_cycles = cycles;
+}
+
+void RuntimeDiag_MainLoopBeat(void)
+{
+  uint32_t now_cyc = DWT->CYCCNT;
+  if (s_main_loop_last_cyc != 0U) {
+    uint32_t cycles = (uint32_t)(now_cyc - s_main_loop_last_cyc);
+    if (cycles > s_max_loop_stall_cycles) s_max_loop_stall_cycles = cycles;
+  }
+  s_main_loop_last_cyc = now_cyc;
 }
 
 void RuntimeDiag_ServiceSlow(uint32_t now_ms)
@@ -143,6 +190,12 @@ void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out)
   out->cat_stack_words = s_cat_stack_words;
   out->rx_overrun_per_sec = s_rx_overrun_per_sec;
   out->tx_underrun_per_sec = s_tx_underrun_per_sec;
+  out->max_dsp_us = diag_cycles_to_us(s_max_dsp_cycles);
+  out->max_ui_us = diag_cycles_to_us(s_max_ui_cycles);
+  out->max_loop_stall_us = diag_cycles_to_us(s_max_loop_stall_cycles);
+  out->underrun_dsp_us = diag_cycles_to_us(s_underrun_dsp_cycles);
+  out->underrun_ui_us = diag_cycles_to_us(s_underrun_ui_cycles);
+  out->underrun_loop_stall_us = diag_cycles_to_us(s_underrun_loop_stall_cycles);
 }
 
 uint32_t RuntimeDiag_RxHalfIsr(uint8_t half_index)
@@ -179,6 +232,9 @@ void RuntimeDiag_TxHalfConsumedIsr(uint8_t half_index, bool tx_active)
   uint32_t fill_seq = s_tx_fill_seq[half_index];
   if (tx_active && fill_seq == s_tx_dma_seq[half_index]) {
     tx_underrun_count++;
+    s_underrun_dsp_cycles = s_max_dsp_cycles;
+    s_underrun_ui_cycles = s_max_ui_cycles;
+    s_underrun_loop_stall_cycles = s_max_loop_stall_cycles;
     RuntimeDiag_SetFault(FAULT_I2S_TX_UND);
   }
   s_tx_dma_seq[half_index] = fill_seq;

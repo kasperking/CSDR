@@ -17,7 +17,7 @@
 #define DIAG_Y          62U
 #define DIAG_W          112U
 #define DIAG_ROW_H      10U
-#define DIAG_ROWS       7U
+#define DIAG_ROWS       10U
 #define DIAG_BG         0x0000U
 #define DIAG_FG         0x07E0U
 #define DIAG_WARN_FG    0xFFE0U
@@ -144,6 +144,8 @@ void Diag_Process(void)
   if (!s_diag_full_redraw && (now - s_diag_last_ms) < 500U) return;
   s_diag_last_ms = now;
 
+  RuntimeDiag_UiRenderBegin();
+
   if (s_diag_full_redraw) {
     diag_draw_frame(s_diag_lcd);
     for (uint8_t i = 0U; i < DIAG_ROWS; i++) s_diag_row_valid[i] = false;
@@ -166,6 +168,14 @@ void Diag_Process(void)
   diag_update_row(4U, line, (snap.tx_underrun_per_sec != 0U) ? DIAG_WARN_FG : DIAG_FG);
   diag_make_line(line, sizeof(line), "FLT", snap.fault_flags);
   diag_update_row(5U, line, (snap.fault_flags != 0U) ? DIAG_WARN_FG : DIAG_FG);
-  diag_make_line(line, sizeof(line), "DSPSTK", snap.dsp_stack_words);
+  diag_make_line(line, sizeof(line), "DSPus", snap.max_dsp_us);
   diag_update_row(6U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "UIus", snap.max_ui_us);
+  diag_update_row(7U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "LOOPus", snap.max_loop_stall_us);
+  diag_update_row(8U, line, DIAG_FG);
+  diag_make_line(line, sizeof(line), "UUIus", snap.underrun_ui_us);
+  diag_update_row(9U, line, (snap.tx_underrun_per_sec != 0U) ? DIAG_WARN_FG : DIAG_FG);
+
+  RuntimeDiag_UiRenderEnd();
 }
