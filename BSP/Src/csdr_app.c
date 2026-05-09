@@ -109,6 +109,11 @@ extern volatile uint32_t dbg_usb_stall_cnt;   /* ISO IN queue failures (stall/no
 /* Set to 1 in debugger to skip waterfall/LCD DMA while diagnosing USB audio. */
 static volatile uint8_t dbg_disable_lcd_dma = 0;
 
+/* UI refresh caps.  RX values preserve the existing cadence; TX values keep
+ * long SPI LCD transfers away from the 5.33 ms audio half-buffer deadline. */
+#define CSDR_UI_WF_RX_PERIOD_MS       40U   /* 25 fps waterfall in RX */
+#define CSDR_UI_DISPLAY_RX_PERIOD_MS 200U   /* 5 Hz spectrum/meter in RX */
+#define CSDR_UI_DISPLAY_TX_PERIOD_MS 1000U  /* 1 Hz compact TX meter refresh */
 
 
 /* ── Function key state machines ── */
@@ -192,6 +197,14 @@ void CSDR_Init(void)
   }
 
   /* LCD */
+  /* Keep LCD completion IRQs below USB/SAI audio IRQs.  SPI DMA can occupy the
+   * bus for multi-kilobyte UI pushes, but its ISR must not preempt the audio
+   * half-buffer producer/consumer callbacks. */
+  HAL_NVIC_SetPriority(SPI1_IRQn, 5U, 0U);
+  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 5U, 0U);
+  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0U, 0U);
+  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0U, 0U);
+
   g_lcd.hspi     = &hspi1;
   g_lcd.hdma_tx  = &hdma_spi1_tx;
   g_lcd.cs_port  = LCD_CS_GPIO_Port;  g_lcd.cs_pin  = LCD_CS_Pin;
@@ -462,10 +475,22 @@ void CSDR_Loop(void)
   }
   if (now - t_fan    >= 1000U){ t_fan    = now; Fan_Update(g_analog.temp_c); }
   if (now - t_pwr    >= 100U) { t_pwr    = now; PWR_Poll(); }
-  /* Waterfall: 25 fps cap.  Set dbg_disable_lcd_dma=1 in debugger to suppress
-   * SPI DMA activity while tracing USB audio issues. */
-  if (now - t_wf     >= 40U)  { t_wf     = now; if (!dbg_disable_lcd_dma && !Diag_IsActive()) csdr_update_waterfall(); }
-  if (now - t_disp   >= 200U) { t_disp   = now; if (!dbg_disable_lcd_dma && !Diag_IsActive()) csdr_refresh_display(); }
+  /* Waterfall: 25 fps cap in RX.  Freeze it in TX so the 320x62 two-split
+   * SPI push (~39.7 kB plus cache clean/DMA wait) cannot periodically block
+   * TX audio generation at the same cadence as WSJT-X audio deadlines. */
+  if (!g_sdr.tx_mode && (now - t_wf >= CSDR_UI_WF_RX_PERIOD_MS)) {
+    t_wf = now;
+    if (!dbg_disable_lcd_dma && !Diag_IsActive()) csdr_update_waterfall();
+  } else if (g_sdr.tx_mode) {
+    t_wf = now;
+  }
+
+  uint32_t disp_period = g_sdr.tx_mode ? CSDR_UI_DISPLAY_TX_PERIOD_MS
+                                       : CSDR_UI_DISPLAY_RX_PERIOD_MS;
+  if ((now - t_disp >= disp_period) || g_sdr.display_dirty) {
+    t_disp = now;
+    if (!dbg_disable_lcd_dma && !Diag_IsActive()) csdr_refresh_display();
+  }
   RuntimeDiag_ServiceSlow(now);
   Diag_Process();
   RuntimeDiag_WatchdogRefreshIfHealthy(now);
@@ -787,8 +812,10 @@ static void csdr_refresh_display(void)
 {
   bool menu_open = Menu_IsOpen(&g_menu);
 
-  /* Spectrum + waterfall: only when menu closed */
-  if (g_dsp.fft_ready && !menu_open) {
+  /* Spectrum: RX only.  During TX the spectrum/waterfall region is the largest
+   * LCD workload (68 full-width rows), so leave it frozen and reserve main-loop
+   * time for filling the next SAI TX half-buffer. */
+  if (!g_sdr.tx_mode && g_dsp.fft_ready && !menu_open) {
     g_dsp.fft_ready = false;
 
     float bw_lo_ratio = 0.0f, bw_hi_ratio = 0.0f;
@@ -829,10 +856,12 @@ static void csdr_refresh_display(void)
     SDR_UI_DrawTopBar(&g_lcd, &ui);
 
     /* StatusPanel (y=62+) và S-meter chỉ khi menu ĐÓNG
-     * Nếu menu đang mở: tuyệt đối không ghi đè vùng y=62.. */
-    if (!menu_open) {
+     * Nếu menu đang mở: tuyệt đối không ghi đè vùng y=62..
+     * In TX, avoid repainting sidebars on the dirty transition; they are
+     * cosmetic and add two extra 60x82 SPI pushes while audio timing is tight. */
+    if (!menu_open && !g_sdr.tx_mode) {
       SDR_UI_DrawStatusPanel(&g_lcd, &ui);
-    } else {
+    } else if (menu_open) {
       /* Menu đang mở: re-render để đảm bảo không bị xóa */
       Menu_Render(&g_menu);
     }
