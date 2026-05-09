@@ -158,14 +158,14 @@ void Diag_Process(void)
   diag_update_row(0U, line, DIAG_FG);
   diag_make_line(line, sizeof(line), "RXOVR", rx_overrun_count);
   diag_update_row(1U, line, (rx_overrun_count != 0U) ? DIAG_WARN_FG : DIAG_FG);
+  diag_make_line(line, sizeof(line), "RX/s", snap.rx_overrun_per_sec);
+  diag_update_row(2U, line, (snap.rx_overrun_per_sec != 0U) ? DIAG_WARN_FG : DIAG_FG);
   diag_make_line(line, sizeof(line), "TXUND", tx_underrun_count);
-  diag_update_row(2U, line, (tx_underrun_count != 0U) ? DIAG_WARN_FG : DIAG_FG);
+  diag_update_row(3U, line, (tx_underrun_count != 0U) ? DIAG_WARN_FG : DIAG_FG);
+  diag_make_line(line, sizeof(line), "TX/s", snap.tx_underrun_per_sec);
+  diag_update_row(4U, line, (snap.tx_underrun_per_sec != 0U) ? DIAG_WARN_FG : DIAG_FG);
   diag_make_line(line, sizeof(line), "FLT", snap.fault_flags);
-  diag_update_row(3U, line, (snap.fault_flags != 0U) ? DIAG_WARN_FG : DIAG_FG);
+  diag_update_row(5U, line, (snap.fault_flags != 0U) ? DIAG_WARN_FG : DIAG_FG);
   diag_make_line(line, sizeof(line), "DSPSTK", snap.dsp_stack_words);
-  diag_update_row(4U, line, DIAG_FG);
-  diag_make_line(line, sizeof(line), "GUISTK", snap.gui_stack_words);
-  diag_update_row(5U, line, DIAG_FG);
-  diag_make_line(line, sizeof(line), "CATSTK", snap.cat_stack_words);
   diag_update_row(6U, line, DIAG_FG);
 }

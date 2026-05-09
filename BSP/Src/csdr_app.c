@@ -81,7 +81,7 @@ static int32_t s_rx_buf[CSDR_AUDIO_BUF_TOTAL * 2U]
 static int32_t s_tx_buf[CSDR_AUDIO_BUF_TOTAL * 2U]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 
-static volatile uint8_t s_ping = 0, s_pong = 0;
+static volatile uint32_t s_rx_ready_seq[2] = { 0U, 0U };
 
 /* ════ DEBUG COUNTERS - xóa sau khi FFT chạy ════ */
 static volatile uint32_t dbg_sai_init_ret    = 0xFFFF;  /* HAL return of SAI DMA start */
@@ -375,8 +375,9 @@ void CSDR_Init(void)
 void CSDR_Loop(void)
 {
   /* DSP ping/pong */
-  if (s_ping) {
-    s_ping = 0;
+  static uint32_t s_rx_done_seq[2] = { 0U, 0U };
+  uint32_t rx_seq = s_rx_ready_seq[0];
+  if (rx_seq != s_rx_done_seq[0]) {
     /* s_rx_buf is in .DMA_SRAM (0x24000000, MPU: NON_CACHEABLE) so the
      * invalidate below is a no-op.  Keep it for safety if MPU config ever
      * changes.  Address and size are both 32-byte aligned:
@@ -416,10 +417,11 @@ void CSDR_Loop(void)
     SCB_CleanDCache_by_Addr((uint32_t*)s_tx_buf,
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
     RuntimeDiag_TxHalfFilled(0U);
-    RuntimeDiag_RxHalfConsumed(0U);
+    RuntimeDiag_RxHalfConsumed(0U, rx_seq);
+    s_rx_done_seq[0] = rx_seq;
   }
-  if (s_pong) {
-    s_pong = 0;
+  rx_seq = s_rx_ready_seq[1];
+  if (rx_seq != s_rx_done_seq[1]) {
     /* Pong half: byte offset = 256×2×4 = 2048 B from base → still 32-byte aligned.
      * Size 2048 B — 32-byte aligned ✓ */
     SCB_InvalidateDCache_by_Addr((uint32_t*)(s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2),
@@ -441,7 +443,8 @@ void CSDR_Loop(void)
     SCB_CleanDCache_by_Addr((uint32_t*)(s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2),
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
     RuntimeDiag_TxHalfFilled(1U);
-    RuntimeDiag_RxHalfConsumed(1U);
+    RuntimeDiag_RxHalfConsumed(1U, rx_seq);
+    s_rx_done_seq[1] = rx_seq;
   }
 
   /* Input */
@@ -510,19 +513,19 @@ void CSDR_CDC_Receive(uint8_t *buf, uint32_t len)
 void HAL_SAI_RxHalfCpltCallback(SAI_HandleTypeDef *h)
 {
   if (h->Instance == SAI1_Block_B) {
-    RuntimeDiag_RxHalfIsr(0U, &s_ping);
+    s_rx_ready_seq[0] = RuntimeDiag_RxHalfIsr(0U);
     dbg_cb_half_count++;
     /* USB_Audio_WriteRX is intentionally NOT called here.
      * Calling USB functions from a DMA ISR starves the USB OTG IRQ when the
      * host opens a stream, causing the USB audio endpoint to hard-lock.
-     * The main loop (CSDR_Loop) calls WriteRX after the s_ping flag is seen. */
+     * The main loop (CSDR_Loop) calls WriteRX after the RX sequence advances. */
   }
 }
 
 void HAL_SAI_RxCpltCallback(SAI_HandleTypeDef *h)
 {
   if (h->Instance == SAI1_Block_B) {
-    RuntimeDiag_RxHalfIsr(1U, &s_pong);
+    s_rx_ready_seq[1] = RuntimeDiag_RxHalfIsr(1U);
     dbg_cb_full_count++;
     /* USB_Audio_WriteRX moved to CSDR_Loop – see HAL_SAI_RxHalfCpltCallback. */
   }
@@ -531,14 +534,14 @@ void HAL_SAI_RxCpltCallback(SAI_HandleTypeDef *h)
 void HAL_SAI_TxHalfCpltCallback(SAI_HandleTypeDef *h)
 {
   if (h->Instance == SAI1_Block_A) {
-    RuntimeDiag_TxHalfConsumedIsr(0U);
+    RuntimeDiag_TxHalfConsumedIsr(0U, g_sdr.tx_mode);
   }
 }
 
 void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *h)
 {
   if (h->Instance == SAI1_Block_A) {
-    RuntimeDiag_TxHalfConsumedIsr(1U);
+    RuntimeDiag_TxHalfConsumedIsr(1U, g_sdr.tx_mode);
   }
 }
 

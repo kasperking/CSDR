@@ -5,13 +5,20 @@ volatile uint32_t rx_overrun_count = 0U;
 volatile uint32_t tx_underrun_count = 0U;
 volatile uint32_t runtime_fault_flags = 0U;
 
-static volatile uint8_t s_tx_half_ready[2] = { 1U, 1U };
-static volatile uint8_t s_rx_half_busy[2] = { 0U, 0U };
+static volatile uint32_t s_rx_dma_seq[2] = { 0U, 0U };
+static volatile uint32_t s_rx_consumed_seq[2] = { 0U, 0U };
+static volatile uint32_t s_tx_fill_seq[2] = { 1U, 1U };
+static volatile uint32_t s_tx_dma_seq[2] = { 0U, 0U };
 static uint32_t s_cpu_window_start_ms = 0U;
 static uint32_t s_cpu_window_start_cyc = 0U;
 static uint32_t s_cpu_active_cycles = 0U;
 static uint32_t s_audio_block_start_cyc = 0U;
 static uint8_t  s_cpu_load_percent = 0U;
+static uint32_t s_diag_rate_window_start_ms = 0U;
+static uint32_t s_diag_rate_rx_count = 0U;
+static uint32_t s_diag_rate_tx_count = 0U;
+static uint32_t s_rx_overrun_per_sec = 0U;
+static uint32_t s_tx_underrun_per_sec = 0U;
 static uint32_t s_last_audio_ok_ms = 0U;
 static uint32_t s_last_watchdog_ms = 0U;
 static uint32_t s_dsp_stack_words = 0U;
@@ -40,13 +47,22 @@ void RuntimeDiag_Init(void)
   rx_overrun_count = 0U;
   tx_underrun_count = 0U;
   runtime_fault_flags = 0U;
-  s_tx_half_ready[0] = 1U;
-  s_tx_half_ready[1] = 1U;
-  s_rx_half_busy[0] = 0U;
-  s_rx_half_busy[1] = 0U;
+  s_rx_dma_seq[0] = 0U;
+  s_rx_dma_seq[1] = 0U;
+  s_rx_consumed_seq[0] = 0U;
+  s_rx_consumed_seq[1] = 0U;
+  s_tx_fill_seq[0] = 1U;
+  s_tx_fill_seq[1] = 1U;
+  s_tx_dma_seq[0] = 0U;
+  s_tx_dma_seq[1] = 0U;
+  s_diag_rate_rx_count = 0U;
+  s_diag_rate_tx_count = 0U;
+  s_rx_overrun_per_sec = 0U;
+  s_tx_underrun_per_sec = 0U;
   diag_enable_cycle_counter();
   s_cpu_window_start_ms = HAL_GetTick();
   s_cpu_window_start_cyc = DWT->CYCCNT;
+  s_diag_rate_window_start_ms = s_cpu_window_start_ms;
   s_last_audio_ok_ms = s_cpu_window_start_ms;
 }
 
@@ -104,6 +120,17 @@ void RuntimeDiag_ServiceSlow(uint32_t now_ms)
     if (s_cat_task != NULL) s_cat_stack_words = (uint32_t)uxTaskGetStackHighWaterMark(s_cat_task);
 #endif
   }
+
+  uint32_t rate_elapsed_ms = now_ms - s_diag_rate_window_start_ms;
+  if (rate_elapsed_ms >= 1000U) {
+    uint32_t rx_now = rx_overrun_count;
+    uint32_t tx_now = tx_underrun_count;
+    s_rx_overrun_per_sec = ((rx_now - s_diag_rate_rx_count) * 1000U) / rate_elapsed_ms;
+    s_tx_underrun_per_sec = ((tx_now - s_diag_rate_tx_count) * 1000U) / rate_elapsed_ms;
+    s_diag_rate_rx_count = rx_now;
+    s_diag_rate_tx_count = tx_now;
+    s_diag_rate_window_start_ms = now_ms;
+  }
 }
 
 void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out)
@@ -114,37 +141,47 @@ void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out)
   out->dsp_stack_words = s_dsp_stack_words;
   out->gui_stack_words = s_gui_stack_words;
   out->cat_stack_words = s_cat_stack_words;
+  out->rx_overrun_per_sec = s_rx_overrun_per_sec;
+  out->tx_underrun_per_sec = s_tx_underrun_per_sec;
 }
 
-void RuntimeDiag_RxHalfIsr(uint8_t half_index, volatile uint8_t *pending_flag)
+uint32_t RuntimeDiag_RxHalfIsr(uint8_t half_index)
 {
-  if (pending_flag == NULL) return;
-  if (*pending_flag != 0U || (half_index < 2U && s_rx_half_busy[half_index] != 0U)) {
+  if (half_index >= 2U) return 0U;
+
+  uint32_t prev_seq = s_rx_dma_seq[half_index];
+  if (prev_seq != s_rx_consumed_seq[half_index]) {
     rx_overrun_count++;
     RuntimeDiag_SetFault(FAULT_DMA_RX_OVR);
   }
-  if (half_index < 2U) s_rx_half_busy[half_index] = 1U;
-  *pending_flag = 1U;
+
+  prev_seq++;
+  s_rx_dma_seq[half_index] = prev_seq;
+  return prev_seq;
 }
 
-void RuntimeDiag_RxHalfConsumed(uint8_t half_index)
+void RuntimeDiag_RxHalfConsumed(uint8_t half_index, uint32_t sequence)
 {
-  if (half_index < 2U) s_rx_half_busy[half_index] = 0U;
+  if (half_index >= 2U) return;
+  s_rx_consumed_seq[half_index] = sequence;
 }
 
 void RuntimeDiag_TxHalfFilled(uint8_t half_index)
 {
-  if (half_index < 2U) s_tx_half_ready[half_index] = 1U;
+  if (half_index >= 2U) return;
+  s_tx_fill_seq[half_index]++;
 }
 
-void RuntimeDiag_TxHalfConsumedIsr(uint8_t half_index)
+void RuntimeDiag_TxHalfConsumedIsr(uint8_t half_index, bool tx_active)
 {
   if (half_index >= 2U) return;
-  if (s_tx_half_ready[half_index] == 0U) {
+
+  uint32_t fill_seq = s_tx_fill_seq[half_index];
+  if (tx_active && fill_seq == s_tx_dma_seq[half_index]) {
     tx_underrun_count++;
     RuntimeDiag_SetFault(FAULT_I2S_TX_UND);
   }
-  s_tx_half_ready[half_index] = 0U;
+  s_tx_dma_seq[half_index] = fill_seq;
 }
 
 void RuntimeDiag_MarkAudioHealthy(void)
