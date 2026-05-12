@@ -219,14 +219,14 @@ void Menu_Render(Menu_Handle_t *m)
     uint16_t *ln = LN;
     LCD_LineFill(ln, 0U, LCD_W, UI_BG);
     LCD_LineFill(ln, MENU_X, MENU_W,
-                 (fr == 0U || fr == 15U) ? MENU_BORDER_COLOR : 0x001FU);
+                 (fr == 0U || fr == 15U) ? MENU_BORDER_COLOR : MENU_HEADER_BG);
     ln[MENU_X]                = sw16(MENU_BORDER_COLOR);
     ln[MENU_X + MENU_W - 1U] = sw16(MENU_BORDER_COLOR);
 
     if (fr >= 4U && fr < 4U + (uint16_t)Font6x8.height) {
       const char *t = m->editing ? " [ EDIT ] " : " -= MENU =- ";
       uint16_t tx = (uint16_t)(MENU_X + (MENU_W - (uint16_t)strlen(t) * Font6x8.width) / 2U);
-      LCD_LineStr(ln, tx, fr - 4U, t, &Font6x8, 0xFFFFU, 0x001FU);
+      LCD_LineStr(ln, tx, fr - 4U, t, &Font6x8, 0xFFFFU, MENU_HEADER_BG);
     }
     push_ln(m->lcd, y++);
   }

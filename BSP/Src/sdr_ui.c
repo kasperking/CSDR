@@ -27,7 +27,7 @@
 #define WF_MIN_DB    (-120.0f)
 #define WF_RANGE_DB  ( 100.0f)
 #define WF_INV_RANGE (255.0f / WF_RANGE_DB)
-#define WF_DB_OFFSET  42.14f
+#define WF_DB_OFFSET  30.00f
 #define WF_SMOOTH_ALPHA  0.72f
 /* (CROP_MARGIN removed – spectrum window is now zoom-derived) */
 
@@ -78,31 +78,12 @@ static inline float pwr_compress(float pwr)
   return n;
 }
 
-/* ── spec_color: blue→green→yellow gradient ──────────────────────────────── */
-static uint16_t spec_color(float norm)
-{
-  uint8_t r, g, b;
-  if (norm < 0.40f) {
-    float t = norm / 0.40f;
-    r = 0; g = (uint8_t)(t * 30.0f); b = (uint8_t)((1.0f - t * 0.5f) * 31.0f);
-  } else if (norm < 0.75f) {
-    float t = (norm - 0.40f) / 0.35f;
-    r = (uint8_t)(t * 24.0f);
-    g = (uint8_t)(30.0f + t * 33.0f);
-    b = (uint8_t)((0.5f - t * 0.5f) * 31.0f);
-  } else {
-    float t = (norm - 0.75f) / 0.25f;
-    r = 31U; g = (uint8_t)((1.0f - t) * 63.0f); b = 0;
-  }
-  return (uint16_t)((r << 11U) | (g << 5U) | b);
-}
-
 /* ── wf_lut_init: Hermite-spline thermal palette ─────────────────────────── */
 static void wf_lut_init(void)
 {
-  static const float sr[11] = { 0, 0, 0, 0, 0, 0,15,31,31,31,31};
-  static const float sg[11] = { 0, 0,15,31,63,63,63,63,32, 0,63};
-  static const float sb[11] = { 8,31,31,31,31, 0, 0, 0, 0, 0,31};
+  static const float sr[11] = { 0, 0, 0, 0, 0, 0, 0,0,8,16,31};
+  static const float sg[11] = { 0, 0,8,20,40,63,63,63,63,63,63};
+  static const float sb[11] = { 0, 16,31,31,31,31,24,16,8,0,31};
   float mr[11], mg[11], mb[11];
   mr[0] = sr[1]-sr[0]; mg[0] = sg[1]-sg[0]; mb[0] = sb[1]-sb[0];
   mr[10]= sr[10]-sr[9];mg[10]= sg[10]-sg[9];mb[10]= sb[10]-sb[9];
@@ -113,7 +94,7 @@ static void wf_lut_init(void)
   }
   for (int i = 0; i <= 255; i++) {
     float n = (float)i / 255.0f;
-    float ng = powf(n, 0.8f);
+    float ng = powf(n, 1.2f);
     float pos = ng * 10.0f;
     int lo = (int)pos;
     if (lo >= 10) {
@@ -392,15 +373,21 @@ void SDR_UI_DrawSidebarLeft(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
     switch (i) {
       /* ── Mode: full-width colored badge ─────────────────── */
       case 0:
-        for (uint16_t fr = 0; fr < Font6x8.height; fr++) {
-          uint16_t r = text_y + fr;
-          if (r >= 80U) break;
-          uint16_t *ln = s_sbl_buf + (uint32_t)r * SBL_W;
-          LCD_LineFill(ln, 1U, SBL_W - 1U, mbg);
-          uint16_t cx = (uint16_t)(1U + (SBL_W - 1U - (uint16_t)(strlen(mode_str) * Font6x8.width)) / 2U);
-          LCD_LineStr(ln, cx, fr, mode_str, &Font6x8, UI_MODE_FG, mbg);
-        }
-        break;
+    for (uint16_t fr = 0; fr < Font6x8.height; fr++) {
+
+        uint16_t r = text_y + fr;
+        if (r >= 80U) break;
+
+        uint16_t *ln = s_sbl_buf + (uint32_t)r * SBL_W;
+
+        uint16_t cx =
+            (uint16_t)(1U +
+            (SBL_W - 1U -
+            (uint16_t)(strlen(mode_str) * Font6x8.width)) / 2U);
+
+        LCD_LineStr(ln, cx + 1u, fr, mode_str, &Font6x8, mbg, UI_SBL_BG);
+    }
+    break;
 
       /* ── VFO A/B – active letter highlighted ────────────── */
       case 1: {

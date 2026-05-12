@@ -56,13 +56,14 @@ extern "C" {
 #define MENU_X               10U   /* Left edge             */
 #define MENU_W              300U   /* Width (320-2*10)      */
 #define MENU_Y               ZONE_SPEC_Y   /* Overlay on spectrum  */
-#define MENU_BG_COLOR       0x0841U   /* Dark blue-gray       */
-#define MENU_FG_COLOR       0xFFFFU   /* White text           */
-#define MENU_SEL_COLOR      0x001FU   /* Blue highlight       */
-#define MENU_SEL_FG         0xFFFFU   /* White on blue        */
-#define MENU_LBL_COLOR      0x8410U   /* Gray label           */
-#define MENU_VAL_COLOR      0xFFE0U   /* Yellow value         */
-#define MENU_BORDER_COLOR   0x07FFU   /* Cyan border          */
+#define MENU_HEADER_BG      0xF800U
+#define MENU_BG_COLOR       0x0843U   /* Dark blue-gray     */
+#define MENU_FG_COLOR       0xFFFFU   /* White text         */
+#define MENU_SEL_COLOR      0xF800U   /* Teal highlight     */
+#define MENU_SEL_FG         0xFFFFU   /* White on selected  */
+#define MENU_LBL_COLOR      0xA514U   /* Soft gray-cyan     */
+#define MENU_VAL_COLOR      0xFFFFU   /* White value        */
+#define MENU_BORDER_COLOR   0x10A2U   /* Dark subtle border */
 
 /* Exported types ------------------------------------------------------------*/
 

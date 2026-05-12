@@ -1039,8 +1039,21 @@ static void cat_set_active_vfo(uint8_t vfo)
 static uint8_t cat_get_active_vfo(void) { return g_sdr.active_vfo; }
 
 /* CAT callbacks */
-static void     cat_set_freq(uint32_t f) { g_sdr.freq_hz=f; DSP_SetFrequency(&g_dsp,csdr_nco_freq(),f,g_sdr.lo_offset_hz,CSDR_AUDIO_SAMPLE_RATE); if(g_sdr.si5351_ok)SI5351_SetQSDFrequency(&g_si5351,f+g_sdr.lo_offset_hz); g_sdr.display_dirty=true; }
-static void     cat_set_mode(uint8_t m)  { g_sdr.mode=(SDR_Mode_t)m; DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE); DSP_SetBW(&g_dsp,(float)g_sdr.bw_hz); SDR_UI_SetSpecZoom(&g_lcd,default_zoom_for_mode(g_sdr.mode)); g_sdr.display_dirty=true; }
+static void     cat_set_freq(uint32_t f) 
+{ 
+  g_sdr.freq_hz=f; 
+  DSP_SetFrequency(&g_dsp,csdr_nco_freq(),f,g_sdr.lo_offset_hz,CSDR_AUDIO_SAMPLE_RATE);
+  if(g_sdr.si5351_ok)SI5351_SetQSDFrequency(&g_si5351,f+g_sdr.lo_offset_hz); 
+  g_sdr.display_dirty=true; 
+}
+static void     cat_set_mode(uint8_t m)  
+{ 
+  g_sdr.mode=(SDR_Mode_t)m; 
+  DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE); 
+  DSP_SetBW(&g_dsp,(float)g_sdr.bw_hz); 
+  SDR_UI_SetSpecZoom(&g_lcd,default_zoom_for_mode(g_sdr.mode)); 
+  g_sdr.display_dirty=true; 
+}
 static void cat_set_tx(bool tx)
 {
   if (tx == g_sdr.tx_mode) return;  /* no change */
@@ -1060,7 +1073,12 @@ static void cat_set_tx(bool tx)
   SDR_UI_UpdateSMeter_SetTX(tx);
   g_sdr.display_dirty = true;
 }
-static void     cat_set_att(uint8_t lv)  { static const uint8_t m[]={0,6,12,18}; PE4302_SetAttn_dB(&g_att,(lv<4)?m[lv]:0); g_sdr.att_db=g_att.current_atten_db; }
+static void     cat_set_att(uint8_t lv)  
+{ 
+  static const uint8_t m[]={0,6,12,18}; 
+  PE4302_SetAttn_dB(&g_att,(lv<4)?m[lv]:0); 
+  g_sdr.att_db=g_att.current_atten_db; 
+}
 
 /* Scale 0-100 internal volume → WM8731 HP register.
  * Range 90-121 (−31 dB to 0 dB) so 100% = 0 dB reference.

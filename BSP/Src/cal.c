@@ -44,15 +44,15 @@ extern TIM_HandleTypeDef htim2;   /* encoder timer */
 #define CAL_ITEM_H   15U              /* px per row               */
 #define CAL_VISIBLE   7U              /* rows visible: 16hdr+7*15=121px <= 130px avail */
 
-#define CAL_BG        0x0841U
-#define CAL_SEL_BG    0x001FU
-#define CAL_HDR_BG    0x000FU
+#define CAL_BG        0x0843U   /* Dark blue-gray     */
+#define CAL_SEL_BG    0xF800   /* Teal highlight     */
+#define CAL_HDR_BG    0xF800   /* Dark blue-gray     */
 #define CAL_SECT_BG   0x0208U
 #define CAL_LBL       0x8410U
 #define CAL_VAL       0xFFE0U
 #define CAL_EDIT_VAL  0x07FFU
 #define CAL_ACTION    0xF81FU
-#define CAL_BORDER    0x07FFU
+#define CAL_BORDER    0x10A2U   /* Dark subtle border */
 #define CAL_SAVE_BG   0x0400U
 #define CAL_SAVE_FG   0x07E0U
 

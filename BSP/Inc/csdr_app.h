@@ -34,7 +34,7 @@
 
 /* Default LO offset used to initialise g_sdr.lo_offset_hz at boot.
  * After calibration the runtime value g_sdr.lo_offset_hz is used everywhere. */
-#define LO_OFFSET_DEFAULT  18000U
+#define LO_OFFSET_DEFAULT  00000U
 
 #ifdef __cplusplus
 extern "C" {

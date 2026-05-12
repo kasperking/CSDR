@@ -114,7 +114,7 @@ extern "C" {
 #define UI_VFO_BG         0x0000U
 #define UI_MTR_BG         0x0000U
 #define UI_BORDER         0x18C6U
-#define UI_DIVIDER        0x18C6U
+#define UI_DIVIDER        0x10A2
 
 #define UI_FREQ_MHZ       0x07FFU
 #define UI_FREQ_KHZ       0x3FE0U
@@ -122,12 +122,12 @@ extern "C" {
 #define UI_FREQ_DOT       0x07FFU
 #define UI_FREQ_SUB       0x528AU
 
-#define UI_MODE_AM        0x7800U
-#define UI_MODE_FM        0x0380U
-#define UI_MODE_USB       0x001FU
-#define UI_MODE_LSB       0x600FU
-#define UI_MODE_CW        0xCA00U
-#define UI_MODE_FG        0xFFE0U
+#define UI_MODE_AM        0xFFFFU
+#define UI_MODE_FM        0x07E0U
+#define UI_MODE_USB       0xF800U
+#define UI_MODE_LSB       0xFFE0U
+#define UI_MODE_CW        0x07FFU
+#define UI_MODE_FG        0xFFFFU
 
 #define UI_S1_6           0x07E0U
 #define UI_S7_9           0xFFE0U
@@ -135,17 +135,17 @@ extern "C" {
 #define UI_SMETER_BG      0x1082U
 #define UI_SMETER_TICK    0x5AEBU
 
-#define UI_STATUS_LBL     0x8410U
-#define UI_STATUS_VAL     0xFFFFU
+#define UI_STATUS_LBL     0x4E7D
+#define UI_STATUS_VAL     0xFFFF
 #define UI_STATUS_ON      0x07E0U
 #define UI_STATUS_OFF     0xF800U
 
-#define UI_TX_BG          0xF800U
+#define UI_TX_BG          0x001F
 #define UI_TX_FG          0xFFFFU
-#define UI_RX_BG          0x0400U
+#define UI_RX_BG          0xF800
 #define UI_RX_FG          0x07E0U
 
-#define UI_SPEC_BG        0x0000U
+#define UI_SPEC_BG        0x0843
 #define UI_SPEC_GRID      0x18C6U
 #define UI_SPEC_CENTER    0xF81FU
 #define UI_SPEC_BW        0x07FFU
