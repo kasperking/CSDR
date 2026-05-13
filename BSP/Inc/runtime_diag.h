@@ -33,8 +33,12 @@ typedef struct {
   uint32_t dsp_stack_words;
   uint32_t gui_stack_words;
   uint32_t cat_stack_words;
+  uint32_t rx_overrun_total;
+  uint32_t tx_underrun_total;
   uint32_t rx_overrun_per_sec;
   uint32_t tx_underrun_per_sec;
+  uint32_t max_rx_overrun_per_sec;
+  uint32_t max_tx_underrun_per_sec;
   uint32_t max_dsp_us;
   uint32_t max_ui_us;
   uint32_t max_loop_stall_us;
@@ -62,6 +66,7 @@ void RuntimeDiag_UiSectionEnd(RuntimeDiag_UiSection_t section);
 void RuntimeDiag_MainLoopBeat(void);
 void RuntimeDiag_ServiceSlow(uint32_t now_ms);
 void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out);
+void RuntimeDiag_ResetPeaks(void);
 
 uint32_t RuntimeDiag_RxHalfIsr(uint8_t half_index);
 void RuntimeDiag_RxHalfConsumed(uint8_t half_index, uint32_t sequence);

@@ -99,7 +99,8 @@ typedef struct {
 
 /** Trạng thái DSP toàn bộ */
 typedef struct {
-  NCO_t        nco;
+  NCO_t        nco;        /*!< Stage 1: LO offset correction (−lo_offset_hz) */
+  NCO_t        nco_if;     /*!< Stage 2: IF shift (independent passband tuning) */
   FIR_Filter_t fir_i;
   FIR_Filter_t fir_q;
   FIR_Filter_t fir_audio;
@@ -141,9 +142,8 @@ typedef struct {
 
 /* Exported functions prototypes ---------------------------------------------*/
 void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate);
-void DSP_SetFrequency(DSP_State_t *dsp, uint32_t freq_hz,
-                       uint32_t if_hz, uint32_t lo_offset_hz,
-                       uint32_t sample_rate);
+void DSP_SetFrequency(DSP_State_t *dsp, uint32_t lo_offset_hz, uint32_t sample_rate);
+void DSP_SetIFShift(DSP_State_t *dsp, int32_t if_shift_hz, uint32_t sample_rate);
 void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate);
 void DSP_SetBW(DSP_State_t *dsp, float bw_hz);
 void DSP_Process(DSP_State_t *dsp,

@@ -29,6 +29,7 @@ static uint32_t s_diag_last_ms = 0U;
 static ST7789_Handle_t *s_diag_lcd = NULL;
 static char s_diag_last[DIAG_ROWS][18];
 static bool s_diag_row_valid[DIAG_ROWS];
+static RuntimeDiag_Snapshot_t s_diag_snapshot;
 
 static void diag_u32_to_dec(uint32_t v, char *out, uint8_t out_len)
 {
@@ -119,7 +120,13 @@ void Diag_Run(ST7789_Handle_t *lcd)
     s_diag_last[i][0] = '\0';
     s_diag_row_valid[i] = false;
   }
-  if (!s_diag_active) g_sdr.display_dirty = true;
+  if (s_diag_active) {
+    /* Freeze metrics at the moment DIAG is entered.  All display updates use
+     * this copy so the diagnostic screen has zero effect on live measurements. */
+    RuntimeDiag_GetSnapshot(&s_diag_snapshot);
+  } else {
+    g_sdr.display_dirty = true;
+  }
 }
 
 bool Diag_IsActive(void)
@@ -141,10 +148,11 @@ void Diag_Process(void)
   if (!s_diag_active || s_diag_lcd == NULL) return;
 
   uint32_t now = HAL_GetTick();
-  if (!s_diag_full_redraw && (now - s_diag_last_ms) < 500U) return;
+  if (!s_diag_full_redraw && (now - s_diag_last_ms) < 1000U) return;
   s_diag_last_ms = now;
 
-  RuntimeDiag_UiRenderBegin();
+  /* No UiRenderBegin/End here: DIAG rendering must not contaminate max_ui_us.
+   * Normal UI rendering is already gated by Diag_IsActive() in csdr_app.c. */
 
   if (s_diag_full_redraw) {
     diag_draw_frame(s_diag_lcd);
@@ -152,20 +160,22 @@ void Diag_Process(void)
     s_diag_full_redraw = false;
   }
 
-  RuntimeDiag_Snapshot_t snap;
-  RuntimeDiag_GetSnapshot(&snap);
+  /* All values come from the frozen snapshot taken at DIAG entry (or last reset).
+   * After the initial draw, frozen data matches the cached rows and produces no
+   * SPI traffic until the user calls Diag_ResetPeaks(). */
+  const RuntimeDiag_Snapshot_t snap = s_diag_snapshot;
 
   char line[18];
   diag_make_line(line, sizeof(line), "CPU", (uint32_t)snap.cpu_load_percent);
   diag_update_row(0U, line, DIAG_FG);
-  diag_make_line(line, sizeof(line), "RXOVR", rx_overrun_count);
-  diag_update_row(1U, line, (rx_overrun_count != 0U) ? DIAG_WARN_FG : DIAG_FG);
-  diag_make_line(line, sizeof(line), "RX/s", snap.rx_overrun_per_sec);
-  diag_update_row(2U, line, (snap.rx_overrun_per_sec != 0U) ? DIAG_WARN_FG : DIAG_FG);
-  diag_make_line(line, sizeof(line), "TXUND", tx_underrun_count);
-  diag_update_row(3U, line, (tx_underrun_count != 0U) ? DIAG_WARN_FG : DIAG_FG);
-  diag_make_line(line, sizeof(line), "TX/s", snap.tx_underrun_per_sec);
-  diag_update_row(4U, line, (snap.tx_underrun_per_sec != 0U) ? DIAG_WARN_FG : DIAG_FG);
+  diag_make_line(line, sizeof(line), "RXOVR", snap.rx_overrun_total);
+  diag_update_row(1U, line, (snap.rx_overrun_total != 0U) ? DIAG_WARN_FG : DIAG_FG);
+  diag_make_line(line, sizeof(line), "RXpk/s", snap.max_rx_overrun_per_sec);
+  diag_update_row(2U, line, (snap.max_rx_overrun_per_sec != 0U) ? DIAG_WARN_FG : DIAG_FG);
+  diag_make_line(line, sizeof(line), "TXUND", snap.tx_underrun_total);
+  diag_update_row(3U, line, (snap.tx_underrun_total != 0U) ? DIAG_WARN_FG : DIAG_FG);
+  diag_make_line(line, sizeof(line), "TXpk/s", snap.max_tx_underrun_per_sec);
+  diag_update_row(4U, line, (snap.max_tx_underrun_per_sec != 0U) ? DIAG_WARN_FG : DIAG_FG);
   diag_make_line(line, sizeof(line), "FLT", snap.fault_flags);
   diag_update_row(5U, line, (snap.fault_flags != 0U) ? DIAG_WARN_FG : DIAG_FG);
   diag_make_line(line, sizeof(line), "DSPus", snap.max_dsp_us);
@@ -175,7 +185,7 @@ void Diag_Process(void)
   diag_make_line(line, sizeof(line), "LOOPus", snap.max_loop_stall_us);
   diag_update_row(8U, line, DIAG_FG);
   diag_make_line(line, sizeof(line), "UUIus", snap.underrun_ui_us);
-  diag_update_row(9U, line, (snap.tx_underrun_per_sec != 0U) ? DIAG_WARN_FG : DIAG_FG);
+  diag_update_row(9U, line, (snap.tx_underrun_total != 0U) ? DIAG_WARN_FG : DIAG_FG);
   diag_make_line(line, sizeof(line), "WFus", snap.ui_section_max_us[RUNTIME_DIAG_UI_WATERFALL]);
   diag_update_row(10U, line, DIAG_FG);
   diag_make_line(line, sizeof(line), "SPECus", snap.ui_section_max_us[RUNTIME_DIAG_UI_SPECTRUM]);
@@ -194,6 +204,12 @@ void Diag_Process(void)
   diag_update_row(17U, line, DIAG_FG);
   diag_make_line(line, sizeof(line), "WFSC", snap.ui_section_max_us[RUNTIME_DIAG_UI_WF_SCROLL]);
   diag_update_row(18U, line, DIAG_FG);
+}
 
-  RuntimeDiag_UiRenderEnd();
+void Diag_ResetPeaks(void)
+{
+  RuntimeDiag_ResetPeaks();
+  RuntimeDiag_GetSnapshot(&s_diag_snapshot);
+  for (uint8_t i = 0U; i < DIAG_ROWS; i++) s_diag_row_valid[i] = false;
+  s_diag_last_ms = 0U;
 }

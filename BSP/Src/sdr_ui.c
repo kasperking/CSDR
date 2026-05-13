@@ -290,17 +290,9 @@ void SDR_UI_DrawFrame(ST7789_Handle_t *lcd, uint32_t sample_rate, uint16_t fft_b
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawHeader(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
 {
-  bool tx = ui->tx_mode;
-  const char *rxtx_str = tx ? "TX" : "RX";
-  uint16_t    rxtx_bg  = tx ? UI_TX_BG : UI_RX_BG;
-  uint16_t    rxtx_fg  = tx ? UI_TX_FG : UI_RX_FG;
-
-  uint16_t badge_w = (uint16_t)(Font6x8.width * 2U + 8U);
-  uint16_t badge_x = 4U;
-
   char att_str[8];
   snprintf(att_str, sizeof(att_str), "ATT:%u", ui->att_db);
-  uint16_t att_x = (uint16_t)(badge_x + badge_w + 8U);
+  uint16_t att_x = 4U;
 
   char vstr[12];
   snprintf(vstr, sizeof(vstr), "%.1fV", ui->voltage);
@@ -318,14 +310,6 @@ void SDR_UI_DrawHeader(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
       continue;
     }
     LCD_LineFill(ln, 0, LCD_W, UI_HDR_BG);
-
-    /* TX/RX badge */
-    LCD_LineFill(ln, badge_x, badge_w, rxtx_bg);
-    if (row >= txt_y && row < txt_y + Font6x8.height) {
-      uint16_t fr = row - txt_y;
-      uint16_t tx_x = (uint16_t)(badge_x + (badge_w - (uint16_t)(strlen(rxtx_str) * Font6x8.width)) / 2U);
-      LCD_LineStr(ln, tx_x, fr, rxtx_str, &Font6x8, rxtx_fg, rxtx_bg);
-    }
 
     /* ATT */
     if (row >= txt_y && row < txt_y + Font6x8.height)
@@ -579,6 +563,17 @@ void SDR_UI_DrawVFO(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
     snprintf(sub_str, sizeof(sub_str), "RIT %+d Hz", (int)ui->rit_hz);
   }
 
+  /* RX/TX indicator (this panel has swapped R/B: 0xF800=blue=RX, 0x001F=red=TX) */
+  const char *rt_str   = ui->tx_mode ? "TX" : "RX";
+  uint16_t    rt_color = ui->tx_mode ? 0x001FU : 0xF800U;
+
+  /* Precompute MED-scale pixel width of sub_str so RX/TX can be placed right after */
+  uint16_t sub_med_w = 0U;
+  if (ui->freq_b_hz > 0U) {
+    const char *p = sub_str;
+    while (*p) { sub_med_w += (*p == '.') ? 6U : MED_W; p++; }
+  }
+
   buf_fill(s_vfo_buf, (uint32_t)VFO_H * VFO_W, UI_VFO_BG);
 
   const uint16_t freq_top = 2U;
@@ -618,15 +613,28 @@ void SDR_UI_DrawVFO(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui)
     if (row >= bw_y && (row - bw_y) < Font6x8.height)
       LCD_LineStr(ln, bw_x, row - bw_y, bw_str, &Font6x8, UI_STATUS_LBL, UI_VFO_BG);
 
-    /* Sub-freq: 2× scaled for VFO B/A freq; base font for RIT text */
-    if (sub_str[0]) {
-      if (ui->freq_b_hz > 0U) {
-        if (row >= sub_y && (row - sub_y) < MED_H)
-          ln_medstr(ln, 4U, row - sub_y, sub_str, UI_FREQ_SUB, UI_VFO_BG);
-      } else {
-        if (row >= sub_y && (row - sub_y) < Font6x8.height)
-          LCD_LineStr(ln, 4U, row - sub_y, sub_str, &Font6x8, UI_FREQ_SUB, UI_VFO_BG);
+    /* Sub-freq + RX/TX indicator */
+    if (ui->freq_b_hz > 0U) {
+      if (row >= sub_y && (row - sub_y) < MED_H) {
+        uint16_t fr = row - sub_y;
+        ln_medstr(ln, 4U, fr, sub_str, UI_FREQ_SUB, UI_VFO_BG);
+        uint16_t rt_x = (uint16_t)(4U + sub_med_w + 6U);
+        if (rt_x + 2U * MED_W <= VFO_W)
+          ln_medstr(ln, rt_x, fr, rt_str, rt_color, UI_VFO_BG);
       }
+    } else if (ui->rit_hz != 0) {
+      if (row >= sub_y && (row - sub_y) < Font6x8.height) {
+        uint16_t fr    = row - sub_y;
+        LCD_LineStr(ln, 4U, fr, sub_str, &Font6x8, UI_FREQ_SUB, UI_VFO_BG);
+        uint16_t sub_w = (uint16_t)(strlen(sub_str) * Font6x8.width);
+        uint16_t rt_x  = (uint16_t)(4U + sub_w + 4U);
+        if (rt_x + 2U * Font6x8.width <= VFO_W)
+          LCD_LineStr(ln, rt_x, fr, rt_str, &Font6x8, rt_color, UI_VFO_BG);
+      }
+    } else {
+      /* No secondary VFO, no RIT: show RX/TX standalone at sub_y */
+      if (row >= sub_y && (row - sub_y) < MED_H)
+        ln_medstr(ln, 4U, row - sub_y, rt_str, rt_color, UI_VFO_BG);
     }
   }
 

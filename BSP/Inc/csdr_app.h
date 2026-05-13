@@ -82,7 +82,7 @@ typedef struct {
   bool        pwr_hold;
   uint32_t    bw_hz;           /*!< User-requested BW Hz — always exact, never snapped  */
   int16_t     if_shift_hz;    /*!< IF shift Hz, applied via NCO      */
-  bool        display_dirty;
+  uint8_t     display_dirty;   /* bitmask: DIRTY_HDR/SBL/VFO/SBR/MTR */
   uint8_t     usb_mode;
   /* Calibration */
   int32_t     xtal_ppm;          /*!< XTAL correction -200..+200 ppm   */

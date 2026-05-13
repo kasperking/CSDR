@@ -66,16 +66,16 @@ typedef struct {
   /* RX ring buffer (SAI → USB) */
   uint8_t  rx_ring[USB_AUDIO_RING_SIZE]
       __attribute__((aligned(32)));
-  uint16_t rx_wr;        /* Write pointer (SAI DMA writes here) */
-  uint16_t rx_rd;        /* Read pointer  (USB reads here)      */
-  uint16_t rx_count;     /* Bytes available                     */
+  volatile uint16_t rx_wr;      /* Write pointer – written only by main loop   */
+  volatile uint16_t rx_rd;      /* Read pointer  – written only by USB IRQ     */
+  volatile uint16_t rx_count;   /* Bytes available – written by both contexts  */
 
   /* TX ring buffer (USB → SAI) */
   uint8_t  tx_ring[USB_AUDIO_RING_SIZE]
       __attribute__((aligned(32)));
-  uint16_t tx_wr;
-  uint16_t tx_rd;
-  uint16_t tx_count;
+  volatile uint16_t tx_wr;      /* Write pointer – written only by USB IRQ     */
+  volatile uint16_t tx_rd;      /* Read pointer  – written only by main loop   */
+  volatile uint16_t tx_count;   /* Bytes available – written by both contexts  */
 
   /* Stats */
   uint32_t rx_overrun;
@@ -85,7 +85,7 @@ typedef struct {
   uint32_t usb_rx_frames;   /* Frames received from USB */
   uint32_t usb_tx_frames;   /* Frames sent to USB       */
 
-  bool     usb_streaming;   /* True khi USB host đang stream */
+  volatile bool usb_streaming;   /* True khi USB host đang stream */
 } USB_Audio_Handle_t;
 
 /* Exported variables --------------------------------------------------------*/

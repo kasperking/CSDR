@@ -97,6 +97,7 @@ extern "C" {
 #define DIRTY_VFO   0x04U
 #define DIRTY_SBR   0x08U
 #define DIRTY_MTR   0x10U
+#define DIRTY_ALL   0x1FU
 
 /* ── Legacy aliases (used by menu.c) ────────────────── */
 #define ZONE_SPEC_Y   SPEC_Y

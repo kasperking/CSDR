@@ -29,6 +29,8 @@ static uint32_t s_diag_rate_rx_count = 0U;
 static uint32_t s_diag_rate_tx_count = 0U;
 static uint32_t s_rx_overrun_per_sec = 0U;
 static uint32_t s_tx_underrun_per_sec = 0U;
+static uint32_t s_max_rx_overrun_per_sec = 0U;
+static uint32_t s_max_tx_underrun_per_sec = 0U;
 static uint32_t s_last_audio_ok_ms = 0U;
 static uint32_t s_last_watchdog_ms = 0U;
 static uint32_t s_dsp_stack_words = 0U;
@@ -69,6 +71,8 @@ void RuntimeDiag_Init(void)
   s_diag_rate_tx_count = 0U;
   s_rx_overrun_per_sec = 0U;
   s_tx_underrun_per_sec = 0U;
+  s_max_rx_overrun_per_sec = 0U;
+  s_max_tx_underrun_per_sec = 0U;
   s_audio_block_start_cyc = 0U;
   s_ui_render_start_cyc = 0U;
   s_main_loop_last_cyc = 0U;
@@ -193,6 +197,8 @@ void RuntimeDiag_ServiceSlow(uint32_t now_ms)
     uint32_t tx_now = tx_underrun_count;
     s_rx_overrun_per_sec = ((rx_now - s_diag_rate_rx_count) * 1000U) / rate_elapsed_ms;
     s_tx_underrun_per_sec = ((tx_now - s_diag_rate_tx_count) * 1000U) / rate_elapsed_ms;
+    if (s_rx_overrun_per_sec > s_max_rx_overrun_per_sec) s_max_rx_overrun_per_sec = s_rx_overrun_per_sec;
+    if (s_tx_underrun_per_sec > s_max_tx_underrun_per_sec) s_max_tx_underrun_per_sec = s_tx_underrun_per_sec;
     s_diag_rate_rx_count = rx_now;
     s_diag_rate_tx_count = tx_now;
     s_diag_rate_window_start_ms = now_ms;
@@ -207,8 +213,12 @@ void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out)
   out->dsp_stack_words = s_dsp_stack_words;
   out->gui_stack_words = s_gui_stack_words;
   out->cat_stack_words = s_cat_stack_words;
+  out->rx_overrun_total = rx_overrun_count;
+  out->tx_underrun_total = tx_underrun_count;
   out->rx_overrun_per_sec = s_rx_overrun_per_sec;
   out->tx_underrun_per_sec = s_tx_underrun_per_sec;
+  out->max_rx_overrun_per_sec = s_max_rx_overrun_per_sec;
+  out->max_tx_underrun_per_sec = s_max_tx_underrun_per_sec;
   out->max_dsp_us = diag_cycles_to_us(s_max_dsp_cycles);
   out->max_ui_us = diag_cycles_to_us(s_max_ui_cycles);
   out->max_loop_stall_us = diag_cycles_to_us(s_max_loop_stall_cycles);
@@ -265,6 +275,21 @@ void RuntimeDiag_TxHalfConsumedIsr(uint8_t half_index, bool tx_active)
 void RuntimeDiag_MarkAudioHealthy(void)
 {
   s_last_audio_ok_ms = HAL_GetTick();
+}
+
+void RuntimeDiag_ResetPeaks(void)
+{
+  s_max_dsp_cycles = 0U;
+  s_max_ui_cycles = 0U;
+  s_max_loop_stall_cycles = 0U;
+  s_underrun_dsp_cycles = 0U;
+  s_underrun_ui_cycles = 0U;
+  s_underrun_loop_stall_cycles = 0U;
+  for (uint8_t i = 0U; i < (uint8_t)RUNTIME_DIAG_UI_SECTION_COUNT; i++) {
+    s_ui_section_max_cyc[i] = 0U;
+  }
+  s_max_rx_overrun_per_sec = 0U;
+  s_max_tx_underrun_per_sec = 0U;
 }
 
 void RuntimeDiag_WatchdogRefreshIfHealthy(uint32_t now_ms)

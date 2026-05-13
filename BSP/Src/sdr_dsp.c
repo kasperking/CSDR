@@ -13,7 +13,7 @@
   *   - DEMOD : AM, FM (atan2 differentiator), USB, LSB, CW (BFO 700Hz)
   *
   *  RX pipeline per sample:
-  *   pre-DC → NCO mix → post-DC → FFT feed → FIR LPF → Demod → audio LPF → AGC → out
+  *   pre-DC → NCO mix (LO offset) → post-DC → FFT feed → NCO mix (IF shift) → FIR LPF → Demod → audio LPF → AGC → out
   *
   *  TX pipeline per sample:
   *   USB pull → audio DC → gain → audio FIR LPF → SSB mod → FFT feed → DAC out
@@ -170,9 +170,9 @@ void AGC_Init(AGC_t *agc, uint32_t sample_rate)
 {
   /* USER CODE BEGIN AGC_Init_0 */
   agc->gain       = 1.0f;
-  agc->target     = 0.5f;
-  agc->max_gain   = 1000.0f;
-  agc->min_gain   = 0.001f;
+  agc->target     = 0.15f;
+  agc->max_gain   = 64.0f;
+  agc->min_gain   = 0.01f;
   agc->level      = 0.0f;
   agc->hang_timer = 0U;
   /* Default to slow constants; caller overrides via AGC_SetSpeed() */
@@ -342,7 +342,8 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
     s_nco_lut_init = 1U;
   }
 
-  NCO_SetFrequency(&dsp->nco, 0, sample_rate);
+  NCO_SetFrequency(&dsp->nco,    0, sample_rate);
+  NCO_SetFrequency(&dsp->nco_if, 0, sample_rate);
 
   float bw = 6000.0f / (float)sample_rate;
   FIR_Init_LPF(&dsp->fir_i,     bw, FIR_MAX_TAPS);
@@ -391,14 +392,21 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   /* USER CODE END DSP_Init_0 */
 }
 
-void DSP_SetFrequency(DSP_State_t *dsp, uint32_t freq_hz,
-                       uint32_t if_hz, uint32_t lo_offset_hz,
-                       uint32_t sample_rate)
+void DSP_SetFrequency(DSP_State_t *dsp, uint32_t lo_offset_hz, uint32_t sample_rate)
 {
   /* USER CODE BEGIN DSP_SetFrequency_0 */
-  int32_t delta = (int32_t)freq_hz - ((int32_t)if_hz + (int32_t)lo_offset_hz);
-  NCO_SetFrequency(&dsp->nco, delta, sample_rate);
+  /* LO = VFO + lo_offset_hz, so the ADC sees the signal at −lo_offset_hz from DC.
+   * Shift it to 0 by rotating at +lo_offset_hz, i.e. NCO at −lo_offset_hz
+   * (because NCO_Step applies exp(−j·ω·t)). */
+  NCO_SetFrequency(&dsp->nco, -(int32_t)lo_offset_hz, sample_rate);
   /* USER CODE END DSP_SetFrequency_0 */
+}
+
+void DSP_SetIFShift(DSP_State_t *dsp, int32_t if_shift_hz, uint32_t sample_rate)
+{
+  /* USER CODE BEGIN DSP_SetIFShift_0 */
+  NCO_SetFrequency(&dsp->nco_if, if_shift_hz, sample_rate);
+  /* USER CODE END DSP_SetIFShift_0 */
 }
 
 void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
@@ -528,9 +536,15 @@ void DSP_Process(DSP_State_t *dsp,
       }
     }
 
+    /* ── 4b. IF shift – independent passband tuning, applied after FFT so the
+     *         waterfall/spectrum always centres on the VFO frequency. */
+    NCO_Step(&dsp->nco_if);
+    float shift_i = mix_i * dsp->nco_if.cos_val - mix_q * dsp->nco_if.sin_val;
+    float shift_q = mix_i * dsp->nco_if.sin_val + mix_q * dsp->nco_if.cos_val;
+
     /* ── 5. FIR LPF I and Q (band-limit for demod) */
-    float filt_i = FIR_Process(&dsp->fir_i, mix_i);
-    float filt_q = FIR_Process(&dsp->fir_q, mix_q);
+    float filt_i = FIR_Process(&dsp->fir_i, shift_i);
+    float filt_q = FIR_Process(&dsp->fir_q, shift_q);
 
     /* ── 6. Demodulate */
     float audio;
@@ -657,12 +671,29 @@ extern USB_Audio_Handle_t g_usb_audio;
 void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
 {
   /* USER CODE BEGIN DSP_ProcessTX_0 */
+
+  /* Snapshot tx_count once under a brief critical section.
+   * USB_Audio_WriteTX (USB IRQ) increments tx_count concurrently.  We read a
+   * stable value here, compute how many complete stereo samples (4 bytes each)
+   * we can consume, then do all reads without IRQ protection — tx_rd is
+   * exclusively written by this function (main-loop context only).
+   * After the loop we subtract the consumed byte count in a single CS so the
+   * IRQ's concurrent additions are preserved correctly. */
+  __disable_irq();
+  uint16_t tx_avail = g_usb_audio.tx_count;
+  __enable_irq();
+
+  /* Each USB stereo frame = int16 L + int16 R = 4 bytes.  DSP uses L only. */
+  uint16_t samples_avail = tx_avail / 4U;
+  if (samples_avail > (uint16_t)len) { samples_avail = (uint16_t)len; }
+  uint16_t bytes_consumed = (uint16_t)(samples_avail * 4U);
+
   for (uint32_t n = 0U; n < len; n++)
   {
     /* ── 1. Pull mono audio from USB TX ring (L channel, int16 LE).
      *       Silence (0.0f) when the ring is empty. */
     float audio = 0.0f;
-    if (g_usb_audio.tx_count >= 4U) {
+    if (n < (uint32_t)samples_avail) {
       uint8_t lo = g_usb_audio.tx_ring[g_usb_audio.tx_rd];
       g_usb_audio.tx_rd = (uint16_t)((g_usb_audio.tx_rd + 1U) % USB_AUDIO_RING_SIZE);
       uint8_t hi = g_usb_audio.tx_ring[g_usb_audio.tx_rd];
@@ -670,8 +701,7 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
       int16_t s = (int16_t)((uint16_t)hi << 8 | lo);
       audio = (float)s * DSP_INV_32767;
       /* Discard R channel (2 bytes) */
-      g_usb_audio.tx_rd    = (uint16_t)((g_usb_audio.tx_rd + 2U) % USB_AUDIO_RING_SIZE);
-      g_usb_audio.tx_count = (uint16_t)(g_usb_audio.tx_count - 4U);
+      g_usb_audio.tx_rd = (uint16_t)((g_usb_audio.tx_rd + 2U) % USB_AUDIO_RING_SIZE);
     }
 
     /* ── 2. Audio DC block – remove mic/line DC offset before Hilbert.
@@ -776,6 +806,15 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
     if (q_val < -32768)  q_val = -32768;
     iq_out[n * 2U + 0U] = (int32_t)(int16_t)i_val;
     iq_out[n * 2U + 1U] = (int32_t)(int16_t)q_val;
+  }
+
+  /* Single atomic decrement: subtract only what was consumed.  Any bytes
+   * added by USB_Audio_WriteTX (USB IRQ) after the snapshot are preserved
+   * because we re-read tx_count inside the CS before subtracting. */
+  if (bytes_consumed > 0U) {
+    __disable_irq();
+    g_usb_audio.tx_count = (uint16_t)(g_usb_audio.tx_count - bytes_consumed);
+    __enable_irq();
   }
   /* USER CODE END DSP_ProcessTX_0 */
 }
