@@ -11,13 +11,14 @@
 
 #include "diag.h"
 #include "csdr_app.h"
+#include "sdr_ui.h"
 #include "runtime_diag.h"
 
 #define DIAG_X          8U
 #define DIAG_Y          62U
 #define DIAG_W          112U
 #define DIAG_ROW_H      9U
-#define DIAG_ROWS       19U
+#define DIAG_ROWS       20U
 #define DIAG_BG         0x0000U
 #define DIAG_FG         0x07E0U
 #define DIAG_WARN_FG    0xFFE0U
@@ -125,7 +126,8 @@ void Diag_Run(ST7789_Handle_t *lcd)
      * this copy so the diagnostic screen has zero effect on live measurements. */
     RuntimeDiag_GetSnapshot(&s_diag_snapshot);
   } else {
-    g_sdr.display_dirty = true;
+    g_sdr.display_dirty = DIRTY_ALL;
+    SDR_UI_RedrawFooter(s_diag_lcd);
   }
 }
 
@@ -204,6 +206,15 @@ void Diag_Process(void)
   diag_update_row(17U, line, DIAG_FG);
   diag_make_line(line, sizeof(line), "WFSC", snap.ui_section_max_us[RUNTIME_DIAG_UI_WF_SCROLL]);
   diag_update_row(18U, line, DIAG_FG);
+
+  {
+    uint32_t sk, dr;
+    SDR_UI_GetSpecSkipStats(&sk, &dr);
+    uint32_t total = sk + dr;
+    uint32_t pct   = (total > 0U) ? (sk * 100U / total) : 0U;
+    diag_make_line(line, sizeof(line), "SKIP%", pct);
+    diag_update_row(19U, line, DIAG_FG);
+  }
 }
 
 void Diag_ResetPeaks(void)

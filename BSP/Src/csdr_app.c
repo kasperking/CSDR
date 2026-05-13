@@ -112,8 +112,8 @@ static volatile uint8_t dbg_disable_lcd_dma = 0;
 
 /* UI refresh caps.  RX values preserve the existing cadence; TX values keep
  * long SPI LCD transfers away from the 5.33 ms audio half-buffer deadline. */
-#define CSDR_UI_WF_RX_PERIOD_MS       40U   /* 25 fps waterfall in RX */
-#define CSDR_UI_DISPLAY_RX_PERIOD_MS 200U   /* 5 Hz spectrum/meter in RX */
+#define CSDR_UI_WF_RX_PERIOD_MS       67U   /* ~15 fps waterfall in RX; smaller buffer makes this safe */
+#define CSDR_UI_DISPLAY_RX_PERIOD_MS 200U   /* 5 fps spectrum/meter; keep low — rate × size drives LCD BW */
 #define CSDR_UI_DISPLAY_TX_PERIOD_MS 1000U  /* 1 Hz compact TX meter refresh */
 #define CSDR_UI_TX_DIRTY_MIN_MS      1000U  /* defer knob/menu redraws while TX audio is time-critical */
 

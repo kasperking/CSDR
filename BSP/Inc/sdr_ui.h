@@ -13,11 +13,12 @@
   *  │ NR  NB   ├─────────────────────────┤ DSP  6      │
   *  │ VOL  78  │  METER  200×38          │ LEN  45     │
   *  │ SQL   0  │  S▐▐▐▐▐▐░░░  S7        │             │
-  *  │          │                         │             │
   *  ├──────────┴─────────────────────────┴─────────────┤  Y=100
-  *  │  SPECTRUM  320×68                                │
-  *  ├──────────────────────────────────────────────────┤  Y=168
-  *  │  WATERFALL  320×62                               │
+  *  │  (background spacer 320×62, filled by DrawFrame) │
+  *  ├──────────────────────────────────────────────────┤  Y=162
+  *  │  SPECTRUM  320×38                                │
+  *  ├──────────────────────────────────────────────────┤  Y=200
+  *  │  WATERFALL  320×30                               │
   *  ├──────────────────────────────────────────────────┤  Y=230
   *  │  FOOTER  320×10  -24k    0    +24k               │
   *  └──────────────────────────────────────────────────┘  Y=240
@@ -66,16 +67,16 @@ extern "C" {
 
 #define SPEC_X    0U
 #define SPEC_W  320U
-#define SPEC_Y  100U
-#define SPEC_H   68U
-#define SPEC_Y2 168U
+#define SPEC_Y  162U
+#define SPEC_H   38U
+#define SPEC_Y2 200U
 /* Zoom levels: 0=±24k  1=±18k  2=±12k  3=±6k  4=±3k  (display-only, DSP unchanged) */
 #define SPEC_ZOOM_COUNT  5U
 
 #define WF_X     0U
 #define WF_W   320U
-#define WF_Y   168U
-#define WF_H    62U
+#define WF_Y   200U
+#define WF_H    30U
 #define WF_Y2  230U
 
 #define FTR_Y  230U
@@ -221,6 +222,13 @@ void SDR_UI_UpdateSMeter_SetVoltage(float v);
 void SDR_UI_UpdateTXMeters(ST7789_Handle_t *lcd, float alc_norm, float swr);
 
 void SDR_UI_DrawFuncBar(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui);
+
+/* Redraw footer (frequency scale labels) without changing zoom state.
+ * Call after any overlay (e.g. DIAG) that paints over FTR_Y..FTR_Y2. */
+void SDR_UI_RedrawFooter(ST7789_Handle_t *lcd);
+
+/* Spectrum delta-skip counters: skip_hits = frames suppressed, draw_hits = frames pushed. */
+void SDR_UI_GetSpecSkipStats(uint32_t *skip_hits, uint32_t *draw_hits);
 
 #ifdef __cplusplus
 }
