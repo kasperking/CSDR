@@ -93,7 +93,6 @@ typedef struct {
   bool         editing;        /*!< Đang chỉnh sửa giá trị      */
   MenuItem_t   items[MENU_ITEM_COUNT];
   uint8_t      item_count;
-  ST7789_Handle_t *lcd;
 } Menu_Handle_t;
 
 /* Exported variables --------------------------------------------------------*/
@@ -104,7 +103,7 @@ extern Menu_Handle_t g_menu;
 /**
   * @brief  Khởi tạo menu với tất cả items và con trỏ đến SDR state.
   */
-void Menu_Init(Menu_Handle_t *m, ST7789_Handle_t *lcd);
+void Menu_Init(Menu_Handle_t *m);
 
 /**
   * @brief  Toggle mở/đóng menu (MENU_KEY).

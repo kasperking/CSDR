@@ -52,10 +52,8 @@ extern SAI_HandleTypeDef hsai_BlockB1;
 /* USER CODE BEGIN EV */
 extern DMA_HandleTypeDef  hdma_sai1_a;
 extern DMA_HandleTypeDef  hdma_sai1_b;
-extern DMA_HandleTypeDef  hdma_spi1_tx;
 extern SAI_HandleTypeDef  hsai_BlockA1;
 extern SAI_HandleTypeDef  hsai_BlockB1;
-extern SPI_HandleTypeDef  hspi1;
 extern PCD_HandleTypeDef  hpcd_USB_OTG_FS;
 /* USER CODE END EV */
 

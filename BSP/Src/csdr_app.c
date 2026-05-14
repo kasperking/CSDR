@@ -44,7 +44,6 @@ extern ADC_HandleTypeDef  hadc3;
 /* ══════════════════════════════════════════════════════════
  *  Private state
  * ══════════════════════════════════════════════════════════ */
-static ST7789_Handle_t  g_lcd;
 static DSP_State_t      g_dsp;
 
 SDR_State_t g_sdr = {
@@ -107,8 +106,6 @@ extern volatile uint32_t dbg_usb_stall_cnt;   /* ISO IN queue failures (stall/no
 /* Set to 1 in debugger to skip waterfall/LCD DMA while diagnosing USB audio. */
 static volatile uint8_t dbg_disable_lcd_dma = 0;
 
-/* UI refresh caps.  RX values preserve the existing cadence; TX values keep
- * long SPI LCD transfers away from the 5.33 ms audio half-buffer deadline. */
 #define CSDR_UI_WF_RX_PERIOD_MS       67U   /* ~15 fps waterfall in RX; smaller buffer makes this safe */
 #define CSDR_UI_DISPLAY_RX_PERIOD_MS 200U   /* 5 fps spectrum/meter; keep low — rate × size drives LCD BW */
 #define CSDR_UI_DISPLAY_TX_PERIOD_MS 1000U  /* 1 Hz compact TX meter refresh */
@@ -196,12 +193,6 @@ void CSDR_Init(void)
   HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0U, 0U);
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
   __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 800U);
-
-  /* SPI LCD removed – FMC LCD bring-up active.
-   * ST7789_Init / SDR_UI_Init / logo display disabled until FMC UI layer ready.
-   * g_lcd dimensions kept so code that reads width/height doesn't fault. */
-  g_lcd.width  = LCD_W;
-  g_lcd.height = LCD_H;
 
   /* Flash: load settings (logo display skipped during FMC bring-up) */
   if (W25Q_Init(&g_flash, &hspi3, FLASH_CS_GPIO_Port, FLASH_CS_Pin) == HAL_OK) {
@@ -324,7 +315,7 @@ void CSDR_Init(void)
   USB_Audio_Init(&g_usb_audio);
 
   /* Menu */
-  Menu_Init(&g_menu, &g_lcd);
+  Menu_Init(&g_menu);
 
   /* Initial UI */
   SDR_UI_State_t ui = {0};
@@ -598,7 +589,7 @@ void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *h)
 
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *h)
 {
-  if (h->Instance == SPI1) ST7789_DMA_TxCpltCallback(&g_lcd);
+  (void)h;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -813,9 +804,6 @@ static void csdr_handle_keys(void)
 
 static void csdr_update_waterfall(void)
 {
-  /* UI path only — never called from DSP ping/pong.
-   * Consume all pending lines, draw exactly 1 row.  Non-blocking: DMA runs
-   * in background, CS deasserted from HAL_SPI_TxCpltCallback. */
   if (g_sdr.tx_mode || g_dsp.wf_lines == 0U || Menu_IsOpen(&g_menu)) return;
   RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_WATERFALL);
   g_dsp.wf_lines = 0U;                   /* drop extras accumulated since last tick */

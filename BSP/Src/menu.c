@@ -106,11 +106,10 @@ static void render_item(Menu_Handle_t *m, uint8_t idx, uint16_t abs_y)
 /* USER CODE END 0 */
 
 /* ════ Menu_Init ════ */
-void Menu_Init(Menu_Handle_t *m, ST7789_Handle_t *lcd)
+void Menu_Init(Menu_Handle_t *m)
 {
   /* USER CODE BEGIN Menu_Init_0 */
   memset(m, 0, sizeof(*m));
-  m->lcd        = lcd;
   m->item_count = MENU_ITEM_COUNT;
   _bl_val = 80;
 
@@ -208,7 +207,7 @@ void Menu_EncoderEdit(Menu_Handle_t *m, int32_t delta)
 void Menu_Render(Menu_Handle_t *m)
 {
   /* USER CODE BEGIN Menu_Render_0 */
-  if (!m->open || !m->lcd) return;
+  if (!m->open) return;
 
   uint16_t y = (uint16_t)MENU_Y;
 
