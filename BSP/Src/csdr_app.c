@@ -31,15 +31,12 @@
 /* ══════════════════════════════════════════════════════════
  *  Extern HAL handles – được define trong main.c do CubeMX generate
  * ══════════════════════════════════════════════════════════ */
-extern SPI_HandleTypeDef  hspi1;    /* LCD */
 extern SPI_HandleTypeDef  hspi3;    /* Flash */
 extern SAI_HandleTypeDef  hsai_BlockA1;
 extern SAI_HandleTypeDef  hsai_BlockB1;
-extern DMA_HandleTypeDef  hdma_spi1_tx;
 extern I2C_HandleTypeDef  hi2c1;
-extern TIM_HandleTypeDef  htim1;    /* LCD BL */
-extern TIM_HandleTypeDef  htim2;    /* Encoder */
-extern TIM_HandleTypeDef  htim3;    /* Fan */
+extern TIM_HandleTypeDef  htim1;    /* Encoder (TIM1_CH1/CH2 = PA8/PA9) */
+extern TIM_HandleTypeDef  htim3;    /* Backlight TIM3_CH3, Fan TIM3_CH4 */
 extern ADC_HandleTypeDef  hadc1;
 extern ADC_HandleTypeDef  hadc2;
 extern ADC_HandleTypeDef  hadc3;
@@ -194,29 +191,19 @@ void CSDR_Init(void)
     }
   }
 
-  /* LCD */
-  /* Keep LCD completion IRQs below USB/SAI audio IRQs.  SPI DMA can occupy the
-   * bus for multi-kilobyte UI pushes, but its ISR must not preempt the audio
-   * half-buffer producer/consumer callbacks. */
-  HAL_NVIC_SetPriority(SPI1_IRQn, 5U, 0U);
-  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 5U, 0U);
+  /* Backlight: TIM3_CH3 (PC8).  SAI DMA IRQs: highest priority. */
   HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0U, 0U);
   HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0U, 0U);
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 800U);
 
-  g_lcd.hspi     = &hspi1;
-  g_lcd.hdma_tx  = &hdma_spi1_tx;
-  g_lcd.cs_port  = LCD_CS_GPIO_Port;  g_lcd.cs_pin  = LCD_CS_Pin;
-  g_lcd.dc_port  = LCD_DC_GPIO_Port;  g_lcd.dc_pin  = LCD_DC_Pin;
-  g_lcd.rst_port = LCD_RST_GPIO_Port; g_lcd.rst_pin = LCD_RST_Pin;
-  g_lcd.bl_port  = NULL;
-  g_lcd.width    = LCD_W;
-  g_lcd.height   = LCD_H;
-  ST7789_Init(&g_lcd);
-  SDR_UI_Init();
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 800U);
+  /* SPI LCD removed – FMC LCD bring-up active.
+   * ST7789_Init / SDR_UI_Init / logo display disabled until FMC UI layer ready.
+   * g_lcd dimensions kept so code that reads width/height doesn't fault. */
+  g_lcd.width  = LCD_W;
+  g_lcd.height = LCD_H;
 
-  /* Flash + boot logo */
+  /* Flash: load settings (logo display skipped during FMC bring-up) */
   if (W25Q_Init(&g_flash, &hspi3, FLASH_CS_GPIO_Port, FLASH_CS_Pin) == HAL_OK) {
     Flash_Settings_t fs;
     if (Flash_LoadSettings(&g_flash, &fs) == HAL_OK) {
@@ -229,14 +216,8 @@ void CSDR_Init(void)
       g_sdr.agc_fast = fs.agc_fast;
       g_sdr.step     = (FreqStep_t)fs.step;
     }
-    for (uint16_t y = 0; y < LCD_H; y++) {
-      uint16_t *ln = (uint16_t*)s_rx_buf;
-      if (Flash_ReadLogoScanline(&g_flash, y, ln) == HAL_OK)
-        ST7789_PushScanline(&g_lcd, y, ln);
-    }
-    HAL_Delay(1200U);
   }
-  SDR_UI_DrawFrame(&g_lcd, CSDR_AUDIO_SAMPLE_RATE, DSP_FFT_SIZE);
+  /* SDR_UI_DrawFrame disabled: FMC UI not yet wired */
 
   /* Delay nhỏ trước I2C để bus settle sau power-on */
   HAL_Delay(10);
@@ -282,7 +263,7 @@ void CSDR_Init(void)
   AGC_SetSpeed(&g_dsp.agc, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
 
   /* Encoder */
-  Encoder_Init(&g_encoder, &htim2);
+  Encoder_Init(&g_encoder, &htim1);
 
   /* Function keys */
   Key_Init(&k_menu, MENU_KEY_GPIO_Port, MENU_KEY_Pin);
@@ -352,11 +333,10 @@ void CSDR_Init(void)
   ui.step      = (uint32_t)g_sdr.step; ui.agc_fast  = g_sdr.agc_fast;
   ui.si5351_ok = g_sdr.si5351_ok;      ui.bw_hz     = g_sdr.bw_hz;
   ui.freq_b_hz = g_sdr.vfo_b.freq_hz;  ui.active_vfo = g_sdr.active_vfo;
-  SDR_UI_DrawTopBar(&g_lcd, &ui);
-  SDR_UI_DrawStatusPanel(&g_lcd, &ui);
+  /* SDR_UI_DrawTopBar / DrawStatusPanel disabled: FMC UI not yet wired */
 
   /* Start SAI DMA (provides BCLK/LRCK to WM8731) */
-  HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
+  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
   /* Start TX first - it's MASTER and generates BCLK/LRCK for RX */
   RuntimeDiag_TxHalfFilled(0U);
   RuntimeDiag_TxHalfFilled(1U);

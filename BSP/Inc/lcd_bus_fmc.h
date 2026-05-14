@@ -1,0 +1,112 @@
+/* USER CODE BEGIN Header */
+/**
+ * @file  lcd_bus_fmc.h
+ * @brief FMC 8080-mode LCD bus driver for STM32H750 – ST7796S 480×320.
+ *
+ *  FMC Bank1 NE1 memory-mapped access.  No SPI, no DMA — pure FMC.
+ *  A16 (PD11) drives LCD RS/DC:
+ *    write to LCD_FMC_CMD_ADDR  (0x60000000) → A16=0 → command
+ *    write to LCD_FMC_DATA_ADDR (0x60010000) → A16=1 → data/pixel
+ *
+ *  Address mapping detail (8-bit mode):
+ *    FMC Bank1 NE1 base = 0x60000000
+ *    A16 = CPU address bit 16 = offset 0x10000
+ *    CMD  = base + 0x00000 = 0x60000000  (A16=0 → RS/DC LOW  → command)
+ *    DATA = base + 0x10000 = 0x60010000  (A16=1 → RS/DC HIGH → data)
+ *    Any byte write to CMD_ADDR: FMC pulses NWE, keeps A16 LOW.
+ *    Any byte write to DATA_ADDR: FMC pulses NWE, keeps A16 HIGH.
+ *
+ *  Bus width: 8-bit.  Each 16-bit pixel = 2 consecutive byte writes, MSB first.
+ *
+ *  IMPORTANT: LCD_Bus_Init() configures MPU Region 1 (0x60000000–0x6001FFFF)
+ *  as Strongly-Ordered (TEX=0,C=0,B=0).  D-Cache must not buffer FMC writes.
+ */
+/* USER CODE END Header */
+
+#ifndef LCD_BUS_FMC_H
+#define LCD_BUS_FMC_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <stdint.h>
+#include <stddef.h>
+
+/* ── Bus width ───────────────────────────────────────────────────────────────
+ * Only 8-bit implemented.  Reserve define for future 16-bit migration.
+ */
+#define LCD_BUS_WIDTH   8
+
+/* ── FMC Bank1 NE1 address map ───────────────────────────────────────────────
+ * CMD  → 0x60000000  (A16=0)
+ * DATA → 0x60010000  (A16=1, offset = 1<<16)
+ */
+#define LCD_FMC_CMD_ADDR   ((volatile uint8_t *)0x60000000UL)
+#define LCD_FMC_DATA_ADDR  ((volatile uint8_t *)0x60010000UL)
+
+/* ── Screen geometry (ST7796S landscape 480×320) ─────────────────────────── */
+#ifndef LCD_W
+#define LCD_W   480U
+#endif
+#ifndef LCD_H
+#define LCD_H   320U
+#endif
+
+/* ── ST7796S command set (subset for bring-up) ───────────────────────────── */
+#define ST7796_SWRESET    0x01U   /* Software reset                          */
+#define ST7796_SLPOUT     0x11U   /* Sleep out                               */
+#define ST7796_NORON      0x13U   /* Normal display mode on                  */
+#define ST7796_INVOFF     0x20U   /* Display inversion off                   */
+#define ST7796_INVON      0x21U   /* Display inversion on                    */
+#define ST7796_DISPON     0x29U   /* Display on                              */
+#define ST7796_CASET      0x2AU   /* Column address set                      */
+#define ST7796_RASET      0x2BU   /* Row address set                         */
+#define ST7796_RAMWR      0x2CU   /* Memory write                            */
+#define ST7796_MADCTL     0x36U   /* Memory data access control              */
+#define ST7796_COLMOD     0x3AU   /* Interface pixel format                  */
+
+/* ── MADCTL landscape options ────────────────────────────────────────────────
+ * ST7796S native: 320 columns × 480 rows (portrait).
+ * Landscape 480×320: MV=1 swaps row/column addressing.
+ * MX=1 mirrors columns so origin is top-left with X increasing right.
+ *
+ * Bit layout: MY|MX|MV|ML|BGR|MH|0|0
+ *   0x60 = 0110 0000 → MX=1, MV=1, RGB order  (try first)
+ *   0x68 = 0110 1000 → MX=1, MV=1, BGR order  (if R and B are swapped)
+ *   0xA0 = 1010 0000 → MY=1, MV=1, RGB order  (if image is mirrored horizontally)
+ *   0xA8 = 1010 1000 → MY=1, MV=1, BGR order
+ */
+#define ST7796_MADCTL_LANDSCAPE      0x60U   /* MX|MV, RGB — default */
+#define ST7796_MADCTL_LANDSCAPE_BGR  0x68U   /* MX|MV|BGR — if R/B swapped */
+
+/* COLMOD: 16-bit/pixel (RGB565) for both DPI and DBI */
+#define ST7796_COLMOD_16BIT          0x55U
+
+/* ── API ─────────────────────────────────────────────────────────────────── */
+
+void LCD_Bus_Init(void);
+
+/* Raw bus primitives */
+void LCD_WriteCmd(uint8_t cmd);
+void LCD_WriteData8(uint8_t data);
+
+/* 16-bit pixel: two 8-bit writes, MSB first */
+static inline void LCD_WriteData16(uint16_t data)
+{
+    *LCD_FMC_DATA_ADDR = (uint8_t)(data >> 8);
+    *LCD_FMC_DATA_ADDR = (uint8_t)(data);
+}
+
+/* Core LCD operations */
+void LCD_SetWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
+void LCD_WritePixel(uint16_t x, uint16_t y, uint16_t color);
+void LCD_FillRect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color);
+void LCD_Clear(uint16_t color);
+void LCD_WriteDataBuffer(const uint16_t *buf, uint32_t count);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* LCD_BUS_FMC_H */

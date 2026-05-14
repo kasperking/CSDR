@@ -110,45 +110,108 @@ extern SDR_State_t g_sdr;
 #define CSDR_AUDIO_BLOCK_SIZE     256U
 #define CSDR_AUDIO_BUF_TOTAL   (CSDR_AUDIO_BLOCK_SIZE * 2U)
 
-/* Pin defines (từ CSDR.ioc) */
+/* Pin defines – fallback values for when main.h is not in the include chain.
+ * main.h (CubeMX) takes precedence: conflicting names are guarded with #ifndef. */
+
+/* SPI LCD (old hardware) – unique names, no conflict */
 #define LCD_CS_Pin          GPIO_PIN_4
 #define LCD_CS_GPIO_Port    GPIOA
 #define LCD_DC_Pin          GPIO_PIN_0
 #define LCD_DC_GPIO_Port    GPIOB
 #define LCD_RST_Pin         GPIO_PIN_1
 #define LCD_RST_GPIO_Port   GPIOB
+
+/* LCD backlight – main.h: PC8/TIM3_CH3 */
+#ifndef LCD_BL_Pin
 #define LCD_BL_Pin          GPIO_PIN_15
+#endif
+#ifndef LCD_BL_GPIO_Port
 #define LCD_BL_GPIO_Port    GPIOB
+#endif
+
+/* Flash SPI CS – main.h: PA15 */
+#ifndef FLASH_CS_Pin
 #define FLASH_CS_Pin        GPIO_PIN_0
+#endif
+#ifndef FLASH_CS_GPIO_Port
 #define FLASH_CS_GPIO_Port  GPIOD
+#endif
+
+/* Attenuator */
+#ifndef ATT_DAT_Pin
 #define ATT_DAT_Pin         GPIO_PIN_8
+#endif
+#ifndef ATT_DAT_GPIO_Port
 #define ATT_DAT_GPIO_Port   GPIOD
+#endif
+#ifndef ATT_CLK_Pin
 #define ATT_CLK_Pin         GPIO_PIN_9
+#endif
+#ifndef ATT_CLK_GPIO_Port
 #define ATT_CLK_GPIO_Port   GPIOD
+#endif
+#ifndef ATT_LATCH_Pin
 #define ATT_LATCH_Pin       GPIO_PIN_10
+#endif
+#ifndef ATT_LATCH_GPIO_Port
 #define ATT_LATCH_GPIO_Port GPIOD
+#endif
+
+/* BPF – S0/OE are unique here; S1 conflicts with main.h (PA4) */
 #define BPF_S0_Pin          GPIO_PIN_12
 #define BPF_S0_GPIO_Port    GPIOD
+#ifndef BPF_S1_Pin
 #define BPF_S1_Pin          GPIO_PIN_13
+#endif
+#ifndef BPF_S1_GPIO_Port
 #define BPF_S1_GPIO_Port    GPIOD
+#endif
 #define BPF_OE_Pin          GPIO_PIN_11
 #define BPF_OE_GPIO_Port    GPIOD
+
+/* LPF */
+#ifndef LPF_A0_Pin
 #define LPF_A0_Pin          GPIO_PIN_8
+#endif
+#ifndef LPF_A0_GPIO_Port
 #define LPF_A0_GPIO_Port    GPIOC
+#endif
+#ifndef LPF_A1_Pin
 #define LPF_A1_Pin          GPIO_PIN_9
+#endif
+#ifndef LPF_A1_GPIO_Port
 #define LPF_A1_GPIO_Port    GPIOC
+#endif
+#ifndef LPF_A2_Pin
 #define LPF_A2_Pin          GPIO_PIN_8
+#endif
 #define LPF_A2_GPIO_Port    GPIOA
+
+/* T/R switch – main.h uses T_R_SW_Pin (different name), no conflict here */
 #define TR_SW_Pin           GPIO_PIN_14
 #define TR_SW_GPIO_Port     GPIOD
+
+/* Power control – main.h uses PW_Pin / PW_HOLD_Pin (different names) */
 #define CPU_PW_Pin          GPIO_PIN_12
 #define CPU_PW_GPIO_Port    GPIOB
 #define CPU_PW_HOLD_Pin     GPIO_PIN_13
 #define CPU_PW_HOLD_GPIO_Port GPIOB
+
+/* Fan – main.h: PB1/TIM3_CH4 */
+#ifndef FAN_Pin
 #define FAN_Pin             GPIO_PIN_6
+#endif
+#ifndef FAN_GPIO_Port
 #define FAN_GPIO_Port       GPIOC
+#endif
+
+/* Encoder switch – main.h: PA10 */
+#ifndef ENC_SW_Pin
 #define ENC_SW_Pin          GPIO_PIN_2
+#endif
 #define ENC_SW_GPIO_Port    GPIOA
+
+/* Function keys – unique names, no conflict with main.h */
 #define MENU_KEY_Pin        GPIO_PIN_7
 #define MENU_KEY_GPIO_Port  GPIOE
 #define BAND_KEY_Pin        GPIO_PIN_8
@@ -163,18 +226,30 @@ extern SDR_State_t g_sdr;
 #define F3_KEY_GPIO_Port    GPIOE
 #define F4_KEY_Pin          GPIO_PIN_13
 #define F4_KEY_GPIO_Port    GPIOE
+
+/* PTT – main.h: PB12 */
+#ifndef PTT_Pin
 #define PTT_Pin             GPIO_PIN_14
+#endif
+#ifndef PTT_GPIO_Port
 #define PTT_GPIO_Port       GPIOE
+#endif
+
+/* Paddle keys – unique names */
 #define DAH_KEY_Pin         GPIO_PIN_15
 #define DAH_KEY_GPIO_Port   GPIOE
 #define DIT_KEY_Pin         GPIO_PIN_10
 #define DIT_KEY_GPIO_Port   GPIOB
+
+/* ADC / analog – same values as main.h, no warnings */
 #define NTC_Pin             GPIO_PIN_0
 #define NTC_GPIO_Port       GPIOC
 #define ALC_Pin             GPIO_PIN_1
 #define ALC_GPIO_Port       GPIOC
 #define VOLTAGE_IN_Pin      GPIO_PIN_3
 #define VOLTAGE_IN_GPIO_Port GPIOA
+
+/* Flash SPI pins – same values as main.h, no warnings */
 #define FLASH_SCK_Pin       GPIO_PIN_10
 #define FLASH_SCK_GPIO_Port GPIOC
 #define FLASH_MISO_Pin      GPIO_PIN_11

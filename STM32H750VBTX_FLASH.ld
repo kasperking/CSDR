@@ -38,7 +38,7 @@ ENTRY(Reset_Handler)
 _estack = ORIGIN(DTCMRAM) + LENGTH(DTCMRAM);    /* stack top = end of DTCMRAM (128K) */
 /* Generate a link error if heap and stack don't fit into RAM */
 _Min_Heap_Size = 0x200;      /* required amount of heap  */
-_Min_Stack_Size = 0x2000; /* 8KB - increased from 0x400 for DSP/FFT/Menu */ /* required amount of stack */
+_Min_Stack_Size = 0x400; /* 8KB - increased from 0x400 for DSP/FFT/Menu */ /* required amount of stack */
 
 /* Specify the memory areas */
 MEMORY
