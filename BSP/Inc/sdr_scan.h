@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#include "st7789.h"
+#include <stdint.h>
 
 /* Scan parameters */
 #define SCAN_SPAN_HZ      200000UL   /* Half-span each side: ±200 kHz        */
@@ -32,7 +32,7 @@ extern "C" {
   *         Keys TX briefly at each step, reads SWR, plots result.
   *         Returns when user presses F4.
   */
-void SWR_Scan_Run(ST7789_Handle_t *lcd);
+void SWR_Scan_Run(void);
 
 #ifdef __cplusplus
 }

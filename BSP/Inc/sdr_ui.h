@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file    sdr_ui.h
-  * @brief   CSDR SDR UI – 8-zone layout 320×240
+  * @brief   CSDR SDR UI – 8-zone layout 320×240 over FMC LCD
   *
   *  ┌──────────────────────────────────────────────────┐  Y=0
   *  │  HEADER  320×18    [RX] ATT:6  13.9V            │
@@ -22,6 +22,9 @@
   *  ├──────────────────────────────────────────────────┤  Y=230
   *  │  FOOTER  320×10  -24k    0    +24k               │
   *  └──────────────────────────────────────────────────┘  Y=240
+  *
+  *  Transport: FMC 8080-mode (ST7796S) via LCD_PushWindow / LCD_Clear.
+  *  No SPI, no DMA wait loops, no CS toggling.
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -33,7 +36,10 @@
 extern "C" {
 #endif
 
-#include "st7789.h"
+/* UI canvas uses the legacy 320×240 geometry; lcd_bus_fmc.h #ifndef guards
+ * preserve these values even though the physical display is 480×320. */
+#include "st7789.h"        /* SWAP16, Font6x8, LCD_LineFill/Str helpers, LCD_W=320 */
+#include "lcd_bus_fmc.h"   /* LCD_PushWindow, LCD_Clear, LCD_FillRect              */
 
 /* ── Zone geometry ──────────────────────────────────── */
 
@@ -177,31 +183,32 @@ typedef struct {
   uint8_t   active_vfo;    /*!< 0 = VFO A active, 1 = VFO B active */
 } SDR_UI_State_t;
 
-/* ── API ────────────────────────────────────────────── */
+/* ── API ─────────────────────────────────────────────────────────────────────
+ *  No lcd handle — FMC is memory-mapped and stateless.
+ * ────────────────────────────────────────────────────────────────────────── */
 
 void SDR_UI_Init(void);
 
 /* One-time skeleton + footer; call before any zone draws */
-void SDR_UI_DrawFrame(ST7789_Handle_t *lcd, uint32_t sample_rate, uint16_t fft_bins);
+void SDR_UI_DrawFrame(uint32_t sample_rate, uint16_t fft_bins);
 
 /* Spectrum zoom (display-only, no DSP change).  Redraws footer immediately. */
-void    SDR_UI_SetSpecZoom(ST7789_Handle_t *lcd, uint8_t zoom);
+void    SDR_UI_SetSpecZoom(uint8_t zoom);
 uint8_t SDR_UI_GetSpecZoom(void);
 
-/* Zone draws – each renders its buffer then pushes in a single SPI block */
-void SDR_UI_DrawHeader(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui);
-void SDR_UI_DrawSidebarLeft(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui);
-void SDR_UI_DrawVFO(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui);
-void SDR_UI_DrawSidebarRight(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui);
-void SDR_UI_DrawMeter(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui);
+/* Zone draws – each renders its buffer then pushes via FMC in one burst */
+void SDR_UI_DrawHeader(const SDR_UI_State_t *ui);
+void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui);
+void SDR_UI_DrawVFO(const SDR_UI_State_t *ui);
+void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui);
+void SDR_UI_DrawMeter(const SDR_UI_State_t *ui);
 
 /* Convenience wrappers (backward compat) */
-void SDR_UI_DrawTopBar(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui);
-void SDR_UI_DrawStatusPanel(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui);
+void SDR_UI_DrawTopBar(const SDR_UI_State_t *ui);
+void SDR_UI_DrawStatusPanel(const SDR_UI_State_t *ui);
 
-/* Spectrum: full redraw, single PushBlock */
-void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
-                         const float *fft_db, uint16_t bins,
+/* Spectrum: full redraw, single FMC burst */
+void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
                          float bw_lo_ratio, float bw_hi_ratio,
                          SDR_UI_State_t *ui);
 
@@ -209,25 +216,23 @@ void SDR_UI_DrawSpectrum(ST7789_Handle_t *lcd,
 uint8_t SDR_UI_WaterfallPrecompute(const float *fft_db, uint16_t bins);
 
 /* Waterfall: 2-split ring push for true scroll (call from UI task) */
-void SDR_UI_WaterfallPush(ST7789_Handle_t *lcd, uint8_t buf_idx);
+void SDR_UI_WaterfallPush(uint8_t buf_idx);
 
 /* Compat: combines Precompute + Push in one call */
-void SDR_UI_DrawWaterfall(ST7789_Handle_t *lcd,
-                          const float *fft_db, uint16_t bins);
+void SDR_UI_DrawWaterfall(const float *fft_db, uint16_t bins);
 
 /* Meter fast-update (10 Hz) */
-void SDR_UI_UpdateSMeter(ST7789_Handle_t *lcd, float signal_db);
+void SDR_UI_UpdateSMeter(float signal_db);
 void SDR_UI_UpdateSMeter_SetTX(bool tx);
 void SDR_UI_UpdateSMeter_SetVoltage(float v);
-void SDR_UI_UpdateTXMeters(ST7789_Handle_t *lcd, float alc_norm, float swr);
+void SDR_UI_UpdateTXMeters(float alc_norm, float swr);
 
-void SDR_UI_DrawFuncBar(ST7789_Handle_t *lcd, const SDR_UI_State_t *ui);
+void SDR_UI_DrawFuncBar(const SDR_UI_State_t *ui);
 
-/* Redraw footer (frequency scale labels) without changing zoom state.
- * Call after any overlay (e.g. DIAG) that paints over FTR_Y..FTR_Y2. */
-void SDR_UI_RedrawFooter(ST7789_Handle_t *lcd);
+/* Redraw footer (frequency scale labels) without changing zoom state. */
+void SDR_UI_RedrawFooter(void);
 
-/* Spectrum delta-skip counters: skip_hits = frames suppressed, draw_hits = frames pushed. */
+/* Spectrum delta-skip counters */
 void SDR_UI_GetSpecSkipStats(uint32_t *skip_hits, uint32_t *draw_hits);
 
 #ifdef __cplusplus

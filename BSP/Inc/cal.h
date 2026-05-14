@@ -4,7 +4,6 @@
 extern "C" {
 #endif
 
-#include "st7789.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -46,7 +45,7 @@ typedef struct {
  * Returns true  → user chose Save; caller should apply + persist params.
  * Returns false → user cancelled; params may have been modified locally
  *                 by Reset Default but should be discarded by caller. */
-bool Cal_Run(ST7789_Handle_t *lcd, Cal_Params_t *params);
+bool Cal_Run(Cal_Params_t *params);
 
 #ifdef __cplusplus
 }

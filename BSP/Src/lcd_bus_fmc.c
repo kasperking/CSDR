@@ -59,12 +59,56 @@ void LCD_WriteData8(uint8_t data)
     *LCD_FMC_DATA_ADDR = data;
 }
 
+/* ── LCD_WriteDataBuffer ──────────────────────────────────────────────────────
+ * Raw RGB565 buffer: sends MSB then LSB for each pixel.
+ * 4× loop unroll reduces branch overhead for large spectrum/waterfall blasts.
+ */
 void LCD_WriteDataBuffer(const uint16_t *buf, uint32_t count)
 {
+    while (count >= 4U) {
+        *LCD_FMC_DATA_ADDR = (uint8_t)(buf[0] >> 8); *LCD_FMC_DATA_ADDR = (uint8_t)(buf[0]);
+        *LCD_FMC_DATA_ADDR = (uint8_t)(buf[1] >> 8); *LCD_FMC_DATA_ADDR = (uint8_t)(buf[1]);
+        *LCD_FMC_DATA_ADDR = (uint8_t)(buf[2] >> 8); *LCD_FMC_DATA_ADDR = (uint8_t)(buf[2]);
+        *LCD_FMC_DATA_ADDR = (uint8_t)(buf[3] >> 8); *LCD_FMC_DATA_ADDR = (uint8_t)(buf[3]);
+        buf += 4U; count -= 4U;
+    }
     while (count--) {
         *LCD_FMC_DATA_ADDR = (uint8_t)(*buf >> 8);
+        *LCD_FMC_DATA_ADDR = (uint8_t)(*buf++);
+    }
+}
+
+/* ── LCD_PushWindow ───────────────────────────────────────────────────────────
+ * Sets the CASET/RASET window then writes a SWAP16-encoded pixel buffer.
+ *
+ * The UI rendering layer stores pixels byte-swapped (SWAP16 convention) so
+ * that SPI-DMA byte order was correct on the wire.  For FMC the write order
+ * is explicit: we must send the original MSB first.  After SWAP16, the
+ * original MSB lands in the *low* byte of the stored uint16_t, so we emit
+ * (uint8_t)(px) first then (uint8_t)(px >> 8).
+ *
+ * Example: red (0xF800) → SWAP16 → 0x00F8 stored in buffer.
+ *   Emit: (uint8_t)(0x00F8) = 0xF8 [MSB, correct], (uint8_t)(0x00F8>>8) = 0x00 [LSB]
+ *   LCD receives: 0xF8 0x00 → interprets as 0xF800 = red ✓
+ *
+ * 4× unrolled for spectrum (12 160 px) and waterfall (9 600 px) blasts.
+ * No IRQ disable — FMC writes are synchronous memory-mapped operations.
+ */
+void LCD_PushWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
+                    const uint16_t *buf, uint32_t npix)
+{
+    LCD_SetWindow(x0, y0, x1, y1);
+
+    while (npix >= 4U) {
+        *LCD_FMC_DATA_ADDR = (uint8_t)(buf[0]);       *LCD_FMC_DATA_ADDR = (uint8_t)(buf[0] >> 8);
+        *LCD_FMC_DATA_ADDR = (uint8_t)(buf[1]);       *LCD_FMC_DATA_ADDR = (uint8_t)(buf[1] >> 8);
+        *LCD_FMC_DATA_ADDR = (uint8_t)(buf[2]);       *LCD_FMC_DATA_ADDR = (uint8_t)(buf[2] >> 8);
+        *LCD_FMC_DATA_ADDR = (uint8_t)(buf[3]);       *LCD_FMC_DATA_ADDR = (uint8_t)(buf[3] >> 8);
+        buf += 4U; npix -= 4U;
+    }
+    while (npix--) {
         *LCD_FMC_DATA_ADDR = (uint8_t)(*buf);
-        buf++;
+        *LCD_FMC_DATA_ADDR = (uint8_t)(*buf++ >> 8);
     }
 }
 

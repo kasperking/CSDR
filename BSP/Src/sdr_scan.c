@@ -28,13 +28,11 @@ extern SI5351_Handle_t g_si5351;
 static inline uint16_t sw16(uint16_t c)
 { return (uint16_t)((c >> 8U) | (c << 8U)); }
 
-/* ── DMA scanline push (same pattern as menu.c) ── */
+/* ── Scanline push via FMC ── */
 #define LN  ST7789_GetLineBuf()
-static void push_ln(ST7789_Handle_t *lcd, uint16_t y)
+static void push_ln(uint16_t y)
 {
-    ST7789_PushScanline(lcd, y, LN);
-    dma_wait_pub(lcd);
-    cs_high_pub(lcd);
+    LCD_PushWindow(0U, y, (uint16_t)(LCD_W - 1U), y, LN, LCD_W);
 }
 
 /* ════════════════════════════════════════════════
@@ -125,8 +123,7 @@ static void scan_tx_off(uint32_t restore_rx_hz)
  *  npts   : total points planned
  *  done   : true = show final result, false = show progress
  * ════════════════════════════════════════════════ */
-static void scan_draw_zone(ST7789_Handle_t *lcd,
-                            uint32_t start_hz, uint32_t stop_hz,
+static void scan_draw_zone(uint32_t start_hz, uint32_t stop_hz,
                             uint32_t cur_pt, uint32_t npts, bool done)
 {
     char buf[48];
@@ -204,7 +201,7 @@ static void scan_draw_zone(ST7789_Handle_t *lcd,
             if (!edge && fr >= 3U && fr < 3U + Font6x8.height) {
                 LCD_LineStr(ln, 0U, fr - 3U, buf, &Font6x8, SC_TITLE_FG, SC_TITLE_BG);
             }
-            push_ln(lcd, (uint16_t)(SC_Y0 + fr));
+            push_ln((uint16_t)(SC_Y0 + fr));
         }
     }
 
@@ -248,7 +245,7 @@ static void scan_draw_zone(ST7789_Handle_t *lcd,
             }
         }
 
-        push_ln(lcd, y);
+        push_ln(y);
     }
 
     /* ══ Frequency axis ══ */
@@ -278,7 +275,7 @@ static void scan_draw_zone(ST7789_Handle_t *lcd,
                 LCD_LineStr(ln, e_x,      frow, e_str, &Font6x8, SC_AXIS_FG, SC_BG);
                 LCD_LineStr(ln, c_x,      frow, c_str, &Font6x8, SC_AXIS_FG, SC_BG);
             }
-            push_ln(lcd, (uint16_t)(SC_FREQ_Y + fr));
+            push_ln((uint16_t)(SC_FREQ_Y + fr));
         }
     }
 
@@ -314,14 +311,14 @@ static void scan_draw_zone(ST7789_Handle_t *lcd,
                 }
             }
         }
-        push_ln(lcd, (uint16_t)(SC_HINT_Y + fr));
+        push_ln((uint16_t)(SC_HINT_Y + fr));
     }
 }
 
 /* ════════════════════════════════════════════════
  *  SWR_Scan_Run – public entry point
  * ════════════════════════════════════════════════ */
-void SWR_Scan_Run(ST7789_Handle_t *lcd)
+void SWR_Scan_Run(void)
 {
     uint32_t center_hz = g_sdr.freq_hz;
 
@@ -337,7 +334,7 @@ void SWR_Scan_Run(ST7789_Handle_t *lcd)
     memset(s_swr, 0, sizeof(s_swr));
 
     /* Initial display (empty plot, 0/N progress) */
-    scan_draw_zone(lcd, start_hz, stop_hz, 0U, npts, false);
+    scan_draw_zone(start_hz, stop_hz, 0U, npts, false);
 
     bool aborted = false;
 
@@ -375,7 +372,7 @@ void SWR_Scan_Run(ST7789_Handle_t *lcd)
         HAL_Delay(10U);
 
         /* Incremental plot update */
-        scan_draw_zone(lcd, start_hz, stop_hz, i + 1U, npts, false);
+        scan_draw_zone(start_hz, stop_hz, i + 1U, npts, false);
     }
 
     /* Restore BPF/LPF to original band */
@@ -395,7 +392,7 @@ void SWR_Scan_Run(ST7789_Handle_t *lcd)
     }
 
     /* Final result display */
-    scan_draw_zone(lcd, start_hz, stop_hz, done_pts, npts, true);
+    scan_draw_zone(start_hz, stop_hz, done_pts, npts, true);
 
     /* Wait: release held F4 (from abort), then wait for a fresh press+release */
     while (HAL_GPIO_ReadPin(F4_KEY_GPIO_Port, F4_KEY_Pin) == GPIO_PIN_RESET)

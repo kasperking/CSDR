@@ -27,7 +27,6 @@
 static bool s_diag_active = false;
 static bool s_diag_full_redraw = false;
 static uint32_t s_diag_last_ms = 0U;
-static ST7789_Handle_t *s_diag_lcd = NULL;
 static char s_diag_last[DIAG_ROWS][18];
 static bool s_diag_row_valid[DIAG_ROWS];
 static RuntimeDiag_Snapshot_t s_diag_snapshot;
@@ -80,8 +79,7 @@ static void diag_str_copy(char *dst, const char *src, uint8_t dst_len)
   dst[i] = '\0';
 }
 
-static void diag_draw_row(ST7789_Handle_t *lcd, uint8_t row, const char *text,
-                          uint16_t fg)
+static void diag_draw_row(uint8_t row, const char *text, uint16_t fg)
 {
   uint16_t *ln = ST7789_GetLineBuf();
   uint16_t y = (uint16_t)(DIAG_Y + (uint16_t)row * DIAG_ROW_H);
@@ -92,12 +90,13 @@ static void diag_draw_row(ST7789_Handle_t *lcd, uint8_t row, const char *text,
     if (fr < (uint16_t)Font6x8.height) {
       LCD_LineStr(ln, (uint16_t)(DIAG_X + 3U), fr, text, &Font6x8, fg, DIAG_BG);
     }
-    ST7789_PushWindow(lcd, DIAG_X, (uint16_t)(DIAG_X + DIAG_W - 1U),
-                      (uint16_t)(y + fr), (uint16_t)(y + fr), ln + DIAG_X);
+    LCD_PushWindow(DIAG_X, (uint16_t)(y + fr),
+                   (uint16_t)(DIAG_X + DIAG_W - 1U), (uint16_t)(y + fr),
+                   ln + DIAG_X, DIAG_W);
   }
 }
 
-static void diag_draw_frame(ST7789_Handle_t *lcd)
+static void diag_draw_frame(void)
 {
   uint16_t *ln = ST7789_GetLineBuf();
   const uint16_t h = (uint16_t)(DIAG_ROWS * DIAG_ROW_H);
@@ -106,14 +105,14 @@ static void diag_draw_frame(ST7789_Handle_t *lcd)
     if (fr == 0U || fr == (uint16_t)(h - 1U)) LCD_LineFill(ln, DIAG_X, DIAG_W, DIAG_BORDER);
     ln[DIAG_X] = SWAP16(DIAG_BORDER);
     ln[DIAG_X + DIAG_W - 1U] = SWAP16(DIAG_BORDER);
-    ST7789_PushWindow(lcd, DIAG_X, (uint16_t)(DIAG_X + DIAG_W - 1U),
-                      (uint16_t)(DIAG_Y + fr), (uint16_t)(DIAG_Y + fr), ln + DIAG_X);
+    LCD_PushWindow(DIAG_X, (uint16_t)(DIAG_Y + fr),
+                   (uint16_t)(DIAG_X + DIAG_W - 1U), (uint16_t)(DIAG_Y + fr),
+                   ln + DIAG_X, DIAG_W);
   }
 }
 
-void Diag_Run(ST7789_Handle_t *lcd)
+void Diag_Run(void)
 {
-  s_diag_lcd = lcd;
   s_diag_active = !s_diag_active;
   s_diag_full_redraw = s_diag_active;
   s_diag_last_ms = 0U;
@@ -127,7 +126,7 @@ void Diag_Run(ST7789_Handle_t *lcd)
     RuntimeDiag_GetSnapshot(&s_diag_snapshot);
   } else {
     g_sdr.display_dirty = DIRTY_ALL;
-    SDR_UI_RedrawFooter(s_diag_lcd);
+    SDR_UI_RedrawFooter();
   }
 }
 
@@ -140,14 +139,14 @@ static void diag_update_row(uint8_t row, const char *line, uint16_t fg)
 {
   if (row >= DIAG_ROWS) return;
   if (s_diag_row_valid[row] && diag_str_eq(s_diag_last[row], line)) return;
-  diag_draw_row(s_diag_lcd, row, line, fg);
+  diag_draw_row(row, line, fg);
   diag_str_copy(s_diag_last[row], line, sizeof(s_diag_last[row]));
   s_diag_row_valid[row] = true;
 }
 
 void Diag_Process(void)
 {
-  if (!s_diag_active || s_diag_lcd == NULL) return;
+  if (!s_diag_active) return;
 
   uint32_t now = HAL_GetTick();
   if (!s_diag_full_redraw && (now - s_diag_last_ms) < 1000U) return;
@@ -157,7 +156,7 @@ void Diag_Process(void)
    * Normal UI rendering is already gated by Diag_IsActive() in csdr_app.c. */
 
   if (s_diag_full_redraw) {
-    diag_draw_frame(s_diag_lcd);
+    diag_draw_frame();
     for (uint8_t i = 0U; i < DIAG_ROWS; i++) s_diag_row_valid[i] = false;
     s_diag_full_redraw = false;
   }

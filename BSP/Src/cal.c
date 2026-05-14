@@ -59,11 +59,9 @@ extern TIM_HandleTypeDef htim1;   /* encoder timer (TIM1_CH1/CH2) */
 static inline uint16_t sw16(uint16_t c)
 { return (uint16_t)((c >> 8U) | (c << 8U)); }
 
-static void push_ln(ST7789_Handle_t *lcd, uint16_t y)
+static void push_ln(uint16_t y)
 {
-  ST7789_PushScanline(lcd, y, LN);
-  dma_wait_pub(lcd);
-  cs_high_pub(lcd);
+  LCD_PushWindow(0U, y, (uint16_t)(LCD_W - 1U), y, LN, LCD_W);
 }
 
 /* ── Data model ─────────────────────────────────────────────────────────── */
@@ -163,7 +161,7 @@ static const TopItem_t s_top[] = {
 
 /* ── Rendering ──────────────────────────────────────────────────────────── */
 
-static void render_header(ST7789_Handle_t *lcd, const char *title, uint16_t *y)
+static void render_header(const char *title, uint16_t *y)
 {
   for (uint16_t fr = 0U; fr < 16U; fr++) {
     uint16_t *ln = LN;
@@ -177,12 +175,11 @@ static void render_header(ST7789_Handle_t *lcd, const char *title, uint16_t *y)
                                 Font6x8.width) / 2U);
       LCD_LineStr(ln, tx, fr - 4U, title, &Font6x8, 0xFFFFU, CAL_HDR_BG);
     }
-    push_ln(lcd, (*y)++);
+    push_ln((*y)++);
   }
 }
 
-static void render_top_item(ST7789_Handle_t *lcd, uint8_t idx,
-                             uint8_t cursor, uint16_t abs_y)
+static void render_top_item(uint8_t idx, uint8_t cursor, uint16_t abs_y)
 {
   const TopItem_t *it = &s_top[idx];
   bool sel = (idx == cursor);
@@ -213,13 +210,12 @@ static void render_top_item(ST7789_Handle_t *lcd, uint8_t idx,
                     "->", &Font6x8, CAL_BORDER, bg);
       }
     }
-    push_ln(lcd, abs_y + fr);
+    push_ln(abs_y + fr);
   }
 }
 
-static void render_sub_item(ST7789_Handle_t *lcd, const CalItem_t *it,
-                             uint8_t idx, uint8_t cursor, bool editing,
-                             uint16_t abs_y)
+static void render_sub_item(const CalItem_t *it, uint8_t idx,
+                             uint8_t cursor, bool editing, uint16_t abs_y)
 {
   bool sel  = (idx == cursor);
   bool edit = sel && editing && (it->type == CAL_T_INT);
@@ -259,14 +255,13 @@ static void render_sub_item(ST7789_Handle_t *lcd, const CalItem_t *it,
         LCD_LineStr(ln, tx, row, val_s, &Font6x8, fc, bg);
       }
     }
-    push_ln(lcd, abs_y + fr);
+    push_ln(abs_y + fr);
   }
 }
 
 /* ── Auto-calibration stubs ─────────────────────────────────────────────── */
-static void auto_iq_cal(ST7789_Handle_t *lcd)
+static void auto_iq_cal(void)
 {
-  /* Stub: zero IQ errors */
   v_iq_gain  = 0;
   v_iq_phase = 0;
 
@@ -279,12 +274,12 @@ static void auto_iq_cal(ST7789_Handle_t *lcd)
     if (fr >= 6U && fr < 6U + (uint16_t)Font6x8.height)
       LCD_LineStr(ln, (uint16_t)(CAL_X + 60U), fr - 6U,
                   "Auto IQ Cal: done", &Font6x8, 0xFFFFU, CAL_SEL_BG);
-    push_ln(lcd, y + fr);
+    push_ln(y + fr);
   }
   HAL_Delay(1200);
 }
 
-static void auto_dc_cal(ST7789_Handle_t *lcd)
+static void auto_dc_cal(void)
 {
   v_dc_i = 0;
   v_dc_q = 0;
@@ -298,7 +293,7 @@ static void auto_dc_cal(ST7789_Handle_t *lcd)
     if (fr >= 6U && fr < 6U + (uint16_t)Font6x8.height)
       LCD_LineStr(ln, (uint16_t)(CAL_X + 60U), fr - 6U,
                   "Auto DC Cal: done", &Font6x8, 0xFFFFU, CAL_SEL_BG);
-    push_ln(lcd, y + fr);
+    push_ln(y + fr);
   }
   HAL_Delay(1000);
 }
@@ -315,21 +310,21 @@ static int32_t enc_read_delta(void)
 }
 
 /* ── Sub-level loop ─────────────────────────────────────────────────────── */
-static void render_sublevel(ST7789_Handle_t *lcd, uint8_t sect_idx,
-                             uint8_t cursor, bool editing, uint8_t scroll)
+static void render_sublevel(uint8_t sect_idx, uint8_t cursor,
+                             bool editing, uint8_t scroll)
 {
   const CalSection_t *sec = &s_sections[sect_idx];
   uint16_t y = (uint16_t)CAL_Y;
-  render_header(lcd, sec->title, &y);
+  render_header(sec->title, &y);
   for (uint8_t r = 0U; r < CAL_VISIBLE; r++) {
     uint8_t idx = scroll + r;
     if (idx >= sec->count) break;
-    render_sub_item(lcd, &sec->items[idx], idx, cursor, editing, y);
+    render_sub_item(&sec->items[idx], idx, cursor, editing, y);
     y += CAL_ITEM_H;
   }
 }
 
-static void run_section(ST7789_Handle_t *lcd, uint8_t sect_idx)
+static void run_section(uint8_t sect_idx)
 {
   const CalSection_t *sec = &s_sections[sect_idx];
   uint8_t cursor  = 0U;
@@ -342,7 +337,7 @@ static void run_section(ST7789_Handle_t *lcd, uint8_t sect_idx)
   Key_Init(&k_f2,  KEY_F2_Port,     KEY_F2_Pin);
   Key_Init(&k_f4,  KEY_F4_Port,     KEY_F4_Pin);
 
-  render_sublevel(lcd, sect_idx, cursor, editing, scroll);
+  render_sublevel(sect_idx, cursor, editing, scroll);
 
   for (;;) {
     Key_Poll(&k_enc); Key_Poll(&k_f1); Key_Poll(&k_f2); Key_Poll(&k_f4);
@@ -362,7 +357,7 @@ static void run_section(ST7789_Handle_t *lcd, uint8_t sect_idx)
         if (cursor < scroll)                   { scroll = cursor; }
         if (cursor >= scroll + CAL_VISIBLE)    { scroll = (uint8_t)(cursor - CAL_VISIBLE + 1U); }
       }
-      render_sublevel(lcd, sect_idx, cursor, editing, scroll);
+      render_sublevel(sect_idx, cursor, editing, scroll);
     }
 
     /* ENC press: toggle edit / confirm action / back */
@@ -373,10 +368,10 @@ static void run_section(ST7789_Handle_t *lcd, uint8_t sect_idx)
       } else if (it->type == CAL_T_BACK) {
         return;
       } else if (it->type == CAL_T_ACTION) {
-        if (sect_idx == 1U && cursor == 2U) auto_iq_cal(lcd);
-        if (sect_idx == 2U && cursor == 2U) auto_dc_cal(lcd);
+        if (sect_idx == 1U && cursor == 2U) auto_iq_cal();
+        if (sect_idx == 2U && cursor == 2U) auto_dc_cal();
       }
-      render_sublevel(lcd, sect_idx, cursor, editing, scroll);
+      render_sublevel(sect_idx, cursor, editing, scroll);
     }
 
     /* F1 = value up (hold-repeat while editing) */
@@ -385,7 +380,7 @@ static void run_section(ST7789_Handle_t *lcd, uint8_t sect_idx)
         int32_t *v = sec->items[cursor].val;
         const CalItem_t *it = &sec->items[cursor];
         *v += it->step; if (*v > it->max) *v = it->max;
-        render_sublevel(lcd, sect_idx, cursor, editing, scroll);
+        render_sublevel(sect_idx, cursor, editing, scroll);
       }
     }
 
@@ -395,33 +390,33 @@ static void run_section(ST7789_Handle_t *lcd, uint8_t sect_idx)
         int32_t *v = sec->items[cursor].val;
         const CalItem_t *it = &sec->items[cursor];
         *v -= it->step; if (*v < it->min) *v = it->min;
-        render_sublevel(lcd, sect_idx, cursor, editing, scroll);
+        render_sublevel(sect_idx, cursor, editing, scroll);
       }
     }
 
     /* F4 = exit edit mode / back */
     if (Key_Press(&k_f4)) {
-      if (editing) { editing = false; render_sublevel(lcd, sect_idx, cursor, editing, scroll); }
+      if (editing) { editing = false; render_sublevel(sect_idx, cursor, editing, scroll); }
       else         { return; }
     }
   }
 }
 
 /* ── Top-level loop ─────────────────────────────────────────────────────── */
-static void render_toplevel(ST7789_Handle_t *lcd, uint8_t cursor, uint8_t scroll)
+static void render_toplevel(uint8_t cursor, uint8_t scroll)
 {
   uint16_t y = (uint16_t)CAL_Y;
-  render_header(lcd, " -= CALIBRATION =- ", &y);
+  render_header(" -= CALIBRATION =- ", &y);
   for (uint8_t r = 0U; r < CAL_VISIBLE; r++) {
     uint8_t idx = scroll + r;
     if (idx >= TOP_COUNT) break;
-    render_top_item(lcd, idx, cursor, y);
+    render_top_item(idx, cursor, y);
     y += CAL_ITEM_H;
   }
 }
 
 /* ── Cal_Run ────────────────────────────────────────────────────────────── */
-bool Cal_Run(ST7789_Handle_t *lcd, Cal_Params_t *params)
+bool Cal_Run(Cal_Params_t *params)
 {
   /* Copy params into working storage */
   v_xtal_ppm   = params->xtal_ppm;
@@ -440,7 +435,7 @@ bool Cal_Run(ST7789_Handle_t *lcd, Cal_Params_t *params)
   Key_Init(&k_enc, KEY_ENC_SW_Port, KEY_ENC_SW_Pin);
   Key_Init(&k_f4,  KEY_F4_Port,     KEY_F4_Pin);
 
-  render_toplevel(lcd, cursor, scroll);
+  render_toplevel(cursor, scroll);
 
   for (;;) {
     Key_Poll(&k_enc); Key_Poll(&k_f4);
@@ -451,15 +446,15 @@ bool Cal_Run(ST7789_Handle_t *lcd, Cal_Params_t *params)
       if (d < 0 && cursor > 0U)             cursor--;
       if (cursor < scroll)                  scroll = cursor;
       if (cursor >= scroll + CAL_VISIBLE)   scroll = (uint8_t)(cursor - CAL_VISIBLE + 1U);
-      render_toplevel(lcd, cursor, scroll);
+      render_toplevel(cursor, scroll);
     }
 
     if (Key_Press(&k_enc)) {
       const TopItem_t *it = &s_top[cursor];
 
       if (it->kind == TOP_SECT) {
-        run_section(lcd, (uint8_t)cursor);
-        render_toplevel(lcd, cursor, scroll);
+        run_section((uint8_t)cursor);
+        render_toplevel(cursor, scroll);
 
       } else if (it->kind == TOP_SAVE) {
         params->xtal_ppm        = v_xtal_ppm;
@@ -484,7 +479,7 @@ bool Cal_Run(ST7789_Handle_t *lcd, Cal_Params_t *params)
         v_mic_gain   = (int32_t)params->mic_gain;
         v_smeter_off = (int32_t)params->smeter_offset_db;
         v_lo_offset  = (int32_t)params->lo_offset_hz;
-        render_toplevel(lcd, cursor, scroll);
+        render_toplevel(cursor, scroll);
 
       } else if (it->kind == TOP_RESET) {
         Cal_Params_t def = CAL_PARAMS_DEFAULT;
@@ -497,7 +492,7 @@ bool Cal_Run(ST7789_Handle_t *lcd, Cal_Params_t *params)
         v_mic_gain   = def.mic_gain;
         v_smeter_off = def.smeter_offset_db;
         v_lo_offset  = (int32_t)def.lo_offset_hz;
-        render_toplevel(lcd, cursor, scroll);
+        render_toplevel(cursor, scroll);
 
       } else { /* TOP_EXIT */
         return false;

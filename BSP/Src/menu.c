@@ -46,12 +46,10 @@ static MenuApplyFn s_apply_cb = NULL;
 
 /* USER CODE BEGIN 0 */
 
-/* ── Push one scanline via DMA ── */
-static void push_ln(ST7789_Handle_t *lcd, uint16_t y)
+/* ── Push one scanline via FMC ── */
+static void push_ln(uint16_t y)
 {
-  ST7789_PushScanline(lcd, y, LN);
-  dma_wait_pub(lcd);
-  cs_high_pub(lcd);
+  LCD_PushWindow(0U, y, (uint16_t)(LCD_W - 1U), y, LN, LCD_W);
 }
 
 /* ── Render one menu item (MENU_ITEM_H = 16 scanlines) ── */
@@ -101,7 +99,7 @@ static void render_item(Menu_Handle_t *m, uint8_t idx, uint16_t abs_y)
                   val, &Font6x8, vcol, bg);
     }
 
-    push_ln(m->lcd, (uint16_t)(abs_y + fr));
+    push_ln((uint16_t)(abs_y + fr));
   }
 }
 
@@ -228,7 +226,7 @@ void Menu_Render(Menu_Handle_t *m)
       uint16_t tx = (uint16_t)(MENU_X + (MENU_W - (uint16_t)strlen(t) * Font6x8.width) / 2U);
       LCD_LineStr(ln, tx, fr - 4U, t, &Font6x8, 0xFFFFU, MENU_HEADER_BG);
     }
-    push_ln(m->lcd, y++);
+    push_ln(y++);
   }
 
   /* Items */
@@ -251,7 +249,7 @@ void Menu_Render(Menu_Handle_t *m)
                 "F1=UP F2=DN ENC=EDIT F4=EXIT",
                 &Font6x8, MENU_LBL_COLOR, UI_BG);
     for (uint8_t fr = 0U; fr < (uint8_t)Font6x8.height; fr++)
-      push_ln(m->lcd, y++);
+      push_ln(y++);
   }
   /* USER CODE END Menu_Render_0 */
 }

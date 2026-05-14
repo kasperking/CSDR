@@ -638,7 +638,7 @@ static void csdr_handle_encoder(void)
         Menu_Toggle(&g_menu);
         g_sdr.display_dirty |= DIRTY_ALL;
         if (strcmp(name, "Diagnostics") == 0) {
-          Diag_Run(&g_lcd);
+          Diag_Run();
         } else if (strcmp(name, "Calibration") == 0) {
           Cal_Params_t cp = {
             .xtal_ppm        = g_sdr.xtal_ppm,
@@ -651,7 +651,7 @@ static void csdr_handle_encoder(void)
             .smeter_offset_db= g_sdr.smeter_offset_db,
             .lo_offset_hz    = g_sdr.lo_offset_hz,
           };
-          if (Cal_Run(&g_lcd, &cp)) {
+          if (Cal_Run(&cp)) {
             g_sdr.xtal_ppm        = cp.xtal_ppm;
             g_sdr.iq_gain         = cp.iq_gain;
             g_sdr.iq_phase        = cp.iq_phase;
@@ -670,7 +670,7 @@ static void csdr_handle_encoder(void)
             }
           }
         } else if (strcmp(name, "SWR Scan") == 0) {
-          SWR_Scan_Run(&g_lcd);
+          SWR_Scan_Run();
         }
         g_sdr.display_dirty |= DIRTY_ALL;
       } else {
@@ -682,13 +682,13 @@ static void csdr_handle_encoder(void)
     g_sdr.bw_hz  = default_bw_for_mode(g_sdr.mode);
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
-    SDR_UI_SetSpecZoom(&g_lcd, default_zoom_for_mode(g_sdr.mode));
+    SDR_UI_SetSpecZoom(default_zoom_for_mode(g_sdr.mode));
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
   }
   if (Encoder_GetLongPress(&g_encoder)) {
     /* Long press: cycle spectrum zoom ±24k → ±18k → ±12k → ±6k → ±3k → ±24k */
     uint8_t z = (uint8_t)((SDR_UI_GetSpecZoom() + 1U) % SPEC_ZOOM_COUNT);
-    SDR_UI_SetSpecZoom(&g_lcd, z);
+    SDR_UI_SetSpecZoom(z);
   }
 }
 
@@ -698,7 +698,7 @@ static void csdr_handle_keys(void)
   Key_Poll(&k_f4);   Key_Poll(&k_band); Key_Poll(&k_mode); Key_Poll(&k_ptt);
 
   if (Key_Press(&k_menu)) {
-    if (Diag_IsActive()) { Diag_Run(&g_lcd); return; }
+    if (Diag_IsActive()) { Diag_Run(); return; }
     g_sdr.display_dirty = 0U;  /* prevent status panel overwriting menu */
     if (!Menu_IsOpen(&g_menu))
       Menu_LoadFromSDR(&g_menu,
@@ -740,7 +740,7 @@ static void csdr_handle_keys(void)
         Menu_Toggle(&g_menu);
         g_sdr.display_dirty |= DIRTY_ALL;
         if (strcmp(name, "Diagnostics") == 0) {
-          Diag_Run(&g_lcd);
+          Diag_Run();
         } else if (strcmp(name, "Calibration") == 0) {
           Cal_Params_t cp = {
             .xtal_ppm        = g_sdr.xtal_ppm,
@@ -753,7 +753,7 @@ static void csdr_handle_keys(void)
             .smeter_offset_db= g_sdr.smeter_offset_db,
             .lo_offset_hz    = g_sdr.lo_offset_hz,
           };
-          if (Cal_Run(&g_lcd, &cp)) {
+          if (Cal_Run(&cp)) {
             g_sdr.xtal_ppm        = cp.xtal_ppm;
             g_sdr.iq_gain         = cp.iq_gain;
             g_sdr.iq_phase        = cp.iq_phase;
@@ -772,7 +772,7 @@ static void csdr_handle_keys(void)
             }
           }
         } else if (strcmp(name, "SWR Scan") == 0) {
-          SWR_Scan_Run(&g_lcd);
+          SWR_Scan_Run();
         }
         g_sdr.display_dirty |= DIRTY_ALL;
       } else {
@@ -785,7 +785,7 @@ static void csdr_handle_keys(void)
 
   /* F4: Exit DIAG  –or–  Back / Exit menu  –or–  copy active VFO to inactive */
   if (Key_Press(&k_f4)) {
-    if (Diag_IsActive()) { Diag_Run(&g_lcd); return; }
+    if (Diag_IsActive()) { Diag_Run(); return; }
     if (Menu_IsOpen(&g_menu)) {
       Menu_Back(&g_menu);
       if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
@@ -802,7 +802,7 @@ static void csdr_handle_keys(void)
     g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
-    SDR_UI_SetSpecZoom(&g_lcd, default_zoom_for_mode(g_sdr.mode));
+    SDR_UI_SetSpecZoom(default_zoom_for_mode(g_sdr.mode));
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
   }
 
@@ -819,7 +819,7 @@ static void csdr_update_waterfall(void)
   if (g_sdr.tx_mode || g_dsp.wf_lines == 0U || Menu_IsOpen(&g_menu)) return;
   RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_WATERFALL);
   g_dsp.wf_lines = 0U;                   /* drop extras accumulated since last tick */
-  SDR_UI_DrawWaterfall(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE);
+  SDR_UI_DrawWaterfall(g_dsp.fft_mag_db, DSP_FFT_SIZE);
   RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_WATERFALL);
 }
 
@@ -849,7 +849,7 @@ static void csdr_refresh_display(void)
       }
     }
     RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_SPECTRUM);
-    SDR_UI_DrawSpectrum(&g_lcd, g_dsp.fft_mag_db, DSP_FFT_SIZE,
+    SDR_UI_DrawSpectrum(g_dsp.fft_mag_db, DSP_FFT_SIZE,
                         bw_lo_ratio, bw_hi_ratio, NULL);
     RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_SPECTRUM);
   }
@@ -877,34 +877,34 @@ static void csdr_refresh_display(void)
       /* TX: only redraw Header – meter is handled by UpdateTXMeters below */
       if (dirty & DIRTY_HDR) {
         RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
-        SDR_UI_DrawHeader(&g_lcd, &ui);
+        SDR_UI_DrawHeader(&ui);
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
       }
     } else {
       /* RX: redraw only zones flagged dirty */
       if (dirty & DIRTY_HDR) {
         RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_STATUS_BAR);
-        SDR_UI_DrawHeader(&g_lcd, &ui);
+        SDR_UI_DrawHeader(&ui);
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
       }
       if (dirty & DIRTY_VFO) {
         RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_STATUS_BAR);
-        SDR_UI_DrawVFO(&g_lcd, &ui);
+        SDR_UI_DrawVFO(&ui);
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
       }
       if (dirty & DIRTY_MTR) {
         RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_STATUS_BAR);
-        SDR_UI_DrawMeter(&g_lcd, &ui);
+        SDR_UI_DrawMeter(&ui);
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
       }
       if (dirty & DIRTY_SBL) {
         RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_STATUS_BAR);
-        SDR_UI_DrawSidebarLeft(&g_lcd, &ui);
+        SDR_UI_DrawSidebarLeft(&ui);
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
       }
       if (dirty & DIRTY_SBR) {
         RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_STATUS_BAR);
-        SDR_UI_DrawSidebarRight(&g_lcd, &ui);
+        SDR_UI_DrawSidebarRight(&ui);
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
       }
     }
@@ -913,11 +913,11 @@ static void csdr_refresh_display(void)
       float alc_norm = (float)g_analog.alc_percent * (1.0f / 100.0f);
       float swr      = (float)g_analog.swr_x100    * (1.0f / 100.0f);
       RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
-      SDR_UI_UpdateTXMeters(&g_lcd, alc_norm, swr);
+      SDR_UI_UpdateTXMeters(alc_norm, swr);
       RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     } else {
       RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
-      SDR_UI_UpdateSMeter(&g_lcd, g_dsp.signal_power_db);
+      SDR_UI_UpdateSMeter(g_dsp.signal_power_db);
       RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     }
   }
@@ -966,7 +966,7 @@ static void menu_apply_cb(void)
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
   }
   g_sdr.usb_mode = usb;
-  if (zoom != SDR_UI_GetSpecZoom()) SDR_UI_SetSpecZoom(&g_lcd, zoom);
+  if (zoom != SDR_UI_GetSpecZoom()) SDR_UI_SetSpecZoom(zoom);
   g_sdr.display_dirty |= DIRTY_ALL;
 }
 
@@ -1004,7 +1004,7 @@ static void csdr_vfo_swap(void)
   DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
   DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
-  SDR_UI_SetSpecZoom(&g_lcd, default_zoom_for_mode(g_sdr.mode));
+  SDR_UI_SetSpecZoom(default_zoom_for_mode(g_sdr.mode));
   g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
 }
 
@@ -1052,7 +1052,7 @@ static void     cat_set_mode(uint8_t m)
   g_sdr.mode=(SDR_Mode_t)m;
   DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetBW(&g_dsp,(float)g_sdr.bw_hz);
-  SDR_UI_SetSpecZoom(&g_lcd,default_zoom_for_mode(g_sdr.mode));
+  SDR_UI_SetSpecZoom(default_zoom_for_mode(g_sdr.mode));
   g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
 }
 static void cat_set_tx(bool tx)

@@ -98,12 +98,28 @@ static inline void LCD_WriteData16(uint16_t data)
     *LCD_FMC_DATA_ADDR = (uint8_t)(data);
 }
 
-/* Core LCD operations */
+/* Core LCD operations — colors are raw RGB565 (no byte-swap) */
 void LCD_SetWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
 void LCD_WritePixel(uint16_t x, uint16_t y, uint16_t color);
 void LCD_FillRect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color);
 void LCD_Clear(uint16_t color);
+
+/* Raw RGB565 buffer write — caller owns SetWindow/RAMWR context */
 void LCD_WriteDataBuffer(const uint16_t *buf, uint32_t count);
+
+/* ── UI push helpers ─────────────────────────────────────────────────────────
+ * Zone buffers from sdr_ui.c use the SWAP16 byte-swap convention inherited
+ * from the SPI-DMA era (pixel 0xABCD stored as 0xCDAB so DMA byte order is
+ * correct).  LCD_PushWindow handles that convention internally: it writes the
+ * low byte of each uint16_t first (= the original MSB after SWAP16), giving
+ * the ST7796 the correct big-endian pixel stream.
+ *
+ *  LCD_PushWindow – SetWindow then burst-write a SWAP16-encoded pixel buffer.
+ *    x0,y0: top-left; x1,y1: bottom-right (inclusive, screen coordinates).
+ *    buf  : pointer to first pixel; npix = (x1-x0+1)*(y1-y0+1).
+ */
+void LCD_PushWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
+                    const uint16_t *buf_swap16, uint32_t npix);
 
 #ifdef __cplusplus
 }

@@ -16,7 +16,6 @@ extern "C" {
 #endif
 
 #include "stm32h7xx_hal.h"
-#include "st7789.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -68,7 +67,7 @@ typedef struct {
 } Diag_Result_t;
 
 /* ── API ── */
-void Diag_Run(ST7789_Handle_t *lcd);
+void Diag_Run(void);
 bool Diag_IsActive(void);
 void Diag_Process(void);
 void Diag_ResetPeaks(void);
