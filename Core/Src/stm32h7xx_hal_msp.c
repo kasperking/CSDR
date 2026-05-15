@@ -54,7 +54,29 @@
 /* USER CODE END ExternalFunctions */
 
 /* USER CODE BEGIN 0 */
-
+/*
+ * ============================================================================
+ * CSDR PROJECT — MANUAL SDR REALTIME PATCHES ACTIVE
+ * ============================================================================
+ * WARNING: CubeMX regeneration can overwrite critical IRQ priority settings
+ * in this file.  After regeneration verify the following:
+ *
+ *   SAI1 / DMA priorities (HAL_SAI_MspInit, below):
+ *     SAI1_IRQn       must be priority 0 (highest)
+ *     DMA1_Stream0    must be priority VERY_HIGH / preemption 0 (SAI TX)
+ *     DMA1_Stream1    must be priority VERY_HIGH / preemption 0 (SAI RX)
+ *
+ *   USB priority is corrected separately in usbd_conf.c USER CODE block.
+ *
+ *   Required IRQ priority hierarchy (Cortex-M7: lower = higher priority):
+ *     0  SAI1_IRQn, DMA1_Stream0_IRQn, DMA1_Stream1_IRQn  (audio)
+ *     2  OTG_FS_IRQn                                        (USB)
+ *    15  SysTick
+ *
+ *   If SAI/DMA and USB share priority 0, the USB ISR can preempt the audio
+ *   DMA half-complete callback and cause RXOVR / TXUND audio glitches.
+ * ============================================================================
+ */
 /* USER CODE END 0 */
 
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
@@ -265,8 +287,8 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* hi2c)
     */
     GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
@@ -299,7 +321,7 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* hi2c)
     GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF4_I2C2;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
@@ -726,6 +748,10 @@ void HAL_SAI_MspInit(SAI_HandleTypeDef* hsai)
 /* SAI1 */
     if(hsai->Instance==SAI1_Block_A)
     {
+    /* USER CODE BEGIN SAI1_MspInit 0 */
+    /* SAI1_IRQn MUST stay at priority 0 (highest). USB is corrected to
+     * priority 2 in usbd_conf.c. Do not equalize these priorities. */
+    /* USER CODE END SAI1_MspInit 0 */
     /* Peripheral clock enable */
     if (SAI1_client == 0)
     {

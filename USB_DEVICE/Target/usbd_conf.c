@@ -44,7 +44,28 @@ void Error_Handler(void);
 /* External functions --------------------------------------------------------*/
 
 /* USER CODE BEGIN 0 */
-
+/*
+ * ============================================================================
+ * CSDR PROJECT — MANUAL SDR REALTIME PATCHES ACTIVE
+ * ============================================================================
+ * WARNING: CubeMX regeneration restores HAL_PCD_MspInit() with OTG_FS_IRQn
+ * at priority 0 (same as SAI/DMA audio IRQs).  This causes audio glitches:
+ * the USB ISR can preempt the DMA half-complete callback -> RXOVR / TXUND.
+ *
+ * The USER CODE block inside HAL_PCD_MspInit() (search: PRIORITY OVERRIDE)
+ * corrects OTG_FS_IRQn to priority 2, below the audio DMA at priority 0.
+ *
+ * Required IRQ hierarchy after every regeneration:
+ *   Priority 0 : SAI1_IRQn, DMA1_Stream0/1_IRQn  (audio — set in hal_msp.c)
+ *   Priority 2 : OTG_FS_IRQn                     (USB — corrected here)
+ *   Priority 15: SysTick
+ *
+ * Also verify the custom FIFO layout (TxRx_Configuration USER CODE block):
+ *   RX = 128 words, EP0 = 32, EP1 CDC IN = 32, EP2 Notif = 16, EP3 Audio = 64
+ *   CubeMX regenerates a generic 4-endpoint layout that is too small for
+ *   the composite CDC + Audio ISO configuration.
+ * ============================================================================
+ */
 /* USER CODE END 0 */
 
 /* USER CODE BEGIN PFP */

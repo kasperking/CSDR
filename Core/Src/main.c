@@ -88,7 +88,45 @@ static void MX_TIM3_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+/*
+ * ============================================================================
+ * CSDR PROJECT — MANUAL SDR REALTIME PATCHES ACTIVE
+ * ============================================================================
+ * WARNING: CubeMX regeneration can silently break this project.
+ *
+ * Known hazards — check all of these after every regeneration:
+ *
+ *   MPU (USER CODE BEGIN SysInit)
+ *     CubeMX sets SRAM1 Region 0 to MPU_REGION_NO_ACCESS. The USER CODE
+ *     SysInit block re-programs it to FULL_ACCESS so SAI DMA can reach its
+ *     buffers. If missing: MemManage_Handler loop ~10 ms after boot.
+ *
+ *   IRQ PRIORITY HIERARCHY (lower number = higher priority on Cortex-M7)
+ *     Priority 0 : SAI1_IRQn, DMA1_Stream0_IRQn (SAI TX), DMA1_Stream1_IRQn (SAI RX)
+ *     Priority 2 : OTG_FS_IRQn  -- overridden in usbd_conf.c USER CODE block
+ *     Priority 15: SysTick      -- TICK_INT_PRIORITY in stm32h7xx_hal_conf.h
+ *
+ *     USB MUST stay at a lower priority (higher number) than SAI/DMA.
+ *     If USB and audio DMA share priority 0 the USB ISR can preempt the DMA
+ *     half-complete callback and starve the audio pipeline -> RXOVR / TXUND.
+ *     CubeMX regenerates HAL_PCD_MspInit() with OTG_FS at priority 0; the
+ *     USER CODE block in usbd_conf.c corrects it to priority 2. Do not remove.
+ *
+ *   FMC / LCD INIT ORDER (between USER CODE END SysInit and USER CODE BEGIN 2)
+ *     Required sequence (generated code section -- verify after regeneration):
+ *       MX_FMC_Init()          -- configures FMC SRAM bank, calls LCD_Bus_Init()
+ *       MX_USB_DEVICE_Init()   -- must come AFTER FMC so MPU Region 1
+ *                                 (Strongly-Ordered, 0x60000000) is active
+ *     CubeMX may reorder these. If USB appears before FMC in generated code,
+ *     move MX_FMC_Init() above MX_USB_DEVICE_Init() manually.
+ *
+ *   After ANY CubeMX regeneration:
+ *     1. git diff -- review every changed line
+ *     2. Confirm USER CODE blocks are present and unmodified
+ *     3. Confirm MX_FMC_Init() precedes MX_USB_DEVICE_Init() in main()
+ *     4. Build, run, test USB audio + LCD before committing
+ * ============================================================================
+ */
 /* USER CODE END 0 */
 
 /**
@@ -197,6 +235,14 @@ int main(void)
   MX_TIM1_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
+
+  /* ── Init order safety note ──────────────────────────────────────────────
+   * If CubeMX regeneration swapped MX_FMC_Init() and MX_USB_DEVICE_Init()
+   * above, move MX_FMC_Init() back before MX_USB_DEVICE_Init().
+   * Reason: LCD_Bus_Init() (called inside MX_FMC_Init USER CODE FMC_Init 2)
+   * programs MPU Region 1 as Strongly-Ordered over 0x60000000. This must be
+   * active before any USB bus activity, or the D-Cache can corrupt FMC writes.
+   */
 
   /* ── FMC LCD bring-up test ───────────────────────────────────────────────
    * LCD_Bus_Init() is called inside MX_FMC_Init() (USER CODE FMC_Init 2)
@@ -575,9 +621,7 @@ static void MX_I2C2_Init(void)
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
-  /* 0x307075B1 = ~100 kHz Standard Mode at 120 MHz APB1. I2C2 drives the
-   * PCA9555 UI GPIO expander only; 100 kHz is sufficient and more robust. */
-  hi2c2.Init.Timing = 0x307075B1;
+  hi2c2.Init.Timing = 0x00B03FDB;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;

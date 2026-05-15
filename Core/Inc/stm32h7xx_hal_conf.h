@@ -47,9 +47,18 @@
 /* #define HAL_DMA2D_MODULE_ENABLED   */
 /* #define HAL_ETH_MODULE_ENABLED   */
 /* #define HAL_ETH_LEGACY_MODULE_ENABLED   */
+/* NAND / NOR / SDRAM intentionally disabled — not wired on this board.
+ * The .c files in Drivers/STM32H7xx_HAL_Driver/Src/ are vendor library files
+ * guarded by their respective #ifdef blocks; they compile to empty translation
+ * units when the module is disabled and can be left in the tree.
+ * DO NOT enable them: CubeMX may re-enable them after regeneration.        */
 /* #define HAL_NAND_MODULE_ENABLED   */
 /* #define HAL_NOR_MODULE_ENABLED   */
 /* #define HAL_OTFDEC_MODULE_ENABLED   */
+/* HAL_SRAM_MODULE_ENABLED — REQUIRED.
+ * stm32h7xx_hal_sram.c + stm32h7xx_ll_fmc.c provide the SRAM/NOR-PSRAM
+ * FMC bank interface used by the ST7796S 8080-mode LCD bus (lcd_bus_fmc.c).
+ * hsram1 is the FMC handle; removing this breaks FMC init and LCD access. */
 #define HAL_SRAM_MODULE_ENABLED
 /* #define HAL_SDRAM_MODULE_ENABLED   */
 /* #define HAL_HASH_MODULE_ENABLED   */
