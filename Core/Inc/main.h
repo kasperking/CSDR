@@ -103,8 +103,10 @@ void Error_Handler(void);
 #define PW_GPIO_Port GPIOD
 #define PW_HOLD_Pin GPIO_PIN_13
 #define PW_HOLD_GPIO_Port GPIOD
-#define LCD_RS_Pin GPIO_PIN_6
-#define LCD_RS_GPIO_Port GPIOC
+/* PC6 was the legacy SPI-LCD RS/DC signal. RS/DC is now FMC_A16 (PD11).
+ * PC6 is unused on the board; kept as a driven-low output to avoid floating. */
+#define NC_PC6_Pin GPIO_PIN_6
+#define NC_PC6_GPIO_Port GPIOC
 #define LCD_BL_Pin GPIO_PIN_8
 #define LCD_BL_GPIO_Port GPIOC
 #define ENC_CH1_Pin GPIO_PIN_8

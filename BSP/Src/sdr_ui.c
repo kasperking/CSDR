@@ -283,7 +283,7 @@ static void draw_footer_rows(uint32_t half_hz)
   uint16_t pad = (FTR_H - fh) / 2U;
 
   for (uint16_t row = 0U; row < FTR_H; row++) {
-    uint16_t *ln = ST7789_GetLineBuf();
+    uint16_t *ln = LCD_GetLineBuf();
     LCD_LineFill(ln, 0U, LCD_W, UI_BG);
     if (half_hz > 0U && row >= pad && row < pad + fh) {
       uint16_t frow = row - pad;

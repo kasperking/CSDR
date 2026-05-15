@@ -130,11 +130,35 @@ int main(void)
 
   /* USER CODE BEGIN SysInit */
 
-  /* MPU override: reconfig region 0 for SRAM1 as Non-Cacheable, FULL ACCESS.
-   * CubeMX-generated MPU_Config() set AccessPermission = NO_ACCESS for SRAM1,
-   * blocking all access to DMA buffers in .DMA_SRAM section.
-   * This override runs after MPU_Config() and fixes the AccessPermission.
-   * Code is in USER CODE markers so CubeMX won't overwrite on regenerate. */
+  /* ══════════════════════════════════════════════════════════════════════════
+   * CRITICAL MPU OVERRIDE — DO NOT REMOVE, DO NOT MOVE OUTSIDE USER CODE
+   * ══════════════════════════════════════════════════════════════════════════
+   *
+   * WHY THIS EXISTS:
+   *   CubeMX generates MPU_Config() (below main) with Region 0 covering SRAM1
+   *   (0x24000000, 512 KB) set to AccessPermission = MPU_REGION_NO_ACCESS.
+   *   This is a known CubeMX H7 bug: it marks SRAM1 no-access to "protect" it
+   *   while leaving the TEX/C/B fields at Non-Cacheable values for DMA use.
+   *   The result is that ALL accesses to SRAM1 — including the SAI DMA buffers
+   *   placed there via the .DMA_SRAM linker section — trigger a MemManage fault
+   *   the instant DMA or the CPU touches them.
+   *
+   * WHAT THIS BLOCK DOES:
+   *   Re-programs Region 0 to FULL_ACCESS (R/W from both privileged and user
+   *   mode) while keeping IsCacheable=0 / IsBufferable=0 (write-through, no
+   *   cache) so DMA coherency is preserved without explicit cache maintenance.
+   *
+   * WHAT BREAKS IF DELETED:
+   *   - Hard MemManage fault on first SAI DMA transfer (~10 ms after boot)
+   *   - USB audio stops immediately; no audio path at all
+   *   - System appears to hang with LED/debug showing MemManage_Handler loop
+   *
+   * AFTER CUBEMX REGENERATION:
+   *   MPU_Config() will be regenerated with NO_ACCESS again. This USER CODE
+   *   block is preserved by CubeMX. Verify it is still present and unmodified
+   *   after every regeneration before building.
+   * ══════════════════════════════════════════════════════════════════════════
+   */
   {
     MPU_Region_InitTypeDef rg = {0};
     HAL_MPU_Disable();
@@ -163,20 +187,23 @@ int main(void)
   MX_ADC2_Init();
   MX_ADC3_Init();
   MX_SPI3_Init();
-  MX_USB_DEVICE_Init();
+  /* FMC + LCD MPU setup MUST precede USB start so the Strongly-Ordered MPU
+   * region covering 0x60000000 is active before any bus activity.
+   * CubeMX may regenerate this block with USB before FMC — if so, re-swap.
+   * LCD_Bus_Init() is called inside MX_FMC_Init (USER CODE FMC_Init 2). */
   MX_FMC_Init();
+  MX_USB_DEVICE_Init();
   MX_I2C2_Init();
   MX_TIM1_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
   /* ── FMC LCD bring-up test ───────────────────────────────────────────────
-   * Run standalone FMC validation before the SDR app starts.
-   * LCD_Bus_Init() also installs MPU Region 1 (FMC space, Strongly-Ordered).
+   * LCD_Bus_Init() is called inside MX_FMC_Init() (USER CODE FMC_Init 2)
+   * to ensure MPU Region 1 is active before USB starts.
    * Remove LCD_FMC_RunTest() once timing and throughput are confirmed.
    * g_lcd_fmc_bench holds results; inspect via debugger Live Expressions.
    */
-  LCD_Bus_Init();
   LCD_FMC_RunTest();
 
   CSDR_Init();
@@ -548,6 +575,8 @@ static void MX_I2C2_Init(void)
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
+  /* 0x307075B1 = ~100 kHz Standard Mode at 120 MHz APB1. I2C2 drives the
+   * PCA9555 UI GPIO expander only; 100 kHz is sufficient and more robust. */
   hi2c2.Init.Timing = 0x307075B1;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -884,7 +913,12 @@ static void MX_FMC_Init(void)
   }
 
   /* USER CODE BEGIN FMC_Init 2 */
-
+  /* Install MPU Region 1 (FMC LCD space, Strongly-Ordered) immediately after
+   * the FMC peripheral is configured. Without this region the D-Cache can
+   * corrupt 8080-mode writes even when FMC timing is correct.
+   * Placed here so protection is active before USB or any other IRQ fires.
+   * This USER CODE block survives CubeMX regeneration. */
+  LCD_Bus_Init();
   /* USER CODE END FMC_Init 2 */
 }
 
@@ -913,7 +947,7 @@ static void MX_GPIO_Init(void)
                           |BPF_S2_Pin|BPF_OE1_Pin|BPF_OE2_Pin|FLASH_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, ATT_DAT_Pin|ATT_CLK_Pin|LCD_RS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, ATT_DAT_Pin|ATT_CLK_Pin|NC_PC6_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, ATT_LATCH_Pin|T_R_SW_Pin, GPIO_PIN_RESET);
@@ -953,12 +987,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LCD_RS_Pin */
-  GPIO_InitStruct.Pin = LCD_RS_Pin;
+  /* PC6 legacy LCD_RS: unused, RS/DC is now FMC_A16 (PD11). Kept as a
+   * driven-low output at LOW speed to prevent the pin floating. */
+  GPIO_InitStruct.Pin = NC_PC6_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(LCD_RS_GPIO_Port, &GPIO_InitStruct);
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(NC_PC6_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : ENC_SW_Pin */
   GPIO_InitStruct.Pin = ENC_SW_Pin;

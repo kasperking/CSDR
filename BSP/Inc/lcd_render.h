@@ -1,7 +1,7 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    st7789.h
+  * @file    lcd_render.h
   * @brief   LCD rendering primitives – font helpers, line buffer, SWAP16
   *
   *  Pure rendering layer.  No transport.  No UI layout.
@@ -11,8 +11,8 @@
   */
 /* USER CODE END Header */
 
-#ifndef __ST7789_H
-#define __ST7789_H
+#ifndef __LCD_RENDER_H
+#define __LCD_RENDER_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,9 +48,9 @@ void LCD_LineRect(uint16_t *ln, uint16_t x0, uint16_t w,
                   uint16_t fill, uint16_t border_color);
 
 /* ── Line buffer (320 px, DMA_SRAM) ─────────────────── */
-uint16_t *ST7789_GetLineBuf(void);
+uint16_t *LCD_GetLineBuf(void);
 
 #ifdef __cplusplus
 }
 #endif
-#endif /* __ST7789_H */
+#endif /* __LCD_RENDER_H */

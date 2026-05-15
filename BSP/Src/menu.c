@@ -17,8 +17,8 @@ static inline uint16_t sw16(uint16_t c)
 { return (uint16_t)((c >> 8U) | (c << 8U)); }
 
 /* ── Line buffer access ── */
-/* ST7789_GetLineBuf() returns the 320-pixel DMA line buffer from st7789.c */
-#define LN  ST7789_GetLineBuf()
+/* LCD_GetLineBuf() returns the 320-pixel DMA line buffer from lcd_render.c */
+#define LN  LCD_GetLineBuf()
 
 /* ── Edit color (cyan = UI_FREQ_MHZ) ── */
 #define MENU_EDIT_COLOR  UI_FREQ_MHZ

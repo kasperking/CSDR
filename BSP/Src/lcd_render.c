@@ -1,7 +1,7 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    st7789.c
+  * @file    lcd_render.c
   * @brief   LCD rendering primitives – font data, line fill/char/str/rect.
   *
   *  Pure rendering layer.  No SPI/DMA transport.
@@ -12,7 +12,7 @@
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
-#include "st7789.h"
+#include "lcd_render.h"
 #include "runtime_diag.h"
 
 /* ── DMA Buffers ─────────────────────────────────────────────────────────── */
@@ -101,7 +101,7 @@ void LCD_LineRect(uint16_t *ln, uint16_t x0, uint16_t w,
 /* USER CODE END 0 */
 
 /* ── Line buffer ── */
-uint16_t *ST7789_GetLineBuf(void)            { return s_line; }
+uint16_t *LCD_GetLineBuf(void)               { return s_line; }
 
 /* USER CODE BEGIN 1 */
 /* USER CODE END 1 */

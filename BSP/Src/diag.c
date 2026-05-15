@@ -81,7 +81,7 @@ static void diag_str_copy(char *dst, const char *src, uint8_t dst_len)
 
 static void diag_draw_row(uint8_t row, const char *text, uint16_t fg)
 {
-  uint16_t *ln = ST7789_GetLineBuf();
+  uint16_t *ln = LCD_GetLineBuf();
   uint16_t y = (uint16_t)(DIAG_Y + (uint16_t)row * DIAG_ROW_H);
   for (uint16_t fr = 0U; fr < DIAG_ROW_H; fr++) {
     LCD_LineFill(ln, DIAG_X, DIAG_W, DIAG_BG);
@@ -98,7 +98,7 @@ static void diag_draw_row(uint8_t row, const char *text, uint16_t fg)
 
 static void diag_draw_frame(void)
 {
-  uint16_t *ln = ST7789_GetLineBuf();
+  uint16_t *ln = LCD_GetLineBuf();
   const uint16_t h = (uint16_t)(DIAG_ROWS * DIAG_ROW_H);
   for (uint16_t fr = 0U; fr < h; fr++) {
     LCD_LineFill(ln, DIAG_X, DIAG_W, DIAG_BG);

@@ -29,7 +29,7 @@ static inline uint16_t sw16(uint16_t c)
 { return (uint16_t)((c >> 8U) | (c << 8U)); }
 
 /* ── Scanline push via FMC ── */
-#define LN  ST7789_GetLineBuf()
+#define LN  LCD_GetLineBuf()
 static void push_ln(uint16_t y)
 {
     LCD_PushWindow(0U, y, (uint16_t)(LCD_W - 1U), y, LN, LCD_W);

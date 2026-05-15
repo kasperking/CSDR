@@ -36,7 +36,7 @@ extern TIM_HandleTypeDef htim1;   /* encoder timer (TIM1_CH1/CH2) */
 /* Key_t instances are declared locally in each blocking loop. */
 
 /* ── Scanline helpers ───────────────────────────────────────────────────── */
-#define LN   ST7789_GetLineBuf()
+#define LN   LCD_GetLineBuf()
 
 #define CAL_X        10U
 #define CAL_W       300U

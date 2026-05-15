@@ -38,7 +38,7 @@ extern "C" {
 
 /* UI canvas uses the legacy 320×240 geometry; lcd_bus_fmc.h #ifndef guards
  * preserve these values even though the physical display is 480×320. */
-#include "st7789.h"        /* SWAP16, Font6x8, LCD_LineFill/Str helpers, LCD_W=320 */
+#include "lcd_render.h"    /* SWAP16, Font6x8, LCD_LineFill/Str helpers, LCD_W=320 */
 #include "lcd_bus_fmc.h"   /* LCD_PushWindow, LCD_Clear, LCD_FillRect              */
 
 /* ── Zone geometry ──────────────────────────────────── */

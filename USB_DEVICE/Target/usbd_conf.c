@@ -105,7 +105,12 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* pcdHandle)
     HAL_NVIC_SetPriority(OTG_FS_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
   /* USER CODE BEGIN USB_OTG_FS_MspInit 1 */
-
+  /* PRIORITY OVERRIDE — must stay here to survive CubeMX regeneration.
+   * SAI/DMA audio IRQs run at priority 0 (highest). USB must be lower so
+   * audio DMA can preempt USB ISR activity and prevent audio jitter.
+   * CubeMX hardcodes priority 0 above; this override corrects it.
+   * DO NOT REMOVE. If regenerated, re-add this block. */
+  HAL_NVIC_SetPriority(OTG_FS_IRQn, 2, 0);
   /* USER CODE END USB_OTG_FS_MspInit 1 */
   }
 }
