@@ -63,9 +63,18 @@ static inline void Encoder_Btn_IRQ_Handler(Encoder_t *enc) { (void)enc; }
 
 typedef enum { KS_IDLE = 0, KS_PRESSED, KS_HELD } KeyState_t;
 
+/** Input source for a Key_t instance. */
+typedef enum { KEY_SRC_GPIO = 0, KEY_SRC_PCA9555 } KeySrc_t;
+
 typedef struct {
-  GPIO_TypeDef *port;
-  uint16_t      pin;
+  /* GPIO source (KEY_SRC_GPIO) */
+  GPIO_TypeDef        *port;
+  uint16_t             pin;
+  /* PCA9555 source (KEY_SRC_PCA9555) */
+  const uint16_t      *pca_cache; /*!< pointer to g_pca9555_raw in input_scan.c */
+  uint8_t              pca_bit;   /*!< bit index 0-15 in *pca_cache             */
+  KeySrc_t             src;
+  /* State machine (same regardless of source) */
   KeyState_t    state;
   bool          raw_prev;    /*!< raw reading from previous poll     */
   uint32_t      t_stable;   /*!< tick when raw last changed         */
@@ -78,6 +87,7 @@ typedef struct {
 } Key_t;
 
 void Key_Init        (Key_t *k, GPIO_TypeDef *port, uint16_t pin);
+void Key_InitPCA     (Key_t *k, const uint16_t *pca_cache, uint8_t pca_bit);
 void Key_Poll        (Key_t *k);
 bool Key_Press       (Key_t *k);  /*!< true once on stable falling edge  */
 bool Key_Hold        (Key_t *k);  /*!< true once after KEY_HOLD_MS       */

@@ -38,18 +38,20 @@ static uint16_t adc_read(ADC_HandleTypeDef *hadc)
 void PWR_Init(void)
 {
   /* USER CODE BEGIN PWR_Init_0 */
-  /* CPU_PW = HIGH: giữ MOSFET nguồn ON */
-  HAL_GPIO_WritePin(CPU_PW_GPIO_Port, CPU_PW_Pin, GPIO_PIN_SET);
+  /* PW (PD12) / PW_HOLD (PD13): drive HIGH to keep power latch ON.
+   * NOTE: IOC currently configures these as GPIO_Input (PULLUP).
+   * If power latch requires MCU to actively drive these pins, reconfigure
+   * them as GPIO_Output in CubeMX and regenerate. */
+  HAL_GPIO_WritePin(PW_GPIO_Port, PW_Pin, GPIO_PIN_SET);
   s_pwr_held = true;
-  /* CPU_PW_HOLD = HIGH: báo MCU đang sẵn sàng */
-  HAL_GPIO_WritePin(CPU_PW_HOLD_GPIO_Port, CPU_PW_HOLD_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(PW_HOLD_GPIO_Port, PW_HOLD_Pin, GPIO_PIN_SET);
   /* USER CODE END PWR_Init_0 */
 }
 
 void PWR_Hold(void)
 {
   /* USER CODE BEGIN PWR_Hold_0 */
-  HAL_GPIO_WritePin(CPU_PW_GPIO_Port, CPU_PW_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(PW_GPIO_Port, PW_Pin, GPIO_PIN_SET);
   s_pwr_held = true;
   /* USER CODE END PWR_Hold_0 */
 }
@@ -58,10 +60,10 @@ void PWR_Shutdown(void)
 {
   /* USER CODE BEGIN PWR_Shutdown_0 */
   /* Báo MCU sắp tắt */
-  HAL_GPIO_WritePin(CPU_PW_HOLD_GPIO_Port, CPU_PW_HOLD_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(PW_HOLD_GPIO_Port, PW_HOLD_Pin, GPIO_PIN_RESET);
   HAL_Delay(100U);
   /* Tắt nguồn */
-  HAL_GPIO_WritePin(CPU_PW_GPIO_Port, CPU_PW_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(PW_GPIO_Port, PW_Pin, GPIO_PIN_RESET);
   s_pwr_held = false;
   /* MCU sẽ reset sau khi nguồn mất */
   while (1) { __WFI(); }

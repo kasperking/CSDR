@@ -13,6 +13,7 @@
 #include "sdr_ui.h"
 #include "sdr_dsp.h"
 #include "encoder.h"
+#include "input_scan.h"
 #include "si5351.h"
 #include "pe4302.h"
 #include "w25q128.h"
@@ -35,6 +36,7 @@ extern SPI_HandleTypeDef  hspi3;    /* Flash */
 extern SAI_HandleTypeDef  hsai_BlockA1;
 extern SAI_HandleTypeDef  hsai_BlockB1;
 extern I2C_HandleTypeDef  hi2c1;
+extern I2C_HandleTypeDef  hi2c2;    /* PCA9555 button expander (I2C2: PB10/PB11) */
 extern TIM_HandleTypeDef  htim1;    /* Encoder (TIM1_CH1/CH2 = PA8/PA9) */
 extern TIM_HandleTypeDef  htim3;    /* Backlight TIM3_CH3, Fan TIM3_CH4 */
 extern ADC_HandleTypeDef  hadc1;
@@ -253,18 +255,19 @@ void CSDR_Init(void)
   DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
   AGC_SetSpeed(&g_dsp.agc, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
 
-  /* Encoder */
+  /* Encoder – direct MCU (TIM1 quadrature + ENC_SW GPIO) */
   Encoder_Init(&g_encoder, &htim1);
 
-  /* Function keys */
-  Key_Init(&k_menu, MENU_KEY_GPIO_Port, MENU_KEY_Pin);
-  Key_Init(&k_f1,   F1_KEY_GPIO_Port,   F1_KEY_Pin);
-  Key_Init(&k_f2,   F2_KEY_GPIO_Port,   F2_KEY_Pin);
-  Key_Init(&k_f3,   F3_KEY_GPIO_Port,   F3_KEY_Pin);
-  Key_Init(&k_f4,   F4_KEY_GPIO_Port,   F4_KEY_Pin);
-  Key_Init(&k_band, BAND_KEY_GPIO_Port, BAND_KEY_Pin);
-  Key_Init(&k_mode, MODE_KEY_GPIO_Port, MODE_KEY_Pin);
-  Key_Init(&k_ptt,  PTT_GPIO_Port,      PTT_Pin);
+  /* PCA9555 button expander – all function keys on I2C2 */
+  Input_Init();
+  Key_InitPCA(&k_menu, &g_pca9555_raw, PCA_BIT_MENU);
+  Key_InitPCA(&k_f1,   &g_pca9555_raw, PCA_BIT_F1);
+  Key_InitPCA(&k_f2,   &g_pca9555_raw, PCA_BIT_F2);
+  Key_InitPCA(&k_f3,   &g_pca9555_raw, PCA_BIT_F3);
+  Key_InitPCA(&k_f4,   &g_pca9555_raw, PCA_BIT_F4);
+  Key_InitPCA(&k_band, &g_pca9555_raw, PCA_BIT_BAND);
+  Key_InitPCA(&k_mode, &g_pca9555_raw, PCA_BIT_MODE);
+  Key_Init(&k_ptt, PTT_GPIO_Port, PTT_Pin);   /* PB12 – direct MCU */
 
   /* Analog subsystem */
   Analog_Init();
@@ -437,7 +440,8 @@ void CSDR_Loop(void)
 
   csdr_process_audio_pending();
 
-  /* Input */
+  /* Input: refresh PCA9555 once, then dispatch encoder + keys */
+  Input_Scan();
   csdr_handle_encoder();
   csdr_handle_keys();
 
@@ -1045,22 +1049,26 @@ static void     cat_set_mode(uint8_t m)
 }
 static void cat_set_tx(bool tx)
 {
-  if (tx == g_sdr.tx_mode) return;  /* no change */
+  if (tx == g_sdr.tx_mode) return;
   g_sdr.tx_mode = tx;
   if (tx) {
-    /* TX sequence: switch T/R relay.
-     * Shared CLK0 LO (4× RF) already running — no Si5351 change needed. */
-    HAL_Delay(2);                                  /* 2ms settle   */
-    HAL_GPIO_WritePin(TR_SW_GPIO_Port, TR_SW_Pin, GPIO_PIN_SET);
+    /* RX → TX:
+     *  1. Switch BPF relay bank to TX (OE1=1, OE2=0). BPF_SetMode() includes
+     *     the 2 ms relay-release gap before asserting OE1.
+     *  2. Then close the T/R antenna relay. */
+    BPF_SetMode(RF_MODE_TX);
+    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_SET);
   } else {
-    /* RX sequence: switch T/R relay back.
-     * Shared LO was never changed during TX — no Si5351 restore needed. */
-    HAL_GPIO_WritePin(TR_SW_GPIO_Port, TR_SW_Pin, GPIO_PIN_RESET);
-    HAL_Delay(2);
-    WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);  /* Ensure HP unmuted */
+    /* TX → RX:
+     *  1. Open T/R antenna relay first.
+     *  2. Then switch BPF relay bank to RX (OE1=0, OE2=1). BPF_SetMode()
+     *     includes the 2 ms relay-release gap before asserting OE2.
+     *  3. Unmute codec. */
+    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
+    BPF_SetMode(RF_MODE_RX);
+    WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
   }
   SDR_UI_UpdateSMeter_SetTX(tx);
-  /* TX→RX: redraw all zones. RX→TX: only header needed (meter handled by UpdateTXMeters). */
   g_sdr.display_dirty |= tx ? DIRTY_HDR : (uint8_t)DIRTY_ALL;
 }
 static void     cat_set_att(uint8_t lv)

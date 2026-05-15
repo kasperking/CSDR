@@ -8,29 +8,50 @@
 #include "csdr_app.h"
 
 /* USER CODE BEGIN 0 */
-/* LPF pins from CSDR.ioc: PC8=LPF_A0, PC9=LPF_A1, PA8=LPF_A2
- * Defined in Core/Inc/main.h as LPF_A0/A1/A2_Pin/_GPIO_Port */
+/* All pins from Core/Inc/main.h (CubeMX generated):
+ *  BPF: BPF_S1=PA4 (S0/bit0), BPF_S2=PA5 (S1/bit1) — relay select
+ *       BPF_OE1=PA6 — active-HIGH, enables TX relay bank (2B1..2B4)
+ *       BPF_OE2=PA7 — active-HIGH, enables RX relay bank (1B1..1B4)
+ *       OE1 and OE2 must ALWAYS be complementary (never both HIGH).
+ *  LPF: LPF_A0=PA0, LPF_A1=PA1, LPF_A2=PA2 (74HC238 address)
+ *  T/R: T_R_SW=PB2 (relay control) */
 
-/* BPF channel per band: S1:S0 */
-static const uint8_t bpf_map[BAND_COUNT] = {
-  BPF_CH_160_80M,  /* 160m */
-  BPF_CH_160_80M,  /* 80m  */
-  BPF_CH_40_30M,   /* 60m  */
-  BPF_CH_40_30M,   /* 40m  */
-  BPF_CH_40_30M,   /* 30m  */
-  BPF_CH_20_15M,   /* 20m  */
-  BPF_CH_20_15M,   /* 17m  */
-  BPF_CH_20_15M,   /* 15m  */
-  BPF_CH_10_6M,    /* 12m  */
-  BPF_CH_10_6M,    /* 10m  */
-  BPF_CH_10_6M,    /* 6m   */
+/* Cached OE/filter state — source of truth for BPF_SetMode / BPF_SetBand */
+static rf_mode_t   s_rf_mode   = RF_MODE_RX;
+static bpf_filter_t s_bpf_filter = BPF_20_30M;
+
+/* BPF filter per band — maps band_idx → bpf_filter_t (truth table) */
+static const bpf_filter_t bpf_map[BAND_COUNT] = {
+  BPF_80M,      /* 160m — 1.8 MHz, best available is 80m filter */
+  BPF_80M,      /* 80m  — 3.5 MHz */
+  BPF_40M,      /* 60m  — 5.3 MHz */
+  BPF_40M,      /* 40m  — 7.0 MHz */
+  BPF_20_30M,   /* 30m  — 10.1 MHz */
+  BPF_20_30M,   /* 20m  — 14.0 MHz */
+  BPF_20_30M,   /* 17m  — 18.1 MHz */
+  BPF_15_10M,   /* 15m  — 21.0 MHz */
+  BPF_15_10M,   /* 12m  — 24.9 MHz */
+  BPF_15_10M,   /* 10m  — 28.0 MHz */
+  BPF_15_10M,   /* 6m   — 50.0 MHz */
 };
 
-/* LPF channel per band: A2:A1:A0 */
-static const uint8_t lpf_map[BAND_COUNT] = {
-  LPF_CH_160M, LPF_CH_80M, LPF_CH_80M, LPF_CH_40M, LPF_CH_40M,
-  LPF_CH_20M,  LPF_CH_20M, LPF_CH_15M, LPF_CH_15M, LPF_CH_10M,
-  LPF_CH_6M,
+/* Cached LPF state — skip redundant relay cycling */
+static lpf_band_t s_lpf_band = LPF_OFF;
+
+/* LPF per band: band_idx → lpf_band_t (= 74HC238 A2:A1:A0 address)
+ * 6m (50 MHz) has no dedicated filter; LPF_17_32M is the closest available. */
+static const lpf_band_t lpf_map[BAND_COUNT] = {
+  LPF_1M8,     /* 160m — 1.8 MHz  → Y0 */
+  LPF_3M5,     /* 80m  — 3.5 MHz  → Y1 */
+  LPF_5M8,     /* 60m  — 5.3 MHz  → Y2 */
+  LPF_8_17M,   /* 40m  — 7.0 MHz  → Y3 */
+  LPF_8_17M,   /* 30m  — 10.1 MHz → Y3 */
+  LPF_8_17M,   /* 20m  — 14.0 MHz → Y3 */
+  LPF_17_32M,  /* 17m  — 18.1 MHz → Y4 */
+  LPF_17_32M,  /* 15m  — 21.0 MHz → Y4 */
+  LPF_17_32M,  /* 12m  — 24.9 MHz → Y4 */
+  LPF_17_32M,  /* 10m  — 28.0 MHz → Y4 */
+  LPF_17_32M,  /* 6m   — 50.0 MHz → Y4 (no adequate filter; hardware limit) */
 };
 
 /* Default frequency per band */
@@ -49,9 +70,10 @@ const char *BPF_BandName(uint8_t idx) {
 
 static void set_bpf_ch(uint8_t ch)
 {
-  HAL_GPIO_WritePin(BPF_S0_GPIO_Port, BPF_S0_Pin,
-                    (ch & 0x01U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  /* BPF_S1 = select bit 0 (PA4), BPF_S2 = select bit 1 (PA5) */
   HAL_GPIO_WritePin(BPF_S1_GPIO_Port, BPF_S1_Pin,
+                    (ch & 0x01U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(BPF_S2_GPIO_Port, BPF_S2_Pin,
                     (ch & 0x02U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
@@ -70,31 +92,90 @@ static void set_lpf_ch(uint8_t ch)
 void BPF_LPF_Init(void)
 {
   /* USER CODE BEGIN BPF_LPF_Init_0 */
-  /* BPF: S0=S1=0 (channel 0), OE disabled */
-  set_bpf_ch(0U);
-  HAL_GPIO_WritePin(BPF_OE_GPIO_Port, BPF_OE_Pin, GPIO_PIN_SET);
+  /* BPF: start in RX mode, first filter.
+   * OE1=LOW (TX bank off), OE2=HIGH (RX bank on). */
+  s_bpf_filter = BPF_20_30M;
+  s_rf_mode    = RF_MODE_RX;
+  set_bpf_ch((uint8_t)BPF_20_30M);
+  HAL_GPIO_WritePin(BPF_OE1_GPIO_Port, BPF_OE1_Pin, GPIO_PIN_RESET); /* TX bank off */
+  HAL_GPIO_WritePin(BPF_OE2_GPIO_Port, BPF_OE2_Pin, GPIO_PIN_SET);   /* RX bank on  */
 
-  /* LPF: A=111 (none) */
-  set_lpf_ch(LPF_CH_NONE);
+  /* LPF: select Y7 (LPF_OFF) — all relay coils released at power-on */
+  s_lpf_band = LPF_OFF;
+  set_lpf_ch((uint8_t)LPF_OFF);
 
-  /* T/R switch: default RX */
-  HAL_GPIO_WritePin(TR_SW_GPIO_Port, TR_SW_Pin, GPIO_PIN_RESET);
+  /* T/R switch: default RX (LOW) */
+  HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
   /* USER CODE END BPF_LPF_Init_0 */
+}
+
+void BPF_Set(rf_mode_t mode, bpf_filter_t filter)
+{
+  /* USER CODE BEGIN BPF_Set_0 */
+  /* Step 1: de-energise both relay banks to prevent crowbar during switching */
+  HAL_GPIO_WritePin(BPF_OE1_GPIO_Port, BPF_OE1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(BPF_OE2_GPIO_Port, BPF_OE2_Pin, GPIO_PIN_RESET);
+
+  /* Step 2: wait for relay armatures to release */
+  HAL_Delay(2U);
+
+  /* Step 3: set filter select bits before energising */
+  set_bpf_ch((uint8_t)filter);
+  s_bpf_filter = filter;
+
+  /* Step 4: assert exactly one OE — TX→OE1=HIGH, RX→OE2=HIGH */
+  if (mode == RF_MODE_TX) {
+    HAL_GPIO_WritePin(BPF_OE1_GPIO_Port, BPF_OE1_Pin, GPIO_PIN_SET);
+    /* OE2 remains RESET */
+  } else {
+    HAL_GPIO_WritePin(BPF_OE2_GPIO_Port, BPF_OE2_Pin, GPIO_PIN_SET);
+    /* OE1 remains RESET */
+  }
+  s_rf_mode = mode;
+  /* USER CODE END BPF_Set_0 */
+}
+
+void BPF_SetMode(rf_mode_t mode)
+{
+  /* USER CODE BEGIN BPF_SetMode_0 */
+  BPF_Set(mode, s_bpf_filter);
+  /* USER CODE END BPF_SetMode_0 */
 }
 
 void BPF_SetBand(uint8_t band_idx)
 {
   /* USER CODE BEGIN BPF_SetBand_0 */
   if (band_idx >= BAND_COUNT) { band_idx = 0U; }
-  set_bpf_ch(bpf_map[band_idx]);
+  BPF_Set(s_rf_mode, bpf_map[band_idx]);
   /* USER CODE END BPF_SetBand_0 */
+}
+
+void LPF_Set(lpf_band_t band)
+{
+  /* USER CODE BEGIN LPF_Set_0 */
+  if (band == s_lpf_band) { return; }   /* already active — skip relay cycle */
+
+  /* Step 1: route decoder to Y7 (unconnected) — release current relay coil.
+   * This prevents multi-bit GPIO transitions from briefly activating
+   * an intermediate decoder output. */
+  set_lpf_ch((uint8_t)LPF_OFF);
+
+  /* Step 2: allow relay armature to release before energising next coil */
+  HAL_Delay(1U);
+
+  /* Step 3: select target filter (skip write if turning off — Y7 already set) */
+  if (band != LPF_OFF) {
+    set_lpf_ch((uint8_t)band);
+  }
+  s_lpf_band = band;
+  /* USER CODE END LPF_Set_0 */
 }
 
 void LPF_SetBand(uint8_t band_idx)
 {
   /* USER CODE BEGIN LPF_SetBand_0 */
   if (band_idx >= BAND_COUNT) { band_idx = 0U; }
-  set_lpf_ch(lpf_map[band_idx]);
+  LPF_Set(lpf_map[band_idx]);
   /* USER CODE END LPF_SetBand_0 */
 }
 
@@ -108,14 +189,6 @@ void BPF_LPF_SetFrequency(uint32_t freq_hz)
   /* USER CODE END BPF_LPF_SetFrequency_0 */
 }
 
-void BPF_Enable(bool enable)
-{
-  /* USER CODE BEGIN BPF_Enable_0 */
-  /* BPF_OE là input readback trong .ioc, nhưng thực tế là output active-low */
-  /* Nếu cần drive: reconfigure as output */
-  (void)enable;
-  /* USER CODE END BPF_Enable_0 */
-}
 
 uint8_t BPF_FreqToBand(uint32_t freq_hz)
 {

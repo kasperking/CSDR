@@ -176,6 +176,27 @@ void Key_Init(Key_t *k, GPIO_TypeDef *port, uint16_t pin)
 {
   k->port       = port;
   k->pin        = pin;
+  k->pca_cache  = NULL;
+  k->pca_bit    = 0U;
+  k->src        = KEY_SRC_GPIO;
+  k->state      = KS_IDLE;
+  k->raw_prev   = false;
+  k->t_stable   = HAL_GetTick();
+  k->t_press    = 0U;
+  k->t_repeat   = 0U;
+  k->evt_press   = false;
+  k->evt_hold    = false;
+  k->evt_repeat  = false;
+  k->evt_release = false;
+}
+
+void Key_InitPCA(Key_t *k, const uint16_t *pca_cache, uint8_t pca_bit)
+{
+  k->port       = NULL;
+  k->pin        = 0U;
+  k->pca_cache  = pca_cache;
+  k->pca_bit    = pca_bit;
+  k->src        = KEY_SRC_PCA9555;
   k->state      = KS_IDLE;
   k->raw_prev   = false;
   k->t_stable   = HAL_GetTick();
@@ -190,7 +211,13 @@ void Key_Init(Key_t *k, GPIO_TypeDef *port, uint16_t pin)
 void Key_Poll(Key_t *k)
 {
   uint32_t now = HAL_GetTick();
-  bool raw = (HAL_GPIO_ReadPin(k->port, k->pin) == GPIO_PIN_RESET);
+  bool raw;
+  if (k->src == KEY_SRC_PCA9555) {
+    /* Active-low: bit = 0 means pressed */
+    raw = !((uint8_t)((*k->pca_cache >> k->pca_bit) & 1U));
+  } else {
+    raw = (HAL_GPIO_ReadPin(k->port, k->pin) == GPIO_PIN_RESET);
+  }
 
   if (raw != k->raw_prev) {
     k->raw_prev = raw;

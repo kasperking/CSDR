@@ -44,28 +44,7 @@ void Error_Handler(void);
 /* External functions --------------------------------------------------------*/
 
 /* USER CODE BEGIN 0 */
-/*
- * ============================================================================
- * CSDR PROJECT — MANUAL SDR REALTIME PATCHES ACTIVE
- * ============================================================================
- * WARNING: CubeMX regeneration restores HAL_PCD_MspInit() with OTG_FS_IRQn
- * at priority 0 (same as SAI/DMA audio IRQs).  This causes audio glitches:
- * the USB ISR can preempt the DMA half-complete callback -> RXOVR / TXUND.
- *
- * The USER CODE block inside HAL_PCD_MspInit() (search: PRIORITY OVERRIDE)
- * corrects OTG_FS_IRQn to priority 2, below the audio DMA at priority 0.
- *
- * Required IRQ hierarchy after every regeneration:
- *   Priority 0 : SAI1_IRQn, DMA1_Stream0/1_IRQn  (audio — set in hal_msp.c)
- *   Priority 2 : OTG_FS_IRQn                     (USB — corrected here)
- *   Priority 15: SysTick
- *
- * Also verify the custom FIFO layout (TxRx_Configuration USER CODE block):
- *   RX = 128 words, EP0 = 32, EP1 CDC IN = 32, EP2 Notif = 16, EP3 Audio = 64
- *   CubeMX regenerates a generic 4-endpoint layout that is too small for
- *   the composite CDC + Audio ISO configuration.
- * ============================================================================
- */
+
 /* USER CODE END 0 */
 
 /* USER CODE BEGIN PFP */
@@ -126,11 +105,11 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* pcdHandle)
     HAL_NVIC_SetPriority(OTG_FS_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
   /* USER CODE BEGIN USB_OTG_FS_MspInit 1 */
-  /* PRIORITY OVERRIDE — must stay here to survive CubeMX regeneration.
-   * SAI/DMA audio IRQs run at priority 0 (highest). USB must be lower so
-   * audio DMA can preempt USB ISR activity and prevent audio jitter.
-   * CubeMX hardcodes priority 0 above; this override corrects it.
-   * DO NOT REMOVE. If regenerated, re-add this block. */
+  /* PRIORITY OVERRIDE — survives CubeMX regen because it is in USER CODE.
+   * test-fmc-lcd Core/ enables SAI1_IRQn at priority 0 (HAL_SAI_MspInit).
+   * USB must be lower priority so SAI DMA half-complete callbacks cannot be
+   * starved by USB ISR activity. CubeMX sets priority 0 above; correct here.
+   * Required hierarchy: SAI1/DMA1_Str0-1 = 0, OTG_FS = 2, SysTick = 15. */
   HAL_NVIC_SetPriority(OTG_FS_IRQn, 2, 0);
   /* USER CODE END USB_OTG_FS_MspInit 1 */
   }
@@ -374,7 +353,7 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   hpcd_USB_OTG_FS.Init.speed = PCD_SPEED_FULL;
   hpcd_USB_OTG_FS.Init.dma_enable = DISABLE;
   hpcd_USB_OTG_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
-  hpcd_USB_OTG_FS.Init.Sof_enable = DISABLE;
+  hpcd_USB_OTG_FS.Init.Sof_enable = ENABLE;  /* Needed for iso EP audio pump */
   hpcd_USB_OTG_FS.Init.low_power_enable = DISABLE;
   hpcd_USB_OTG_FS.Init.lpm_enable = DISABLE;
   hpcd_USB_OTG_FS.Init.battery_charging_enable = DISABLE;

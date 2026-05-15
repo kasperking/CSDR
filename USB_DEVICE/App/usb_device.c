@@ -72,7 +72,10 @@ void MX_USB_DEVICE_Init(void)
   {
     Error_Handler();
   }
-  if (USBD_RegisterClass(&hUsbDeviceFS, &USBD_CDC) != USBD_OK)
+  /* Composite class (Audio + CDC). Register our custom driver instead of
+   * USBD_CDC, but still register CDC interface fops (usbd_cdc_if.c) since
+   * the composite driver piggy-backs on USBD_CDC for CDC requests. */
+  if (USBD_RegisterClass(&hUsbDeviceFS, &USBD_Composite) != USBD_OK)
   {
     Error_Handler();
   }

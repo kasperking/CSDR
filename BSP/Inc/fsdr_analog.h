@@ -24,24 +24,27 @@ extern "C" {
 
 /* ══════════════════════════════════════════════════════════
  *  POWER MANAGEMENT
- *  PB12 CPU_PW      – Output HIGH giữ mạch nguồn ON
- *  PB13 CPU_PW_HOLD – Output HIGH báo MCU đang chạy bình thường
+ *  PD12 PW      – Power latch (drive HIGH = keep ON)
+ *  PD13 PW_HOLD – Power-hold signal (drive HIGH = MCU running)
  *
- *  Sequence bật nguồn (từ nút nhấn phần cứng):
- *   1. Nguồn vào → CPU_PW bị pull-up → MCU bắt đầu chạy
- *   2. MCU set CPU_PW=HIGH (giữ nguồn qua transistor)
- *   3. MCU init xong → CPU_PW_HOLD=HIGH
+ *  IMPORTANT: IOC currently configures PD12/PD13 as GPIO_Input (PULLUP).
+ *  If the power latch requires the MCU to actively drive these pins,
+ *  reconfigure them as GPIO_Output in CubeMX and regenerate.
  *
- *  Sequence tắt nguồn mềm (nhấn giữ nút):
- *   1. CPU_PW_HOLD=LOW
- *   2. Lưu settings vào flash
- *   3. CPU_PW=LOW → nguồn tắt
+ *  Sequence bật nguồn:
+ *   1. Nguồn vào → PW bị pull-up → MCU bắt đầu chạy
+ *   2. MCU set PW=HIGH (giữ nguồn qua transistor)
+ *   3. MCU init xong → PW_HOLD=HIGH
+ *
+ *  Sequence tắt nguồn mềm (nhấn giữ ENC_SW):
+ *   1. PW_HOLD=LOW
+ *   2. PW=LOW → nguồn tắt
  * ══════════════════════════════════════════════════════════ */
 
-void PWR_Init(void);                     /* Set CPU_PW=HIGH, CPU_PW_HOLD=HIGH */
+void PWR_Init(void);                     /* Set PW=HIGH, PW_HOLD=HIGH         */
 void PWR_Hold(void);                     /* Giữ nguồn ON                       */
-void PWR_Shutdown(void);                 /* Tắt nguồn mềm (lưu flash trước)    */
-bool PWR_IsHeld(void);                   /* Kiểm tra CPU_PW đang HIGH          */
+void PWR_Shutdown(void);                 /* Tắt nguồn mềm                      */
+bool PWR_IsHeld(void);                   /* Kiểm tra PW đang HIGH              */
 void PWR_Poll(void);                     /* Gọi mỗi 100ms: kiểm tra nút tắt   */
 
 /* ══════════════════════════════════════════════════════════
@@ -109,7 +112,7 @@ uint16_t Analog_Calc_SWR_x100(uint16_t vfor, uint16_t vref);
 
 /* ══════════════════════════════════════════════════════════
  *  FAN CONTROL
- *  PC6 → TIM3_CH1 PWM quạt làm mát
+ *  PB1 → TIM3_CH4 PWM quạt làm mát
  *
  *  Logic:
  *   Temp < FAN_TEMP_START_C  → duty = 0 (tắt)

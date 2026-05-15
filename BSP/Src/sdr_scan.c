@@ -13,6 +13,7 @@
 
 #include "sdr_scan.h"
 #include "csdr_app.h"
+#include "input_scan.h"
 #include "si5351.h"
 #include "fsdr_analog.h"
 #include "sdr_ui.h"
@@ -103,16 +104,19 @@ static uint16_t swr_to_y(uint16_t swr_x100)
  * ════════════════════════════════════════════════ */
 static void scan_tx_on(uint32_t freq_hz)
 {
-    HAL_Delay(2U);
+    /* Switch BPF relay bank to TX (OE1=1, OE2=0) before closing T/R relay.
+     * BPF_SetMode() includes the 2 ms relay-release gap internally. */
+    BPF_SetMode(RF_MODE_TX);
     if (g_sdr.si5351_ok)
-        SI5351_SetQSDFrequency(&g_si5351, freq_hz);  /* shared LO to scan freq */
-    HAL_GPIO_WritePin(TR_SW_GPIO_Port, TR_SW_Pin, GPIO_PIN_SET);
+        SI5351_SetQSDFrequency(&g_si5351, freq_hz);
+    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_SET);
 }
 
 static void scan_tx_off(uint32_t restore_rx_hz)
 {
-    HAL_GPIO_WritePin(TR_SW_GPIO_Port, TR_SW_Pin, GPIO_PIN_RESET);
-    HAL_Delay(2U);
+    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
+    /* Switch BPF relay bank back to RX (OE1=0, OE2=1). */
+    BPF_SetMode(RF_MODE_RX);
     if (g_sdr.si5351_ok)
         SI5351_SetQSDFrequency(&g_si5351, restore_rx_hz + g_sdr.lo_offset_hz);
 }
@@ -343,7 +347,7 @@ void SWR_Scan_Run(void)
         uint32_t freq = start_hz + i * SCAN_STEP_HZ;
 
         /* Abort: F4 held down */
-        if (HAL_GPIO_ReadPin(F4_KEY_GPIO_Port, F4_KEY_Pin) == GPIO_PIN_RESET) {
+        if (Input_F4_IsPressed()) {
             aborted = true;
             break;
         }
@@ -395,13 +399,10 @@ void SWR_Scan_Run(void)
     scan_draw_zone(start_hz, stop_hz, done_pts, npts, true);
 
     /* Wait: release held F4 (from abort), then wait for a fresh press+release */
-    while (HAL_GPIO_ReadPin(F4_KEY_GPIO_Port, F4_KEY_Pin) == GPIO_PIN_RESET)
-        HAL_Delay(5U);
+    while (Input_F4_IsPressed())  HAL_Delay(5U);
     HAL_Delay(60U);   /* debounce */
-    while (HAL_GPIO_ReadPin(F4_KEY_GPIO_Port, F4_KEY_Pin) != GPIO_PIN_RESET)
-        HAL_Delay(10U);
-    while (HAL_GPIO_ReadPin(F4_KEY_GPIO_Port, F4_KEY_Pin) == GPIO_PIN_RESET)
-        HAL_Delay(5U);
+    while (!Input_F4_IsPressed()) HAL_Delay(10U);
+    while (Input_F4_IsPressed())  HAL_Delay(5U);
 
     /* Signal main loop to redraw everything */
     g_sdr.display_dirty = true;
