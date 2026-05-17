@@ -25,6 +25,7 @@
 #include "csdr_app.h"
 #include "lcd_bus_fmc.h"
 #include "lcd_test_fmc.h"
+#include "boot_dfu.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -290,8 +291,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE|RCC_OSCILLATORTYPE_LSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
@@ -963,6 +965,17 @@ static void MX_FMC_Init(void)
    * Placed here so protection is active before USB or any other IRQ fires.
    * This USER CODE block survives CubeMX regeneration. */
   LCD_Bus_Init();
+
+  /* ── USB DFU boot check ────────────────────────────────────────────────
+   * GPIO and FMC/LCD are ready; USB stack has NOT started yet.
+   * Hold PW_KEY + ENC_SW at power-on to enter the STM32 ROM DFU bootloader.
+   * 50 ms debounce covers contact bounce on both mechanical switches.       */
+  HAL_Delay(50U);
+  if (boot_dfu_requested()) {
+      ui_show_dfu_screen();
+      HAL_Delay(1000U);
+      boot_enter_dfu();   /* never returns */
+  }
   /* USER CODE END FMC_Init 2 */
 }
 
@@ -1052,7 +1065,10 @@ static void MX_GPIO_Init(void)
   HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PA1, SYSCFG_SWITCH_PA1_CLOSE);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-
+  /* PW_HOLD must be driven HIGH immediately after GPIO init.
+   * CubeMX defaults outputs to LOW; a brief LOW on PW_HOLD before
+   * PWR_Init() runs could drop the soft-power latch. */
+  HAL_GPIO_WritePin(PW_HOLD_GPIO_Port, PW_HOLD_Pin, GPIO_PIN_SET);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 

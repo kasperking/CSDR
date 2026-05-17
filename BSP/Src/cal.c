@@ -22,7 +22,7 @@
 #include <stdbool.h>
 
 /* ── Key sampling (active-low, same GPIO layout as csdr_app.c) ────────── */
-extern TIM_HandleTypeDef htim1;   /* encoder timer (TIM1_CH1/CH2) */
+extern TIM_HandleTypeDef htim3;   /* encoder timer (TIM3_CH1/CH2 = PB4/PB5) */
 
 #define KEY_ENC_SW_Port  GPIOA
 #define KEY_ENC_SW_Pin   GPIO_PIN_2
@@ -302,7 +302,7 @@ static void auto_dc_cal(void)
 static int32_t enc_read_delta(void)
 {
   static uint32_t s_last = 0U;
-  uint32_t cnt = __HAL_TIM_GET_COUNTER(&htim1);
+  uint32_t cnt = __HAL_TIM_GET_COUNTER(&htim3);
   int32_t  d   = (int32_t)(cnt - s_last);
   if (d >  2) { s_last = cnt; return  1; }
   if (d < -2) { s_last = cnt; return -1; }

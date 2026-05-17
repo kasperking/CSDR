@@ -9,7 +9,7 @@
 
 /* USER CODE BEGIN 0 */
 /* All pins from Core/Inc/main.h (CubeMX generated):
- *  BPF: BPF_S1=PA4 (S0/bit0), BPF_S2=PA5 (S1/bit1) — relay select
+ *  BPF: BPF_S0=PA4 (S0/bit0), BPF_S1=PA5 (S1/bit1) — relay select
  *       BPF_OE1=PA6 — active-HIGH, enables TX relay bank (2B1..2B4)
  *       BPF_OE2=PA7 — active-HIGH, enables RX relay bank (1B1..1B4)
  *       OE1 and OE2 must ALWAYS be complementary (never both HIGH).
@@ -70,10 +70,10 @@ const char *BPF_BandName(uint8_t idx) {
 
 static void set_bpf_ch(uint8_t ch)
 {
-  /* BPF_S1 = select bit 0 (PA4), BPF_S2 = select bit 1 (PA5) */
-  HAL_GPIO_WritePin(BPF_S1_GPIO_Port, BPF_S1_Pin,
+  /* BPF_S0 = select bit 0 (PA4), BPF_S1 = select bit 1 (PA5) */
+  HAL_GPIO_WritePin(BPF_S0_GPIO_Port, BPF_S0_Pin,
                     (ch & 0x01U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(BPF_S2_GPIO_Port, BPF_S2_Pin,
+  HAL_GPIO_WritePin(BPF_S1_GPIO_Port, BPF_S1_Pin,
                     (ch & 0x02U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 

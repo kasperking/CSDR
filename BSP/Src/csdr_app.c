@@ -37,8 +37,9 @@ extern SAI_HandleTypeDef  hsai_BlockA1;
 extern SAI_HandleTypeDef  hsai_BlockB1;
 extern I2C_HandleTypeDef  hi2c1;
 extern I2C_HandleTypeDef  hi2c2;    /* PCA9555 button expander (I2C2: PB10/PB11) */
-extern TIM_HandleTypeDef  htim1;    /* Encoder (TIM1_CH1/CH2 = PA8/PA9) */
-extern TIM_HandleTypeDef  htim3;    /* Backlight TIM3_CH3, Fan TIM3_CH4 */
+extern TIM_HandleTypeDef  htim3;    /* Encoder TIM3_CH1/CH2 = PB4/PB5 */
+extern TIM_HandleTypeDef  htim8;    /* Backlight TIM8_CH4 = PC9 */
+extern TIM_HandleTypeDef  htim17;   /* Fan TIM17_CH1 = PB9 */
 extern ADC_HandleTypeDef  hadc1;
 extern ADC_HandleTypeDef  hadc2;
 extern ADC_HandleTypeDef  hadc3;
@@ -217,11 +218,11 @@ void CSDR_Init(void)
     }
   }
 
-  /* Backlight: TIM3_CH3 (PC8).  SAI DMA IRQs: highest priority. */
+  /* Backlight: TIM8_CH4 (PC9).  SAI DMA IRQs: highest priority. */
   HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0U, 0U);
   HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0U, 0U);
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 800U);
+  HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_4);
+  __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, 800U);
 
   /* Flash: load settings (logo display skipped during FMC bring-up) */
   if (W25Q_Init(&g_flash, &hspi3, FLASH_CS_GPIO_Port, FLASH_CS_Pin) == HAL_OK) {
@@ -283,7 +284,7 @@ void CSDR_Init(void)
   AGC_SetSpeed(&g_dsp.agc, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
 
   /* Encoder – direct MCU (TIM1 quadrature + ENC_SW GPIO) */
-  Encoder_Init(&g_encoder, &htim1);
+  Encoder_Init(&g_encoder, &htim3);
 
   /* PCA9555 button expander – all function keys on I2C2 */
   Input_Init();
@@ -347,17 +348,10 @@ void CSDR_Init(void)
   /* Menu */
   Menu_Init(&g_menu);
 
-  /* Initial UI */
-  SDR_UI_State_t ui = {0};
-  ui.freq_hz   = g_sdr.freq_hz;        ui.mode      = (uint8_t)g_sdr.mode;
-  ui.band_idx  = g_sdr.band_idx;       ui.volume    = g_sdr.volume;
-  ui.step      = (uint32_t)g_sdr.step; ui.agc_fast  = g_sdr.agc_fast;
-  ui.si5351_ok = g_sdr.si5351_ok;      ui.bw_hz     = g_sdr.bw_hz;
-  ui.freq_b_hz = g_sdr.vfo_b.freq_hz;  ui.active_vfo = g_sdr.active_vfo;
-  /* SDR_UI_DrawTopBar / DrawStatusPanel disabled: FMC UI not yet wired */
+  /* SDR_UI_DrawTopBar / DrawStatusPanel deferred until FMC UI is wired */
 
   /* Start SAI DMA (provides BCLK/LRCK to WM8731) */
-  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
+  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   /* Start TX first - it's MASTER and generates BCLK/LRCK for RX */
   RuntimeDiag_TxHalfFilled(0U);
   RuntimeDiag_TxHalfFilled(1U);

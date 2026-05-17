@@ -11,6 +11,7 @@
 #include <string.h>
 
 /* USER CODE BEGIN PV */
+extern TIM_HandleTypeDef htim17;   /* Fan TIM17_CH1 = PB9 */
 FSDR_Analog_t g_analog = {0};
 
 static uint8_t  s_fan_pct   = 0U;
@@ -38,13 +39,10 @@ static uint16_t adc_read(ADC_HandleTypeDef *hadc)
 void PWR_Init(void)
 {
   /* USER CODE BEGIN PWR_Init_0 */
-  /* PW (PD12) / PW_HOLD (PD13): drive HIGH to keep power latch ON.
-   * NOTE: IOC currently configures these as GPIO_Input (PULLUP).
-   * If power latch requires MCU to actively drive these pins, reconfigure
-   * them as GPIO_Output in CubeMX and regenerate. */
-  HAL_GPIO_WritePin(PW_GPIO_Port, PW_Pin, GPIO_PIN_SET);
-  s_pwr_held = true;
+  /* PW_HOLD (PD13, GPIO_Output): already driven HIGH in MX_GPIO_Init_2
+   * USER CODE to prevent latch dropout; assert again here as belt-and-suspenders. */
   HAL_GPIO_WritePin(PW_HOLD_GPIO_Port, PW_HOLD_Pin, GPIO_PIN_SET);
+  s_pwr_held = true;
   /* USER CODE END PWR_Init_0 */
 }
 
@@ -233,17 +231,15 @@ void Analog_Update(void)
 }
 
 /* ══════════════════════════════════════════════════════════
- *  FAN CONTROL (TIM3_CH1)
+ *  FAN CONTROL (TIM17_CH1 = PB9)
  * ══════════════════════════════════════════════════════════ */
 
 void Fan_Init(void)
 {
   /* USER CODE BEGIN Fan_Init_0 */
   s_fan_pct = 0U;
-  /* Bắt đầu TIM3_CH1 PWM */
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-  /* Set duty = 0 (tắt quạt) */
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 0U);
+  HAL_TIM_PWM_Start(&htim17, TIM_CHANNEL_1);
+  __HAL_TIM_SET_COMPARE(&htim17, TIM_CHANNEL_1, 0U);
   /* USER CODE END Fan_Init_0 */
 }
 
@@ -252,13 +248,13 @@ void Fan_SetPercent(uint8_t pct)
   /* USER CODE BEGIN Fan_SetPercent_0 */
   if (pct > 100U) { pct = 100U; }
   s_fan_pct = pct;
-  uint32_t period = __HAL_TIM_GET_AUTORELOAD(&htim3);
+  uint32_t period = __HAL_TIM_GET_AUTORELOAD(&htim17);
   uint32_t duty   = 0U;
   if (pct > 0U) {
     duty = FAN_PWM_MIN + (uint32_t)(pct) * (FAN_PWM_MAX - FAN_PWM_MIN) / 100U;
     if (duty > period) duty = period;
   }
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, duty);
+  __HAL_TIM_SET_COMPARE(&htim17, TIM_CHANNEL_1, duty);
   /* USER CODE END Fan_SetPercent_0 */
 }
 
