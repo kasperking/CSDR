@@ -398,10 +398,12 @@ void SWR_Scan_Run(void)
     /* Final result display */
     scan_draw_zone(start_hz, stop_hz, done_pts, npts, true);
 
-    /* Wait: release held F4 (from abort), then wait for a fresh press+release */
+    /* Wait: release held F4 (from abort), then wait for a fresh press+release.
+     * Timeout guards prevent infinite block when PCA9555 is absent (HAS_PCA9555=0). */
     while (Input_F4_IsPressed())  HAL_Delay(5U);
     HAL_Delay(60U);   /* debounce */
-    while (!Input_F4_IsPressed()) HAL_Delay(10U);
+    { uint32_t _t0 = HAL_GetTick();
+      while (!Input_F4_IsPressed() && (HAL_GetTick() - _t0 < 5000U)) HAL_Delay(10U); }
     while (Input_F4_IsPressed())  HAL_Delay(5U);
 
     /* Signal main loop to redraw everything */

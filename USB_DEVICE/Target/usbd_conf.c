@@ -228,6 +228,10 @@ void HAL_PCD_ResetCallback(PCD_HandleTypeDef *hpcd)
 
   /* Reset Device. */
   USBD_LL_Reset((USBD_HandleTypeDef*)hpcd->pData);
+  /* USER CODE BEGIN ResetCallback_user */
+  extern volatile uint32_t dbg_usb_reset_cnt;
+  dbg_usb_reset_cnt++;
+  /* USER CODE END ResetCallback_user */
 }
 
 /**
@@ -247,6 +251,8 @@ void HAL_PCD_SuspendCallback(PCD_HandleTypeDef *hpcd)
   __HAL_PCD_GATE_PHYCLOCK(hpcd);
   /* Enter in STOP mode. */
   /* USER CODE BEGIN 2 */
+  extern volatile uint32_t dbg_usb_suspend_cnt;
+  dbg_usb_suspend_cnt++;
   if (hpcd->Init.low_power_enable)
   {
     /* Set SLEEPDEEP bit and SleepOnExit of Cortex System Control Register. */
@@ -268,7 +274,8 @@ void HAL_PCD_ResumeCallback(PCD_HandleTypeDef *hpcd)
 #endif /* USE_HAL_PCD_REGISTER_CALLBACKS */
 {
   /* USER CODE BEGIN 3 */
-
+  extern volatile uint32_t dbg_usb_resume_cnt;
+  dbg_usb_resume_cnt++;
   /* USER CODE END 3 */
   USBD_LL_Resume((USBD_HandleTypeDef*)hpcd->pData);
 }

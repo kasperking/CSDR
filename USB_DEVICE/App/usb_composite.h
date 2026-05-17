@@ -113,6 +113,21 @@ uint8_t Composite_AudioIN_IsStreaming(void);
  */
 uint8_t Composite_AudioOUT_IsStreaming(void);
 
+/**
+ * @brief  Returns 1 if a CDC IN bulk transfer is in progress (s_cdc_tx_busy).
+ *         Used by CAT_FlushTX to guard the static TX buffer before filling it:
+ *         if the USB TXFE ISR has not yet read from out[] for the previous
+ *         transfer, overwriting out[] sends wrong data to the host.
+ *         Includes stall self-recovery: if the EP is stalled (DataIn will never
+ *         fire), clears s_cdc_tx_busy and increments dbg_cdc_stuck_recovery.
+ */
+uint8_t Composite_CDC_IsBusy(void);
+
+/* dbg_cdc_stuck_recovery: number of times IsBusy detected a stalled EP and
+ *   self-cleared s_cdc_tx_busy to break a permanent TX deadlock.
+ *   Non-zero = Windows COM port reset or USB bus stress caused a stall event. */
+extern volatile uint32_t dbg_cdc_stuck_recovery;
+
 #ifdef __cplusplus
 }
 #endif

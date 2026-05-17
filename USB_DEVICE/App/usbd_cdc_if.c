@@ -155,9 +155,10 @@ USBD_CDC_ItfTypeDef USBD_Interface_fops_FS =
 static int8_t CDC_Init_FS(void)
 {
   /* USER CODE BEGIN 3 */
-  /* Set Application Buffers */
-  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, UserTxBufferFS, 0);
-  USBD_CDC_SetRxBuffer(&hUsbDeviceFS, UserRxBufferFS);
+  /* NOTE: Do NOT call USBD_CDC_SetTxBuffer / USBD_CDC_SetRxBuffer here.
+   * Those functions access hUsbDeviceFS.pClassData which is NULL in the
+   * composite driver (USBD_Composite never allocates it).  NULL dereference
+   * writes to ITCM (address ~0x34) on every USB connect. */
   return (USBD_OK);
   /* USER CODE END 3 */
 }
@@ -265,8 +266,11 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
   CSDR_CDC_Receive(Buf, *Len);
-  USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
-  USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+  /* Comp_DataOut (usb_composite.c) re-arms COMP_EP_CDC_OUT via
+   * USBD_LL_PrepareReceive after calling this callback.  Do NOT call
+   * USBD_CDC_SetRxBuffer / USBD_CDC_ReceivePacket here — the composite
+   * driver does not allocate pClassData, so those functions would
+   * dereference NULL → write into ITCM and double-arm the endpoint. */
   return (USBD_OK);
   /* USER CODE END 6 */
 }

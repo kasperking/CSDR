@@ -22,6 +22,9 @@
 #ifndef __INPUT_SCAN_H
 #define __INPUT_SCAN_H
 
+/* 0 = PCA9555 not installed; all expander I/O is disabled at compile time */
+#define HAS_PCA9555  0
+
 #ifdef __cplusplus
 extern "C" {
 #endif

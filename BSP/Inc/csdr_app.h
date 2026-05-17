@@ -95,6 +95,13 @@ typedef struct {
   /* Dual VFO */
   VFO_State_t vfo_b;
   uint8_t     active_vfo;
+  /* CAT deferred-hardware flags — set by CAT handlers, cleared by CSDR_Loop */
+  bool        cat_freq_dirty; /* FA SET: apply SI5351 + DSP NCO outside CAT context */
+  bool        cat_vol_dirty;  /* AG SET: apply WM8731 volume outside CAT context    */
+  bool        cat_mode_dirty; /* MD SET: apply DSP mode/BW outside CAT context      */
+  bool        cat_tx_dirty;   /* TX/RX: apply T/R relay + codec outside CAT context */
+  bool        cat_att_dirty;  /* RA SET: apply PE4302 attenuator outside CAT context */
+  bool        cat_rit_dirty;  /* RT/RC/RU/RD/IS: recompute nco_if = if_shift_hz + (rit_on ? rit_hz : 0) */
 } SDR_State_t;
 
 extern SDR_State_t g_sdr;
@@ -144,6 +151,7 @@ void CSDR_Loop(void);
 void CSDR_SysTickCallback(void);
 
 void CSDR_CDC_Receive(uint8_t *buf, uint32_t len);
+void CSDR_CDC_ResetCAT(void);
 
 #ifdef __cplusplus
 }

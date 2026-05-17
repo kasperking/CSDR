@@ -104,9 +104,36 @@ static volatile uint8_t dbg_i2c_found_count  = 0;
 extern volatile uint32_t dbg_usb_sof_cnt;     /* SOF callbacks received from host      */
 extern volatile uint32_t dbg_usb_iso_in_cnt;  /* ISO IN packets successfully queued     */
 extern volatile uint32_t dbg_usb_stall_cnt;   /* ISO IN queue failures (stall/not-ready)*/
+extern volatile uint32_t dbg_usb_reset_cnt;   /* Bus reset count (1=normal attach)      */
+extern volatile uint32_t dbg_usb_suspend_cnt; /* Host sent SUSPEND (PC sleep/idle)      */
+extern volatile uint32_t dbg_usb_resume_cnt;  /* Host sent RESUME (should pair suspend) */
+extern volatile uint32_t dbg_cdc_rx_pkts;     /* CDC OUT packets received from host     */
+extern volatile uint32_t dbg_cdc_tx_pkts;     /* CDC IN packets queued to host          */
+extern volatile uint32_t dbg_cdc_tx_drop;     /* CDC TX returned USBD_BUSY — deferred   */
+extern volatile uint32_t dbg_cdc_busy_max;    /* Max consecutive BUSY run length        */
+extern volatile uint32_t dbg_cdc_fail_cnt;    /* USBD_LL_Transmit returned FAIL (not BUSY) */
+extern volatile uint32_t dbg_comp_datain_cnt; /* CDC DataIn fire count (must track tx_pkts) */
+/* CAT transport counters – defined in usb_cat.c */
+extern volatile uint32_t dbg_cat_rx_bytes;         /* Total bytes into CAT_Receive from ISR      */
+extern volatile uint32_t dbg_cat_tx_bytes;         /* Total bytes sent to CDC_Transmit_FS        */
+extern volatile uint32_t dbg_cat_fifo_drop;        /* Chars dropped: TX FIFO full (512B max)     */
+extern volatile uint32_t dbg_cat_parse_calls;      /* CAT_Process calls (≈ 100/s expected)       */
+/* CAT protocol diagnostics */
+extern volatile uint32_t dbg_cat_unknown_cmds;     /* ?; responses — unrecognised opcode         */
+extern volatile uint32_t dbg_cat_malformed_frames; /* ?; responses — known opcode, bad params    */
+extern volatile uint32_t dbg_cat_blocked_updates;  /* SET while previous dirty flag still pending*/
+extern volatile uint32_t dbg_cat_partial_timeouts; /* partial cmds discarded after 200ms idle    */
+extern volatile uint32_t dbg_cat_max_cmd_len;      /* peak parser_len (overflow risk if → 127)   */
+extern volatile uint32_t dbg_cat_parse_latency_us; /* last CAT_Process duration µs (DWT-based)   */
+extern char              dbg_cat_last_cmd[];        /* last complete command, NUL-terminated       */
+extern char              dbg_cat_last_resp[];       /* last non-empty response enqueued            */
 
 /* Set to 1 in debugger to skip waterfall/LCD DMA while diagnosing USB audio. */
 static volatile uint8_t dbg_disable_lcd_dma = 0;
+
+/* Forward declarations for functions used before their definition */
+static void csdr_apply_volume(uint8_t vol);
+static void csdr_apply_tx(void);
 
 #define CSDR_UI_WF_RX_PERIOD_MS       67U   /* ~15 fps waterfall in RX; smaller buffer makes this safe */
 #define CSDR_UI_DISPLAY_RX_PERIOD_MS 200U   /* 5 fps spectrum/meter; keep low — rate × size drives LCD BW */
@@ -491,12 +518,53 @@ void CSDR_Loop(void)
   RuntimeDiag_ServiceSlow(now);
   Diag_Process();
   RuntimeDiag_WatchdogRefreshIfHealthy(now);
-  /* CAT flush: gọi thường xuyên để response đến host trước timeout */
-  CAT_FlushTX(&g_cat);
 
   if (now - t_cat    >= 10U) {
     t_cat = now;
     CAT_Process(&g_cat);
+    /* Apply hardware changes deferred by CAT handlers — all blocking I2C/SPI/GPIO
+     * happens here in main-loop context, never inside the CAT parser. */
+    if (g_sdr.cat_freq_dirty) {
+      g_sdr.cat_freq_dirty = false;
+      DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+      if (g_sdr.si5351_ok)
+        SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+      uint8_t _b = BPF_FreqToBand(g_sdr.freq_hz);
+      if (_b != 0xFFU && _b != g_sdr.band_idx) {
+        BPF_SetBand(_b); LPF_SetBand(_b); g_sdr.band_idx = _b;
+        g_sdr.display_dirty |= DIRTY_SBL;
+      }
+    }
+    if (g_sdr.cat_vol_dirty) {
+      g_sdr.cat_vol_dirty = false;
+      uint8_t _wv = (g_sdr.volume == 0U) ? 0x2FU
+                  : (uint8_t)(90U + ((uint16_t)g_sdr.volume * 31U / 100U));
+      WM8731_SetVolume(&hi2c1, WM8731_I2C_ADDR, _wv, _wv);
+    }
+    if (g_sdr.cat_mode_dirty) {
+      g_sdr.cat_mode_dirty = false;
+      DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
+      DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
+      SDR_UI_SetSpecZoom(default_zoom_for_mode(g_sdr.mode));
+    }
+    if (g_sdr.cat_tx_dirty) {
+      g_sdr.cat_tx_dirty = false;
+      csdr_apply_tx();
+    }
+    if (g_sdr.cat_att_dirty) {
+      g_sdr.cat_att_dirty = false;
+      PE4302_SetAttn_dB(&g_att, g_sdr.att_db);
+      g_sdr.att_db = g_att.current_atten_db;
+    }
+    if (g_sdr.cat_rit_dirty) {
+      g_sdr.cat_rit_dirty = false;
+      /* nco_if = IF shift + RIT offset (only when RIT is on).
+       * RIT shifts the DSP passband without changing the displayed VFO frequency
+       * or the SI5351 LO — the received signal moves in the audio chain only. */
+      int32_t eff_if = (int32_t)g_sdr.if_shift_hz
+                     + (g_cat.rit_on ? (int32_t)g_sdr.rit_hz : 0);
+      DSP_SetIFShift(&g_dsp, eff_if, CSDR_AUDIO_SAMPLE_RATE);
+    }
     USB_Audio_Process(&g_usb_audio);
     /* Discard buffered PC TX audio when not transmitting.
      * Without this the ring fills to 6144 bytes and stays there,
@@ -510,6 +578,12 @@ void CSDR_Loop(void)
       __enable_irq();
     }
   }
+
+  /* CAT TX flush — single call site, runs every main-loop tick (~1 ms).
+   * Positioned AFTER CAT_Process so new responses are drained on the same
+   * tick they are enqueued.  On non-Process ticks this retries any remaining
+   * FIFO bytes that were deferred by a previous busy-guard hit. */
+  CAT_FlushTX(&g_cat);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -530,6 +604,22 @@ void CSDR_SysTickCallback(void)
 void CSDR_CDC_Receive(uint8_t *buf, uint32_t len)
 {
   CAT_Receive(&g_cat, buf, (uint16_t)len);
+}
+
+/* Called from CDC_Close (USB disconnect) to flush stale parser state so the
+ * reconnecting host does not see partial commands or queued responses from
+ * the previous session. */
+void CSDR_CDC_ResetCAT(void)
+{
+  /* Snapshot callbacks before CAT_Init wipes them via memset.
+   * CAT_Init(&g_cat, &g_cat.cb) would zero g_cat.cb first and then copy
+   * the already-zeroed struct back — losing all function pointers. */
+  CAT_Callbacks_t saved_cb;
+  __disable_irq();
+  saved_cb    = g_cat.cb;
+  g_cat.rx_len = 0U;
+  __enable_irq();
+  CAT_Init(&g_cat, &saved_cb);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -713,7 +803,7 @@ static void csdr_handle_keys(void)
       Menu_Up(&g_menu);
     } else {
       uint8_t v = (g_sdr.volume >= 2U) ? (g_sdr.volume - 2U) : 0U;
-      cat_set_volume(v);
+      csdr_apply_volume(v);
     }
   }
 
@@ -722,7 +812,7 @@ static void csdr_handle_keys(void)
     if (Menu_IsOpen(&g_menu)) Menu_Down(&g_menu);
     else {
       uint8_t v = (g_sdr.volume <= 98U) ? (g_sdr.volume + 2U) : 100U;
-      cat_set_volume(v);
+      csdr_apply_volume(v);
     }
   }
 
@@ -802,7 +892,10 @@ static void csdr_handle_keys(void)
   }
 
   if (Key_Press(&k_ptt)) {
-    cat_set_tx(!g_sdr.tx_mode);
+    bool _tx = !g_sdr.tx_mode;
+    g_sdr.tx_mode = _tx;
+    g_sdr.display_dirty |= _tx ? DIRTY_HDR : (uint8_t)DIRTY_ALL;
+    csdr_apply_tx();   /* immediate for physical PTT — no deferred path */
   }
 }
 
@@ -947,7 +1040,9 @@ static void menu_apply_cb(void)
                   &vol, &sq, &step, &att, &band, &mode, &usb, &zoom);
   g_sdr.agc_fast = agc; g_sdr.nb_on = nb; g_sdr.nr_on = nr;
   AGC_SetSpeed(&g_dsp.agc, agc, CSDR_AUDIO_SAMPLE_RATE);
-  g_sdr.rit_hz = rit;   cat_set_volume(vol); g_sdr.squelch = sq;
+  g_sdr.rit_hz = rit;
+  g_sdr.cat_rit_dirty = true;  /* apply new RIT offset to nco_if via CSDR_Loop */
+  csdr_apply_volume(vol); g_sdr.squelch = sq;
   g_sdr.step = (FreqStep_t)step;
   if (att != g_sdr.att_db) { PE4302_SetAttn_dB(&g_att, att); g_sdr.att_db = att; }
   if (band != g_sdr.band_idx) csdr_apply_band(band);
@@ -1023,72 +1118,128 @@ static uint32_t cat_get_vfo_b_freq(void)        { return g_sdr.vfo_b.freq_hz; }
 static uint8_t  cat_get_vfo_b_mode(void)        { return (uint8_t)g_sdr.vfo_b.mode; }
 static uint32_t cat_get_vfo_b_bw(void)          { return g_sdr.vfo_b.bw_hz; }
 
-/* VS/FR/DC handler: triggers a hardware VFO swap only when the selection differs
- * from the current radio state, so VS1;VS1; is idempotent. */
+/* VS/FR/DC handler: real VFO swap with deferred hardware update.
+ * Same logic as csdr_vfo_swap() but non-blocking (dirty flags, not direct I2C).
+ * In split mode the LO must stay on the RX VFO, so only update the tracking
+ * label — the user tunes VFO B via FB SET without retuning the receiver. */
 static void cat_set_active_vfo(uint8_t vfo)
 {
-  if (vfo != g_sdr.active_vfo) csdr_vfo_swap();
+  if (vfo == g_sdr.active_vfo) return;
+  if (g_cat.split_on) {
+    /* Split: don't retune — only update display label */
+    g_sdr.active_vfo  = vfo;
+    g_cat.active_vfo  = vfo;
+    g_sdr.display_dirty |= DIRTY_VFO;
+    return;
+  }
+  /* Full swap: exchange active ↔ inactive VFO storage, then defer hardware */
+  VFO_State_t tmp = {
+    .freq_hz  = g_sdr.freq_hz,
+    .mode     = g_sdr.mode,
+    .band_idx = g_sdr.band_idx,
+    .step     = g_sdr.step,
+    .rit_hz   = g_sdr.rit_hz,
+    .bw_hz    = g_sdr.bw_hz,
+  };
+  g_sdr.freq_hz  = g_sdr.vfo_b.freq_hz;
+  g_sdr.mode     = g_sdr.vfo_b.mode;
+  g_sdr.band_idx = g_sdr.vfo_b.band_idx;
+  g_sdr.step     = g_sdr.vfo_b.step;
+  g_sdr.rit_hz   = g_sdr.vfo_b.rit_hz;
+  g_sdr.bw_hz    = g_sdr.vfo_b.bw_hz;
+  g_sdr.vfo_b    = tmp;
+  g_sdr.active_vfo ^= 1U;
+  g_cat.active_vfo   = g_sdr.active_vfo;
+
+  g_sdr.cat_freq_dirty = true;   /* retune SI5351 to new freq_hz */
+  g_sdr.cat_mode_dirty = true;   /* reapply DSP mode + BW */
+  g_sdr.display_dirty  |= (DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
 }
 static uint8_t cat_get_active_vfo(void) { return g_sdr.active_vfo; }
 
 /* CAT callbacks */
 static void     cat_set_freq(uint32_t f)
 {
-  g_sdr.freq_hz=f;
-  DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
-  if(g_sdr.si5351_ok)SI5351_SetQSDFrequency(&g_si5351,f+g_sdr.lo_offset_hz);
+  if (g_sdr.cat_freq_dirty) dbg_cat_blocked_updates++;
+  g_sdr.freq_hz = f;
+  g_sdr.cat_freq_dirty = true; /* SI5351 + DSP NCO applied by CSDR_Loop */
   g_sdr.display_dirty |= DIRTY_VFO;
 }
 static void     cat_set_mode(uint8_t m)
 {
-  g_sdr.mode=(SDR_Mode_t)m;
-  DSP_SetMode(&g_dsp,g_sdr.mode,CSDR_AUDIO_SAMPLE_RATE);
-  DSP_SetBW(&g_dsp,(float)g_sdr.bw_hz);
-  SDR_UI_SetSpecZoom(default_zoom_for_mode(g_sdr.mode));
+  if (g_sdr.cat_mode_dirty) dbg_cat_blocked_updates++;
+  g_sdr.mode  = (SDR_Mode_t)m;
+  g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
+  g_sdr.cat_mode_dirty = true; /* DSP + zoom applied by CSDR_Loop */
   g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
 }
+/* CAT callback — deferred: sets dirty flag, hardware applied by CSDR_Loop.
+ * Physical PTT key goes through csdr_apply_tx() for immediate switching. */
 static void cat_set_tx(bool tx)
 {
   if (tx == g_sdr.tx_mode) return;
-  g_sdr.tx_mode = tx;
-  if (tx) {
-    /* RX → TX:
-     *  1. Switch BPF relay bank to TX (OE1=1, OE2=0). BPF_SetMode() includes
-     *     the 2 ms relay-release gap before asserting OE1.
-     *  2. Then close the T/R antenna relay. */
-    BPF_SetMode(RF_MODE_TX);
-    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_SET);
-  } else {
-    /* TX → RX:
-     *  1. Open T/R antenna relay first.
-     *  2. Then switch BPF relay bank to RX (OE1=0, OE2=1). BPF_SetMode()
-     *     includes the 2 ms relay-release gap before asserting OE2.
-     *  3. Unmute codec. */
-    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
-    BPF_SetMode(RF_MODE_RX);
-    WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
-  }
-  SDR_UI_UpdateSMeter_SetTX(tx);
+  if (g_sdr.cat_tx_dirty) dbg_cat_blocked_updates++;
+  g_sdr.tx_mode    = tx;
+  g_sdr.cat_tx_dirty = true;
   g_sdr.display_dirty |= tx ? DIRTY_HDR : (uint8_t)DIRTY_ALL;
 }
 static void     cat_set_att(uint8_t lv)
 {
-  static const uint8_t m[]={0,6,12,18};
-  PE4302_SetAttn_dB(&g_att,(lv<4)?m[lv]:0);
-  g_sdr.att_db=g_att.current_atten_db;
+  if (g_sdr.cat_att_dirty) dbg_cat_blocked_updates++;
+  static const uint8_t m[] = {0, 6, 12, 18};
+  g_sdr.att_db = (lv < 4U) ? m[lv] : 0U;
+  g_sdr.cat_att_dirty = true; /* PE4302 applied by CSDR_Loop */
   g_sdr.display_dirty |= DIRTY_HDR;
 }
 
-/* Scale 0-100 internal volume → WM8731 HP register.
- * Range 90-121 (−31 dB to 0 dB) so 100% = 0 dB reference.
- * vol==0 → hardware mute (register < 0x30). */
-static void cat_set_volume(uint8_t vol)
+/* Immediate volume apply — WM8731 I2C updated synchronously.
+ * Called from key handler and menu; safe in main-loop context. */
+static void csdr_apply_volume(uint8_t vol)
 {
   if (vol > 100U) vol = 100U;
   g_sdr.volume = vol;
   uint8_t wm_vol = (vol == 0U) ? 0x2FU
                                 : (uint8_t)(90U + ((uint16_t)vol * 31U / 100U));
   WM8731_SetVolume(&hi2c1, WM8731_I2C_ADDR, wm_vol, wm_vol);
+  g_sdr.display_dirty |= DIRTY_SBL;
+}
+
+/* Immediate TX/RX apply — hardware switched synchronously.
+ * Called from physical PTT key handler and from the cat_tx_dirty path in CSDR_Loop.
+ * Caller must have already set g_sdr.tx_mode to the desired state.
+ *
+ * Split operation: inactive VFO (vfo_b.freq_hz) is always the TX VFO.
+ * On TX: SI5351 switches to vfo_b.freq_hz so the QSD mixer is on the TX frequency.
+ * On RX: SI5351 returns to freq_hz (active/RX VFO).
+ * The SI5351 call here is synchronous and safe — this function runs in main-loop
+ * context (cat_tx_dirty path) or from the physical PTT key, never from an ISR. */
+static void csdr_apply_tx(void)
+{
+  if (g_sdr.tx_mode) {
+    /* RX → TX: switch BPF relay bank first (includes 2 ms relay gap), then close T/R. */
+    BPF_SetMode(RF_MODE_TX);
+    /* Split: retune LO to TX VFO (inactive slot) before gating RF */
+    if (g_cat.split_on && g_sdr.si5351_ok)
+      SI5351_SetQSDFrequency(&g_si5351, g_sdr.vfo_b.freq_hz + g_sdr.lo_offset_hz);
+    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_SET);
+  } else {
+    /* TX → RX: open T/R relay first, then switch BPF bank back, then unmute codec. */
+    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
+    BPF_SetMode(RF_MODE_RX);
+    /* Split: restore LO to RX VFO (active slot) */
+    if (g_cat.split_on && g_sdr.si5351_ok)
+      SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+    WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
+  }
+  SDR_UI_UpdateSMeter_SetTX(g_sdr.tx_mode);
+}
+
+/* CAT callback — deferred: sets dirty flag, WM8731 applied by CSDR_Loop. */
+static void cat_set_volume(uint8_t vol)
+{
+  if (vol > 100U) vol = 100U;
+  g_sdr.volume = vol;
+  g_sdr.cat_vol_dirty = true;
   g_sdr.display_dirty |= DIRTY_SBL;
 }
 static void     cat_set_nr(bool on)       { g_sdr.nr_on = on; g_sdr.display_dirty |= DIRTY_SBL; }
@@ -1098,7 +1249,6 @@ static void cat_set_bw(uint32_t hz)
     if (hz < 100U)   hz = 100U;
     if (hz > 24000U) hz = 24000U;
     g_sdr.bw_hz = hz;
-    DSP_SetBW(&g_dsp, (float)hz);
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBR);
 }
 static void     cat_set_agc_fast(bool f)  { g_sdr.agc_fast = f; g_sdr.display_dirty |= DIRTY_SBL; }
@@ -1119,9 +1269,11 @@ static int32_t  cat_get_rit_hz(void)      { return (int32_t)g_sdr.rit_hz; }
 static uint32_t cat_get_step(void)        { return (uint32_t)g_sdr.step; }
 static void cat_set_rit_hz(int32_t hz)
 {
+  if (g_sdr.cat_rit_dirty) dbg_cat_blocked_updates++;
   if (hz > 9999)  hz = 9999;
   if (hz < -9999) hz = -9999;
   g_sdr.rit_hz = (int16_t)hz;
+  g_sdr.cat_rit_dirty = true;  /* recompute nco_if = if_shift_hz + (rit_on ? rit_hz : 0) */
   g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBR);
 }
 static void cat_set_step(uint32_t hz)
@@ -1143,17 +1295,11 @@ static void cat_set_if_shift(int32_t hz)
   if (hz >  9999) hz =  9999;
   if (hz < -9999) hz = -9999;
   g_sdr.if_shift_hz = (int16_t)hz;
-  DSP_SetIFShift(&g_dsp, (int32_t)g_sdr.if_shift_hz, CSDR_AUDIO_SAMPLE_RATE);
+  g_sdr.cat_rit_dirty = true;  /* nco_if = if_shift_hz + (rit_on ? rit_hz : 0) */
   g_sdr.display_dirty |= DIRTY_VFO;
 }
 
 static int32_t cat_get_if_shift(void) { return (int32_t)g_sdr.if_shift_hz; }
-/* ── Audio buffer accessors (expose main.c static buffers) ── */
-extern int32_t tx_buf[];
-extern int32_t rx_buf[];
-extern volatile uint8_t dsp_ping;
-extern volatile uint8_t dsp_pong;
-
-int32_t *CSDR_GetTxBuf(void) { return tx_buf; }
-int32_t *CSDR_GetRxBuf(void) { return rx_buf; }
-void CSDR_ClearDspFlags(void) { dsp_ping = 0; dsp_pong = 0; }
+int32_t *CSDR_GetTxBuf(void) { return s_tx_buf; }
+int32_t *CSDR_GetRxBuf(void) { return s_rx_buf; }
+void CSDR_ClearDspFlags(void) { s_rx_ready_seq[0] = s_rx_done_seq[0]; s_rx_ready_seq[1] = s_rx_done_seq[1]; }

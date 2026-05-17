@@ -13,8 +13,9 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-/* USB CDC TX */
+/* USB CDC TX + busy query — forward-declared to avoid cross-directory include */
 extern uint8_t CDC_Transmit_FS(uint8_t *Buf, uint16_t Len);
+extern uint8_t Composite_CDC_IsBusy(void);
 
 /* Exported CAT handle */
 CAT_Handle_t g_cat;
@@ -45,6 +46,11 @@ static char *cat_put_u32(char *p, uint32_t v, uint8_t width)
         tmp[n++] = '0';
     }
 
+    /* Clamp to exactly width digits — if value has more digits than width,
+     * truncate the most-significant excess (takes value mod 10^width).
+     * Prevents field overrun in IF/FA/FB when a callback returns garbage. */
+    if (n > width) n = width;
+
     while (n > 0U) {
         *p++ = tmp[--n];
     }
@@ -64,7 +70,14 @@ static uint32_t cat_parse_u(const char *s, uint8_t n)
 
 static void cat_copy(char *dst, const char *src)
 {
-    while ((*dst++ = *src++) != '\0') {;}
+    /* Bounded copy: dst must be CAT_TX_BUF_SIZE bytes. Prevents runaway
+     * strcpy if any future call site passes a longer-than-expected string. */
+    uint8_t i = 0U;
+    while (i < (uint8_t)(CAT_TX_BUF_SIZE - 1U) && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
 }
 
 static inline char cat_vfo_digit(uint8_t vfo)
@@ -106,21 +119,311 @@ uint8_t CAT_CatModeToSDR(uint8_t m)
 }
 
 /* =========================================================
- * TX FIFO
+ * TX FIFO — bracketed with 0xCC/0xDD sentinels.
+ * If dbg_fifo_guard_pre changes from 0xCCCCCCCC or
+ * dbg_fifo_guard_post changes from 0xDDDDDDDD, something has
+ * written OOB into the region adjacent to s_tx_fifo in .bss.
  * ========================================================= */
 #define CAT_TX_FIFO_SIZE 512U
-static char     s_tx_fifo[CAT_TX_FIFO_SIZE];
-static uint16_t s_tx_head = 0U;
-static uint16_t s_tx_tail = 0U;
+volatile uint32_t dbg_fifo_guard_pre  = 0U;  /* set to 0xCCCCCCCC in CAT_Init */
+static char       s_tx_fifo[CAT_TX_FIFO_SIZE];
+volatile uint32_t dbg_fifo_guard_post = 0U;  /* set to 0xDDDDDDDD in CAT_Init */
+static uint16_t   s_tx_head = 0U;
+static uint16_t   s_tx_tail = 0U;
+
+/* Reentrancy guard — file-scope so CAT_Init can reset it and the debugger
+ * can watch it in Live Expressions.  Must always be 0 between Process calls.
+ * If it reads 1 while flrig is frozen, a hard fault or exception interrupted
+ * CAT_Process before the cleanup line executed. */
+volatile uint8_t  dbg_cat_in_process = 0U;
+
+/* CAT diagnostic counters — watch in Live Expressions.
+ *  cat_rx_bytes:      total bytes accepted into rx_buf from USB ISR
+ *  cat_tx_bytes:      total bytes written to CDC_Transmit_FS
+ *  cat_tx_fifo_drop:  characters silently lost when s_tx_fifo was full
+ *  cat_parse_calls:   CAT_Process invocations (should tick every ~10ms) */
+volatile uint32_t dbg_cat_rx_bytes         = 0U;
+volatile uint32_t dbg_cat_tx_bytes         = 0U;
+volatile uint32_t dbg_cat_fifo_drop        = 0U;
+volatile uint32_t dbg_cat_parse_calls      = 0U;
+/* Protocol-level diagnostics — watch in Live Expressions.
+ *  dbg_cat_unknown_cmds:     ?; responses sent (unknown opcode or bad format)
+ *  dbg_cat_partial_timeouts: partial commands discarded after 200ms idle
+ *  dbg_cat_max_cmd_len:      peak parser_len ever seen (overflow risk if → 127)
+ *  dbg_cat_parse_latency_us: last CAT_Process wall-time in µs (DWT-based)
+ *  dbg_cat_last_cmd[]:       last complete command received (no ';', NUL-term)
+ *  dbg_cat_last_resp[]:      last non-empty response enqueued */
+volatile uint32_t dbg_cat_unknown_cmds     = 0U;
+volatile uint32_t dbg_cat_partial_timeouts = 0U;
+volatile uint32_t dbg_cat_max_cmd_len      = 0U;
+volatile uint32_t dbg_cat_parse_latency_us = 0U;
+char              dbg_cat_last_cmd [CAT_BUF_SIZE]    = {0};
+char              dbg_cat_last_resp[CAT_TX_BUF_SIZE] = {0};
+/* Last raw command that produced ?; — watch to identify unknown/malformed frames */
+char              dbg_last_unknown_cmd[64]            = {0};
+
+/* ── Malformed-frame and blocked-update counters ─────────────────────────────
+ *
+ *  dbg_cat_malformed_frames: ?; sent because a KNOWN opcode had invalid
+ *    parameters (e.g. RA with wrong field count).
+ *    Distinct from dbg_cat_unknown_cmds (unrecognised opcode).
+ *    Non-zero = host is sending syntactically bad frames → check flrig profile.
+ *
+ *  dbg_cat_blocked_updates: a CAT SET arrived while the previous SET for the
+ *    same dirty flag had not yet been serviced by CSDR_Loop (i.e. two FA/MD/TX/
+ *    RA/RIT SETs within one 10 ms gate).
+ *    Occasional counts are normal during rapid VFO tuning.
+ *    Sustained high counts = polling loop faster than 10 ms CAT gate. */
+volatile uint32_t dbg_cat_malformed_frames = 0U;
+volatile uint32_t dbg_cat_blocked_updates  = 0U;
+
+/* Extended crash-forensics variables */
+char              dbg_last_malformed[64]  = {0}; /*!< known opcode, bad params → ?; */
+char              dbg_last_timeout[64]    = {0}; /*!< partial frame discarded by timer */
+char              dbg_last_opcode[3]      = {0};
+volatile uint8_t  dbg_last_status        = 0U;
+volatile uint8_t  dbg_last_cmd_len       = 0U;
+volatile uint8_t  dbg_last_resp_len      = 0U;
+volatile uint32_t dbg_resp_no_semi       = 0U;
+volatile uint32_t dbg_resp_nonprint      = 0U;
+
+/* Forensic ring buffer + per-opcode statistics */
+CAT_TxnRing_t  dbg_txn              = {0};
+CAT_OpStat_t   dbg_opc[COPI_COUNT]  = {0};
+
+/* Transmit-payload snapshot + null-drop counter */
+uint8_t           dbg_last_tx_raw[CAT_TX_RAW_SIZE] = {0};
+volatile uint8_t  dbg_last_tx_n                    = 0U;
+volatile uint32_t dbg_resp_null_drop               = 0U;
+
+/* Memory guards — bracket the transport-race counters.
+ * If dbg_guard_pre changes from 0xAAAAAAAA or dbg_guard_post changes from
+ * 0xBBBBBBBB, a buffer adjacent in memory has overflowed into this region.
+ * dbg_guard_status: 0=OK, 1=pre corrupted, 2=post corrupted, 3=both. */
+volatile uint32_t dbg_guard_pre     = 0U;  /* sentinel set in CAT_Init; 0U keeps it in .bss adjacent to transport counters */
+
+/* Transport-race diagnostics (flrig stress) --------------------------------
+ *  dbg_cdc_busy_skips:   FlushTX called while CDC IN transfer in progress;
+ *                        out[] NOT filled — safe retry next call.
+ *                        Non-zero = proof the IsBusy guard is firing.
+ *                        High value = flrig is polling faster than USB drains.
+ *  dbg_fifo_high_water:  Peak bytes held in s_tx_fifo simultaneously.
+ *                        Approaches 512 → fifo-drop risk under burst polling.
+ *  dbg_process_reenters: CAT_Process entered while already running.
+ *                        Non-zero = main-loop timing bug (should never fire). */
+volatile uint32_t dbg_cdc_busy_skips    = 0U;
+volatile uint32_t dbg_fifo_high_water   = 0U;
+volatile uint32_t dbg_process_reenters  = 0U;
+volatile uint32_t dbg_cat_pending_bytes = 0U;  /*!< live bytes waiting in TX FIFO      */
+volatile uint32_t dbg_cdc_stuck_timeout = 0U;  /*!< IsBusy stuck > 10ms — stall event  */
+
+volatile uint32_t dbg_guard_post        = 0U;  /* sentinel set in CAT_Init; 0U keeps it in .bss */
+volatile uint32_t dbg_guard_status      = 0U;
+volatile uint32_t dbg_guard_tripped_ms  = 0U;  /*!< HAL_GetTick() when guard_status first went non-zero */
+
+/* Live CAT traffic snapshot — updated at transport boundary.
+ *  dbg_last_cat_rx: last bytes received from host (before parser), NUL-term.
+ *  dbg_last_cat_tx: last string enqueued into TX FIFO, NUL-term.
+ *  dbg_rx_count / dbg_tx_count: monotonic counters for each side. */
+volatile char     dbg_last_cat_rx[64] = {0};
+volatile char     dbg_last_cat_tx[64] = {0};
+volatile uint32_t dbg_rx_count        = 0U;
+volatile uint32_t dbg_tx_count        = 0U;
+volatile uint32_t dbg_cat_rx_null_bytes = 0U;  /*!< NUL bytes filtered by parser — confirms CDC OUT padding source */
+
+/* Opcode enable mask — 0 = minimal safe subset, CAT_OPC_ALL = full handler set.
+ * Modify in Live Watch to re-enable handlers one by one during crash isolation. */
+volatile uint32_t dbg_cat_opc_mask = 0U;
+
+/* ── Transport serialization & pacing diagnostics ───────────────────────────
+ *
+ *  Problem identified: CAT_FlushTX drains up to 64 bytes per call.  When
+ *  CAT_Process handles multiple commands in one 10ms tick it enqueues multiple
+ *  responses; FlushTX then coalesces them into one USB bulk IN packet.  flrig
+ *  reads until ';' and leaves trailing frames in the OS serial buffer.  The
+ *  next command's response read returns the PREVIOUS leftover frame instead —
+ *  parser desynchronization that eventually freezes polling.
+ *
+ *  Fix: FlushTX now stops at the first ';' (one CAT frame per USB transfer).
+ *  Pacing: a configurable minimum gap prevents zero-latency back-to-back bursts.
+ *  AI push disable: prevents unsolicited IF frames from polluting the response stream.
+ *
+ *  dbg_cat_tx_min_gap_ms:  minimum ms between consecutive CDC IN packets (0=off).
+ *    Default 2ms — enough to separate consecutive responses without being slow.
+ *    Real TS-480 at 9600 baud sends a 14-char response in ~14ms.
+ *    Set to 0 to disable pacing and measure raw throughput.
+ *  dbg_pacing_skips:       FlushTX calls deferred by the pacing guard.
+ *    Data is NOT dropped — it stays in the FIFO and retries on the next tick.
+ *    Count growing steadily = pacing gap is too large for the polling rate.
+ *  dbg_frames_per_tx:      Number of ';' terminator chars in the LAST USB packet.
+ *    Target value after fix: exactly 1.  Any value >1 means the one-frame guard
+ *    failed (should never happen after the loop-break-at-semicolon change).
+ *  dbg_multi_frame_pkts:   Cumulative count of USB packets that contained >1 CAT frame.
+ *    Should be 0 after the fix.  Non-zero proves coalescing is still occurring.
+ *  dbg_cat_ai_push_disable: 1 = suppress AI unsolicited IF push regardless of ai_level.
+ *    Default 1 (disabled) so unsolicited frames cannot interleave with polling responses.
+ *    Set to 0 to re-enable AI push once strict serialization is confirmed stable. */
+volatile uint32_t dbg_cat_tx_min_gap_ms   = 2U;
+volatile uint32_t dbg_pacing_skips        = 0U;
+volatile uint32_t dbg_frames_per_tx       = 0U;
+volatile uint32_t dbg_multi_frame_pkts    = 0U;
+volatile uint8_t  dbg_cat_ai_push_disable = 1U;
+
+/* =========================================================
+ * FIFO lifecycle snapshot — updated after every enqueue and every flush.
+ * These four variables form a consistent snapshot of the last FIFO operation.
+ *
+ *  dbg_fifo_op:
+ *    'E' = cat_tx_enqueue just finished (head advanced)
+ *    'F' = CAT_FlushTX sent bytes (tail advanced)
+ *    'B' = CAT_FlushTX returned busy (tail unchanged, data still queued)
+ *    'X' = consistency error detected (head/tail OOB or depth impossible)
+ *
+ *  dbg_fifo_head_snap / dbg_fifo_tail_snap:
+ *    Value of s_tx_head / s_tx_tail at the moment of the snapshot.
+ *    Both must always be in [0, 511]. If either is 512+, that is a corruption event.
+ *
+ *  dbg_fifo_depth_snap:
+ *    Computed depth = (head - tail + 512) % 512 at snapshot time.
+ *    Must equal dbg_cat_pending_bytes at the same moment.
+ *    If depth == 0 but you expected data: head == tail means FIFO was already drained.
+ *
+ *  dbg_fifo_state_error:
+ *    Incremented whenever a consistency invariant is violated at snapshot time:
+ *      - head or tail >= CAT_TX_FIFO_SIZE
+ *      - computed depth != dbg_cat_pending_bytes (stale pending counter)
+ *      - depth > 511 (impossible for a 512-slot one-slot-sacrificed ring)
+ *
+ *  dbg_fifo_bytes_last_enq:
+ *    Bytes actually written in the most recent cat_tx_enqueue call.
+ *    Should equal strlen(enqueued string).  If less: FIFO was full, characters dropped.
+ *
+ *  dbg_fifo_bytes_last_flush:
+ *    Bytes sent to CDC_Transmit_FS in the most recent successful CAT_FlushTX.
+ *    Max 64 (one USB FS bulk packet).  If FIFO had more than 64 bytes,
+ *    the remainder stays and is sent on the next non-busy tick.
+ *
+ *  dbg_last_enqueue_ms / dbg_last_flush_ms:
+ *    HAL_GetTick() at last enqueue / last successful flush.
+ *    If (dbg_last_flush_ms - dbg_last_enqueue_ms) > 50, flush was
+ *    delayed many ticks after enqueue — investigate IsBusy or missed ticks.
+ *    If dbg_last_enqueue_ms stops advancing while dbg_cat_parse_calls keeps
+ *    going: parser is running but producing no responses — look at the last
+ *    dbg_txn entry for the command that caused flrig to stop sending.
+ * ========================================================= */
+volatile uint8_t  dbg_fifo_op               = 0U;
+volatile uint16_t dbg_fifo_head_snap        = 0U;
+volatile uint16_t dbg_fifo_tail_snap        = 0U;
+volatile uint16_t dbg_fifo_depth_snap       = 0U;
+volatile uint32_t dbg_fifo_state_error      = 0U;
+volatile uint16_t dbg_fifo_bytes_last_enq   = 0U;
+volatile uint16_t dbg_fifo_bytes_last_flush = 0U;
+volatile uint32_t dbg_last_enqueue_ms       = 0U;
+volatile uint32_t dbg_last_flush_ms         = 0U;
+
+/* Module-level parse status — set by cat_exec, read by CAT_Process */
+static volatile CAT_ParseStatus_t s_exec_status = CAT_PARSE_OK;
+
+/* FIFO consistency snapshot — called after every enqueue and every flush.
+ * Computes depth from head/tail, checks all invariants, writes results to
+ * the dbg_fifo_* variables for Live Expressions visibility.
+ * op: 'E'=enqueue, 'F'=flush sent, 'B'=flush busy-deferred, 'X'=error. */
+static void cat_fifo_snap(char op)
+{
+    uint16_t h = s_tx_head;
+    uint16_t t = s_tx_tail;
+    uint8_t  err = 0U;
+
+    if (h >= CAT_TX_FIFO_SIZE || t >= CAT_TX_FIFO_SIZE) {
+        err = 1U;
+    }
+
+    uint16_t depth = (h >= t) ? (h - t)
+                               : (CAT_TX_FIFO_SIZE - t + h);
+
+    /* depth must be 0..511 for a 512-slot ring sacrificing one slot */
+    if (depth >= CAT_TX_FIFO_SIZE) {
+        err = 1U;
+    }
+
+    /* pending_bytes must match what we just computed */
+    if (!err && (uint32_t)depth != dbg_cat_pending_bytes) {
+        dbg_fifo_state_error++;   /* stale pending counter — bookkeeping diverged */
+        /* Correct it immediately so the next check doesn't cascade */
+        dbg_cat_pending_bytes = depth;
+    }
+
+    if (err) {
+        dbg_fifo_state_error++;
+        dbg_fifo_op = (uint8_t)'X';
+    } else {
+        dbg_fifo_op = (uint8_t)op;
+    }
+
+    dbg_fifo_head_snap  = h;
+    dbg_fifo_tail_snap  = t;
+    dbg_fifo_depth_snap = depth;
+}
 
 static void cat_tx_enqueue(const char *s)
 {
-    while (s && *s) {
+    if (!s || !*s) return;
+
+    /* Sanity: head/tail must be in [0, CAT_TX_FIFO_SIZE-1].
+     * If either is out of range (memory corruption), reset the FIFO rather
+     * than writing OOB on the next s_tx_fifo[s_tx_head] store. */
+    if (s_tx_head >= CAT_TX_FIFO_SIZE || s_tx_tail >= CAT_TX_FIFO_SIZE) {
+        s_tx_head = s_tx_tail = 0U;
+        dbg_cat_fifo_drop++;
+        return;
+    }
+
+    /* Capture the response string before it enters the FIFO so it is visible
+     * in the debugger even if the FIFO drains before the debugger pauses. */
+    {
+        const char *src = s;
+        uint8_t cap = 0U;
+        while (*src && cap < (uint8_t)(sizeof(dbg_last_cat_tx) - 1U)) {
+            ((char *)dbg_last_cat_tx)[cap++] = *src++;
+        }
+        ((char *)dbg_last_cat_tx)[cap] = '\0';
+        dbg_tx_count++;
+    }
+
+    uint16_t head_before  = s_tx_head;
+    uint16_t bytes_added  = 0U;
+
+    while (*s) {
         uint16_t next = (uint16_t)((s_tx_head + 1U) % CAT_TX_FIFO_SIZE);
-        if (next == s_tx_tail) break;
+        if (next == s_tx_tail) {
+            dbg_cat_fifo_drop++;   /* FIFO full — character dropped */
+            break;
+        }
         s_tx_fifo[s_tx_head] = *s++;
         s_tx_head = next;
+        bytes_added++;
     }
+
+    /* Cross-check: head must have advanced by exactly bytes_added (mod 512).
+     * Any deviation means the write loop left head in a corrupt state. */
+    {
+        uint16_t expected = (uint16_t)((head_before + bytes_added) % CAT_TX_FIFO_SIZE);
+        if (s_tx_head != expected) {
+            dbg_fifo_state_error++;
+        }
+    }
+
+    dbg_fifo_bytes_last_enq = bytes_added;
+    dbg_last_enqueue_ms     = cat_now_ms();
+
+    /* Track live depth and peak fill — wrap-safe subtraction */
+    uint16_t depth = (s_tx_head >= s_tx_tail)
+                   ? (s_tx_head - s_tx_tail)
+                   : (CAT_TX_FIFO_SIZE - s_tx_tail + s_tx_head);
+    dbg_cat_pending_bytes = depth;
+    if ((uint32_t)depth > dbg_fifo_high_water) dbg_fifo_high_water = depth;
+
+    cat_fifo_snap('E');
 }
 
 void CAT_SendResponse(const char *resp)
@@ -128,25 +431,231 @@ void CAT_SendResponse(const char *resp)
     cat_tx_enqueue(resp);
 }
 
+/* =========================================================
+ * Forensic helpers
+ * ========================================================= */
+
+static uint8_t cat_opc_idx(const char *cmd)
+{
+    if (cmd[0]=='I'&&cmd[1]=='F') return COPI_IF;
+    if (cmd[0]=='F'&&cmd[1]=='A') return COPI_FA;
+    if (cmd[0]=='F'&&cmd[1]=='B') return COPI_FB;
+    if (cmd[0]=='M'&&cmd[1]=='D') return COPI_MD;
+    if (cmd[0]=='A'&&cmd[1]=='I') return COPI_AI;
+    if (cmd[0]=='I'&&cmd[1]=='D') return COPI_ID;
+    if (cmd[0]=='T'&&cmd[1]=='X') return COPI_TX;
+    if (cmd[0]=='R'&&cmd[1]=='X') return COPI_RX;
+    if (cmd[0]=='P'&&cmd[1]=='S') return COPI_PS;
+    if (cmd[0]=='U'&&cmd[1]=='P') return COPI_UP;
+    if (cmd[0]=='D'&&cmd[1]=='N') return COPI_DN;
+    if (cmd[0]=='A'&&cmd[1]=='G') return COPI_AG;
+    if (cmd[0]=='S'&&cmd[1]=='Q') return COPI_SQ;
+    return COPI_COUNT;
+}
+
+static void cat_validate_resp(const char *resp)
+{
+    uint8_t n = 0U;
+    while (resp[n] && n < CAT_TXN_RESP_MAX) {
+        uint8_t ch = (uint8_t)resp[n];
+        if (ch < 0x20U || ch > 0x7EU) dbg_resp_nonprint++;
+        n++;
+    }
+    if (n == 0U || resp[n - 1U] != ';') dbg_resp_no_semi++;
+}
+
+static void cat_mark_malformed(const char *cmd)
+{
+    size_t n = strlen(cmd);
+    if (n >= sizeof(dbg_last_malformed)) n = sizeof(dbg_last_malformed) - 1U;
+    memcpy(dbg_last_malformed, cmd, n);
+    memset(dbg_last_malformed + n, 0, sizeof(dbg_last_malformed) - n);
+    s_exec_status = CAT_PARSE_ERROR;
+}
+
+/* Returns true if the response string is safe to enqueue:
+ *   - at least one printable ASCII character before ';'
+ *   - no embedded NUL before the semicolon terminator
+ *   - all payload bytes in printable ASCII range (0x20-0x7E or ';')
+ * A false return increments dbg_resp_null_drop and suppresses the TX. */
+static bool cat_resp_guard(const char *resp)
+{
+    uint8_t i = 0U;
+    while (i < (uint8_t)CAT_TX_BUF_SIZE) {
+        uint8_t ch = (uint8_t)resp[i];
+        if (ch == (uint8_t)';') { return true; }       /* well-formed — accept */
+        if (ch == 0U || ch < 0x20U || ch > 0x7EU) {   /* NUL or non-printable — reject */
+            dbg_resp_null_drop++;
+            return false;
+        }
+        i++;
+    }
+    dbg_resp_null_drop++;  /* no ';' found within buffer */
+    return false;
+}
+
+static void cat_txn_record(const char *cmd, const char *resp,
+                           CAT_ParseStatus_t st, uint32_t ms)
+{
+    CAT_Txn_t *e = &dbg_txn.entries[dbg_txn.next];
+
+    e->ms      = ms;
+    e->status  = st;
+    e->is_set  = (cmd[2] != '\0') ? 1U : 0U;
+    e->opcode[0] = cmd[0]; e->opcode[1] = cmd[1]; e->opcode[2] = '\0';
+    e->cmd_len   = (uint8_t)strlen(cmd);
+    e->resp_len  = (uint8_t)strlen(resp);
+
+    {
+        uint8_t cl = (e->cmd_len  < CAT_TXN_CMD_MAX  - 1U) ? e->cmd_len  : CAT_TXN_CMD_MAX  - 1U;
+        uint8_t rl = (e->resp_len < CAT_TXN_RESP_MAX - 1U) ? e->resp_len : CAT_TXN_RESP_MAX - 1U;
+        /* Zero entire fixed-size fields first: without this, bytes beyond rl/cl retain
+         * data from the previous use of this ring slot, producing apparent null-prefixed
+         * strings like "\0L00;" in the debugger when a NORESP entry reuses an old slot. */
+        memset(e->cmd,      0, sizeof(e->cmd));
+        memset(e->resp,     0, sizeof(e->resp));
+        memset(e->resp_raw, 0, sizeof(e->resp_raw));
+        memcpy(e->cmd,  cmd,  cl); e->cmd [cl] = '\0';
+        memcpy(e->resp, resp, rl); e->resp[rl] = '\0';
+        /* resp_raw: same bytes typed as uint8_t — visible as hex in debugger watch */
+        memcpy(e->resp_raw, e->resp, sizeof(e->resp_raw));
+    }
+
+    dbg_txn.next = (uint8_t)((dbg_txn.next + 1U) % CAT_TXN_RING_SIZE);
+    if (dbg_txn.count < 255U) dbg_txn.count++;
+
+    /* Flat forensics */
+    dbg_last_opcode[0] = cmd[0]; dbg_last_opcode[1] = cmd[1]; dbg_last_opcode[2] = '\0';
+    dbg_last_status    = (uint8_t)st;
+    dbg_last_cmd_len   = e->cmd_len;
+    dbg_last_resp_len  = e->resp_len;
+
+    /* Opcode statistics */
+    uint8_t oi = cat_opc_idx(cmd);
+    if (oi < (uint8_t)COPI_COUNT) {
+        dbg_opc[oi].rx++;
+        if (st == CAT_PARSE_OK || st == CAT_PARSE_NORESP) dbg_opc[oi].ok++;
+        else                                               dbg_opc[oi].err++;
+    }
+}
+
 void CAT_FlushTX(CAT_Handle_t *cat)
 {
     (void)cat;
+
+    /* Check ALL memory guards on every flush (runs every main-loop tick ≈1 ms).
+     * Bits: transport-counter guards in [1:0], FIFO bracket guards in [3:2]. */
+    {
+        uint32_t st = 0U;
+        if (dbg_guard_pre       != 0xAAAAAAAAU) st |= 1U;
+        if (dbg_guard_post      != 0xBBBBBBBBU) st |= 2U;
+        if (dbg_fifo_guard_pre  != 0xCCCCCCCCU) st |= 4U;
+        if (dbg_fifo_guard_post != 0xDDDDDDDDU) st |= 8U;
+        if (st != 0U && dbg_guard_status == 0U) {
+            /* First detection — latch the timestamp so we know WHEN it happened */
+            dbg_guard_tripped_ms = cat_now_ms();
+        }
+        dbg_guard_status = st;
+    }
+
+    /* If head/tail were corrupted, reset FIFO and bail — transmitting with
+     * invalid indices would write OOB on the next enqueue. */
+    if (s_tx_head >= CAT_TX_FIFO_SIZE || s_tx_tail >= CAT_TX_FIFO_SIZE) {
+        s_tx_head = s_tx_tail = 0U;
+        return;
+    }
+
     if (s_tx_head == s_tx_tail) return;
 
-    uint8_t  out[64];
+    /* Guard: do NOT start a new transfer while the USB TXFE ISR still holds a
+     * reference to out[] from the previous one.  In OTG FIFO mode, EPStartXfer
+     * stores the out[] pointer and the TXFE ISR reads it after EPStartXfer
+     * returns.  Overwriting out[] before that ISR fires would corrupt the
+     * in-flight packet.  This fires legitimately when the FIFO holds more than
+     * 64 bytes (multi-packet burst): first call starts the transfer, subsequent
+     * calls defer until DataIn clears the flag (≤1 ms on FS USB).
+     * Stuck-busy detection: a FS bulk IN transfer must complete in ≤2 ms.
+     * If IsBusy persists for > 10 ms, the endpoint has stalled (DataIn will
+     * never fire).  Record it so the debugger can see the deadlock. */
+    static uint32_t s_busy_since_ms = 0U;
+    if (Composite_CDC_IsBusy()) {
+        uint32_t now_ms = cat_now_ms();
+        if (s_busy_since_ms == 0U) s_busy_since_ms = now_ms;
+        if ((now_ms - s_busy_since_ms) > 10U) dbg_cdc_stuck_timeout++;
+        dbg_cdc_busy_skips++;
+        cat_fifo_snap('B');   /* snapshot: data still in FIFO, deferred */
+        return;
+    }
+    s_busy_since_ms = 0U;   /* clear on every successful not-busy check */
+
+    /* Pacing: enforce minimum inter-frame gap to emulate TS-480 UART cadence.
+     * Real TS-480 at 9600 baud: a 14-char "FA00007100000;" takes ~14ms.
+     * dbg_cat_tx_min_gap_ms=2 is conservative — prevents zero-gap bursts without
+     * slowing normal polling.  dbg_last_flush_ms is maintained below and is 0
+     * on first call (guarantees the first packet goes through without delay). */
+    if (dbg_cat_tx_min_gap_ms > 0U) {
+        uint32_t now_p = cat_now_ms();
+        if ((now_p - dbg_last_flush_ms) < dbg_cat_tx_min_gap_ms) {
+            dbg_pacing_skips++;
+            cat_fifo_snap('B');
+            return;
+        }
+    }
+
+    /* Static: keeps out[] alive until the TXFE ISR copies it to the USB FIFO.
+     * A stack-local buffer would be freed before the ISR fires. */
+    static uint8_t out[64];
     uint16_t n    = 0U;
     uint16_t tail = s_tx_tail;   /* work with a local copy — don't commit yet */
 
+    /* One-frame-per-USB-transfer: drain exactly up to and including the first ';'.
+     * Root cause of flrig freeze: when multiple CAT responses are coalesced into
+     * one USB bulk IN packet, flrig reads until ';' for the first response and
+     * leaves trailing frames in the OS serial buffer.  The next command-response
+     * read picks up the stale leftover instead of the new response → desync.
+     * Breaking at ';' guarantees each USB packet contains exactly one CAT frame,
+     * matching the per-frame isolation that real UART cadence provides naturally. */
     while (tail != s_tx_head && n < sizeof(out)) {
-        out[n++] = (uint8_t)s_tx_fifo[tail];
+        char ch = s_tx_fifo[tail];
+        out[n++] = (uint8_t)ch;
         tail = (uint16_t)((tail + 1U) % CAT_TX_FIFO_SIZE);
+        if (ch == ';') break;   /* one CAT frame per USB transfer */
     }
 
     /* Only advance the real tail when CDC actually accepts the transfer.
      * On USBD_BUSY the data stays in the FIFO and is retried next call. */
     if (CDC_Transmit_FS(out, n) == 0U) {  /* 0 = USBD_OK */
         s_tx_tail = tail;
+        dbg_cat_tx_bytes += n;
+        /* Update live pending depth after drain. */
+        dbg_cat_pending_bytes = (s_tx_head >= s_tx_tail)
+                              ? (s_tx_head - s_tx_tail)
+                              : (CAT_TX_FIFO_SIZE - s_tx_tail + s_tx_head);
+        /* Snapshot exact transmitted bytes for debugger Memory window. */
+        dbg_last_tx_n = (uint8_t)((n < (uint16_t)CAT_TX_RAW_SIZE) ? n : (uint16_t)CAT_TX_RAW_SIZE);
+        memcpy(dbg_last_tx_raw, out, dbg_last_tx_n);
+        dbg_fifo_bytes_last_flush = n;
+        dbg_last_flush_ms         = cat_now_ms();
+
+        /* Per-packet frame validation: count ';' terminators in the transmitted bytes.
+         * After the one-frame-per-transfer fix, dbg_frames_per_tx must always be 1.
+         * dbg_multi_frame_pkts non-zero after this point = the break-at-semicolon
+         * guard failed or a response without ';' was sent (see dbg_resp_null_drop). */
+        {
+            uint32_t fc = 0U;
+            for (uint16_t fi = 0U; fi < n; fi++) {
+                if (out[fi] == (uint8_t)';') fc++;
+            }
+            dbg_frames_per_tx = fc;
+            if (fc > 1U) dbg_multi_frame_pkts++;
+        }
+
+        cat_fifo_snap('F');   /* snapshot: tail advanced, data sent */
     }
+    /* If CDC_Transmit_FS returned non-zero (BUSY returned unexpectedly after
+     * IsBusy() said false), data stays in FIFO and tail is NOT advanced.
+     * No separate counter needed — dbg_fifo_op stays 'F' from the last
+     * successful send and the FIFO depth won't change. */
 }
 
 /* =========================================================
@@ -156,11 +665,23 @@ void CAT_Receive(CAT_Handle_t *cat, const uint8_t *data, uint16_t len)
 {
     if (!cat) return;
 
+    /* Capture raw RX bytes for debugger visibility before they enter the parser. */
+    if (len > 0U) {
+        uint16_t cap = (len < (uint16_t)(sizeof(dbg_last_cat_rx) - 1U))
+                     ? len : (uint16_t)(sizeof(dbg_last_cat_rx) - 1U);
+        memcpy((char *)dbg_last_cat_rx, data, cap);
+        ((char *)dbg_last_cat_rx)[cap] = '\0';
+        dbg_rx_count++;
+    }
+
     for (uint16_t i = 0U; i < len; i++) {
         if (cat->rx_len < (CAT_BUF_SIZE - 1U)) {
             cat->rx_buf[cat->rx_len++] = (char)data[i];
+            dbg_cat_rx_bytes++;
         }
     }
+    /* Timestamp last byte for partial-command timeout in CAT_Process */
+    if (len > 0U) cat->parser_last_rx_tick = cat_now_ms();
 }
 
 /* =========================================================
@@ -191,58 +712,131 @@ void CAT_Init(CAT_Handle_t *cat, const CAT_Callbacks_t *cb)
     cat->split_on   = false;
 
     cat->initialized = true;
-    cat->rx_len = 0U;
+    cat->rx_len      = 0U;
+    /* parser_cmd, parser_len, parser_last_rx_tick zeroed by memset above */
 
+    memset(s_tx_fifo, 0, sizeof(s_tx_fifo));
     s_tx_head = s_tx_tail = 0U;
     s_tx_ready_ms = 0U;
+    dbg_fifo_high_water    = 0U;
+    dbg_cat_pending_bytes  = 0U;
+    dbg_cdc_busy_skips     = 0U;
+    dbg_cdc_stuck_timeout  = 0U;
+    /* Transport-counter guards */
+    dbg_guard_pre          = 0xAAAAAAAAU;
+    dbg_guard_post         = 0xBBBBBBBBU;
+    dbg_guard_status       = 0U;
+    dbg_guard_tripped_ms   = 0U;
+    /* FIFO bracket guards */
+    dbg_fifo_guard_pre     = 0xCCCCCCCCU;
+    dbg_fifo_guard_post    = 0xDDDDDDDDU;
+    /* Reentrancy flag — reset so a fault mid-Process doesn't permanently
+     * lock out future calls after a USB reconnect or watchdog reset */
+    dbg_cat_in_process     = 0U;
+    /* Pacing + frame-validation counters — reset per session */
+    dbg_pacing_skips       = 0U;
+    dbg_frames_per_tx      = 0U;
+    dbg_multi_frame_pkts   = 0U;
+    dbg_last_flush_ms      = 0U;
+
+    /* Enable DWT cycle counter for parse-latency measurement.
+     * Writing DEMCR/CTRL is safe even without a debugger attached —
+     * the write is ignored on production silicon if the debug domain
+     * is not powered, and CYCCNT reads 0 in that case. */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL        |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
 /* =========================================================
- * IF builder — mcHF / TS-2000 standard
- * priv->info[] (0-based from content after "IF"):
- *  [0..10]  P1  freq (11)      [11..15] P2  step "     " (5 spaces, VFO mode)
- *  [16]     P3  '+' (sign)     [17..20] P4  "0000" (RIT, always zero)
- *  [21]     P5  '0' (RIT off)  [22]     P6  '0' (XIT off)
- *  [23..25] P7  mem "000" (3)  [26]     P8  TX
- *  [27]     P9  mode           [28]     P10 VFO ← hamlib kenwood_get_vfo_if
- *  [29]     P11 '0' scan       [30]     P12 split ← hamlib reads split here
- *  [31]     P13 '0' tone       [32..33] P14 "00" CTCSS
- *  [34]     ';'
- * Total: "IF"(2) + 34 payload + ";"(1) = 37 chars
+ * IF builder — TS-480 exact format (ID020), 38 chars + ';'
+ *
+ * Field audit — REAL fields are driven from live SDR state.
+ *               FROZEN fields are compile-time constants safe for any host.
+ *               NEVER change a FROZEN field to a dynamic value unless the
+ *               underlying hardware is actually present and tested.
+ *
+ *  Byte  Field  Status   Source / notes
+ *  ────  ─────  ───────  ─────────────────────────────────────────────────
+ *  0-1   "IF"   literal
+ *  2-12  P1     REAL     get_freq() / get_vfo_b_freq() — active VFO Hz
+ *  13-17 P2     FROZEN   "00000"  — tuning step not exposed in IF
+ *  18    P3     REAL     get_rit_hz() sign (+/−)
+ *  19-22 P4     REAL     get_rit_hz() magnitude (Hz); 0 when RIT off
+ *  23    P5     REAL     cat->rit_on ('0'/'1')
+ *  24    P6     FROZEN   '0' — XIT not supported
+ *  25-27 P7     FROZEN   "000" — no channel memory
+ *  28    P8     REAL     get_tx() — '1' in TX, '0' in RX
+ *  29    P9     REAL     CAT mode code (1=LSB 2=USB 3=CW 4=FM 5=AM)
+ *  30    P10    REAL     cat->active_vfo ('0'=A '1'=B)
+ *  31    P11    FROZEN   '0' — scan not supported
+ *  32    P12    REAL     cat->split_on ('0'/'1')
+ *  33    P13    FROZEN   '0' — CTCSS/tone not supported
+ *  34-35 P14    FROZEN   "00" — CTCSS code not supported
+ *  36    P15    FROZEN   '0' — TS-480 IF-shift extension, always off
+ *  37    ';'
+ *
+ * Total: 38 chars (TS-480). TS-2000 is 37 (no P15, ID021).
+ * hamlib cross-check: TX@28, mode@29, VFO@30, split@32.
+ *
+ * CAT_DBG_HARDCODE_IF — set to 1 to inject a fixed known-good TS-480
+ * reference packet and confirm flrig parses IF correctly before testing
+ * dynamic values. Expected string: IF0000710000000000+000000000020000000;
+ * (7.100 MHz, USB, VFO A, RX, no split, 38 chars)
  * ========================================================= */
+#define CAT_DBG_HARDCODE_IF  0   /* set 1 to inject static TS-480 IF test packet */
+
 void CAT_BuildIF(CAT_Handle_t *cat, char *buf)
 {
+#if CAT_DBG_HARDCODE_IF
+    /* Fixed TS-480 reference: 7.100 MHz, USB, VFO A, RX, no split — 38 chars
+     * IF[00007100000][00000][+][0000][0][0][000][0][2][0][0][0][0][00][0]; */
+    const char *ref = "IF0000710000000000+000000000020000000;";
+    const char *s = ref;
+    char *d = buf;
+    while (*s) *d++ = *s++;
+    *d = '\0';
+    return;
+#endif
+
     char *p = buf;
 
+    /* P1 REAL — active VFO frequency */
     uint32_t f = (cat->active_vfo == 1U)
                ? (cat->cb.get_vfo_b_freq ? cat->cb.get_vfo_b_freq() : cat->vfo_b_freq)
                : (cat->cb.get_freq       ? cat->cb.get_freq()        : 7100000UL);
 
+    /* P9 REAL — active VFO mode */
     uint8_t mode = (cat->active_vfo == 1U)
                  ? (cat->cb.get_vfo_b_mode
                     ? CAT_SDRModeToCat(cat->cb.get_vfo_b_mode())
                     : cat->vfo_b_mode)
                  : (cat->cb.get_mode ? CAT_SDRModeToCat(cat->cb.get_mode()) : CAT_MODE_USB);
 
+    /* P8 REAL — TX state */
     bool tx = cat->cb.get_tx ? cat->cb.get_tx() : false;
 
     *p++ = 'I'; *p++ = 'F';
 
-    p = cat_put_u32(p, f, 11U);                           /* [0..10]  P1  freq */
-    *p++ = ' '; *p++ = ' '; *p++ = ' '; *p++ = ' '; *p++ = ' '; /* [11..15] P2  step (VFO mode) */
-    *p++ = '+';                                           /* [16]     P3  sign */
-    *p++ = '0'; *p++ = '0'; *p++ = '0'; *p++ = '0';     /* [17..20] P4  RIT = 0000 */
-    *p++ = '0';                                           /* [21]     P5  RIT off */
-    *p++ = '0';                                           /* [22]     P6  XIT off */
-    *p++ = '0'; *p++ = '0'; *p++ = '0';                  /* [23..25] P7  mem */
-    *p++ = tx ? '1' : '0';                               /* [26]     P8  TX */
-    *p++ = (char)('0' + mode);                           /* [27]     P9  mode */
-    *p++ = cat_vfo_digit(cat->active_vfo);               /* [28]     P10 VFO ← hamlib */
-    *p++ = '0';                                          /* [29]     P11 scan */
-    *p++ = cat->split_on ? '1' : '0';                   /* [30]     P12 split */
-    *p++ = '0';                                          /* [31]     P13 tone */
-    *p++ = '0'; *p++ = '0';                             /* [32..33] P14 CTCSS */
-    *p++ = '0';                                          /* [34]     P15 shift (TS-480) */
+    p = cat_put_u32(p, f, 11U);                                  /* [2-12]  P1  REAL  freq Hz, 11 digits */
+    *p++ = '0'; *p++ = '0'; *p++ = '0'; *p++ = '0'; *p++ = '0'; /* [13-17] P2  FROZEN "00000" step */
+    {
+        int32_t  rv  = cat->cb.get_rit_hz ? cat->cb.get_rit_hz() : 0;
+        bool     rp  = (rv >= 0);
+        uint32_t rmg = (uint32_t)(rp ? rv : -rv);
+        *p++ = rp ? '+' : '-';                                   /* [18]    P3  REAL  RIT sign */
+        p = cat_put_u32(p, rmg, 4U);                            /* [19-22] P4  REAL  RIT Hz (0 when RIT off) */
+        *p++ = cat->rit_on ? '1' : '0';                         /* [23]    P5  REAL  RIT on/off */
+        *p++ = '0';                                              /* [24]    P6  FROZEN XIT off */
+    }
+    *p++ = '0'; *p++ = '0'; *p++ = '0';                         /* [25-27] P7  FROZEN "000" no memory */
+    *p++ = tx ? '1' : '0';                                      /* [28]    P8  REAL  TX state */
+    *p++ = (char)('0' + mode);                                   /* [29]    P9  REAL  mode code */
+    *p++ = cat_vfo_digit(cat->active_vfo);                       /* [30]    P10 REAL  active VFO */
+    *p++ = '0';                                                  /* [31]    P11 FROZEN no scan */
+    *p++ = cat->split_on ? '1' : '0';                           /* [32]    P12 REAL  split */
+    *p++ = '0';                                                  /* [33]    P13 FROZEN no tone */
+    *p++ = '0'; *p++ = '0';                                     /* [34-35] P14 FROZEN no CTCSS */
+    *p++ = '0';                                                  /* [36]    P15 FROZEN TS-480 shift ext */
     *p++ = ';';
     *p   = '\0';
 }
@@ -266,7 +860,12 @@ static void cat_build_FA(CAT_Handle_t *cat, char *buf)
 static void cat_build_FB(CAT_Handle_t *cat, char *buf)
 {
     char *p = buf;
-    uint32_t f = cat->cb.get_vfo_b_freq ? cat->cb.get_vfo_b_freq() : cat->vfo_b_freq;
+    /* FA = active VFO (freq_hz), FB = inactive VFO (vfo_b.freq_hz) per storage model.
+     * When active_vfo==1, active slot IS VFO B, so FB returns freq (get_freq),
+     * not vfo_b (which would be VFO A after a swap). */
+    uint32_t f = (cat->active_vfo == 1U)
+               ? (cat->cb.get_freq       ? cat->cb.get_freq()       : 7100000UL)
+               : (cat->cb.get_vfo_b_freq ? cat->cb.get_vfo_b_freq() : cat->vfo_b_freq);
     *p++ = 'F'; *p++ = 'B';
     p = cat_put_u32(p, f, 11U);
     *p++ = ';';
@@ -288,101 +887,14 @@ static void cat_build_MD(CAT_Handle_t *cat, char *buf)
     *p = '\0';
 }
 
-/* 0-255 raw ↔ 0-100 percent, bidirectional */
-static uint8_t cat_to_pct(uint8_t raw)
-{
-    return (uint8_t)(((uint32_t)raw * 100U + 127U) / 255U);
-}
-
-static uint8_t cat_from_pct(uint32_t pct)
-{
-    if (pct >= 100U) return 255U;
-    return (uint8_t)(pct * 255U / 100U);
-}
-
-static void cat_build_AG(CAT_Handle_t *cat, char *buf)
-{
-    char *p = buf;
-    uint8_t v = cat->cb.get_volume ? cat->cb.get_volume() : 50U; /* internal 0-100 */
-    *p++ = 'A'; *p++ = 'G'; *p++ = '0';
-    p = cat_put_u32(p, cat_from_pct(v), 3U); /* internal→CAT 0-255 */
-    *p++ = ';';
-    *p = '\0';
-}
-
-static void cat_build_NR(CAT_Handle_t *cat, char *buf)
-{
-    char *p = buf;
-    bool on = cat->cb.get_nr ? cat->cb.get_nr() : false;
-    *p++ = 'N'; *p++ = 'R'; *p++ = on ? '1' : '0'; *p++ = ';'; *p = '\0';
-}
-
-static void cat_build_NB(CAT_Handle_t *cat, char *buf)
-{
-    char *p = buf;
-    bool on = cat->cb.get_nb ? cat->cb.get_nb() : false;
-    *p++ = 'N'; *p++ = 'B'; *p++ = on ? '1' : '0'; *p++ = ';'; *p = '\0';
-}
-
-static void cat_build_FW(CAT_Handle_t *cat, char *buf)
-{
-    char *p = buf;
-    uint32_t bw = (cat->active_vfo == 1U)
-                ? (cat->cb.get_vfo_b_bw ? cat->cb.get_vfo_b_bw() : cat->vfo_b_bw)
-                : (cat->cb.get_bw       ? cat->cb.get_bw()        : 3000U);
-    *p++ = 'F'; *p++ = 'W';
-    p = cat_put_u32(p, bw, 4U);
-    *p++ = ';';
-    *p = '\0';
-}
-
-/* TS-480 SH high-cut table: index 00-11 → Hz */
-static const uint32_t s_sh_tbl[12] = {
-    1000U, 1200U, 1400U, 1600U, 1800U, 2000U,
-    2200U, 2400U, 2600U, 2800U, 3000U, 3400U
-};
-
-static uint8_t cat_bw_to_sh(uint32_t bw)
-{
-    for (uint8_t i = 0U; i < 11U; i++) {
-        if (bw <= s_sh_tbl[i]) return i;
-    }
-    return 11U;
-}
-
-static void cat_build_SH(CAT_Handle_t *cat, char *buf)
-{
-    char *p = buf;
-    uint32_t bw = (cat->active_vfo == 1U)
-                ? (cat->cb.get_vfo_b_bw ? cat->cb.get_vfo_b_bw() : cat->vfo_b_bw)
-                : (cat->cb.get_bw       ? cat->cb.get_bw()        : 3000U);
-    uint8_t idx = cat_bw_to_sh(bw);
-    *p++ = 'S'; *p++ = 'H';
-    *p++ = (char)('0' + (idx / 10U));
-    *p++ = (char)('0' + (idx % 10U));
-    *p++ = ';';
-    *p = '\0';
-}
-
-static void cat_build_SL(char *buf)
-{
-    buf[0] = 'S'; buf[1] = 'L'; buf[2] = '0'; buf[3] = '0'; buf[4] = ';'; buf[5] = '\0';
-}
-
-static void cat_build_SQ(CAT_Handle_t *cat, char *buf)
-{
-    char *p = buf;
-    uint8_t sq = cat->cb.get_squelch ? cat->cb.get_squelch() : 0U; /* internal 0-100 */
-    *p++ = 'S'; *p++ = 'Q'; *p++ = '0';
-    p = cat_put_u32(p, cat_from_pct(sq), 3U); /* internal→CAT 0-255 */
-    *p++ = ';';
-    *p = '\0';
-}
+/* AG/NR/NB/FW/SH/SL/SQ builders removed — those handlers are now fixed stubs.
+ * cat_build_SM kept: SM is in the minimal set and reads live signal level. */
 
 static void cat_build_SM(CAT_Handle_t *cat, char *buf)
 {
     char *p = buf;
     float db = cat->cb.get_signal_db ? cat->cb.get_signal_db() : -80.0f;
+    if (db != db || db < -120.0f || db > 60.0f) db = -80.0f; /* NaN/inf/out-of-range guard */
     int32_t su = (int32_t)((db + 73.0f) / 2.0f);
     if (su < 0) su = 0;
     if (su > 30) su = 30;
@@ -393,10 +905,6 @@ static void cat_build_SM(CAT_Handle_t *cat, char *buf)
     *p = '\0';
 }
 
-static void cat_build_BC(char *buf)
-{
-    buf[0] = 'B'; buf[1] = 'C'; buf[2] = '0'; buf[3] = ';'; buf[4] = '\0';
-}
 
 static void cat_build_VS(CAT_Handle_t *cat, char *buf)
 {
@@ -422,7 +930,8 @@ static void cat_build_DC(CAT_Handle_t *cat, char *buf)
  * ========================================================= */
 static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
 {
-    resp[0] = '\0';
+    resp[0]       = '\0';
+    s_exec_status = CAT_PARSE_ERROR; /* default for any ?; path in a known handler */
 
     /* FA — GET returns active VFO freq; SET is ACK-only, never touches active_vfo */
     if (cmd[0] == 'F' && cmd[1] == 'A') {
@@ -446,8 +955,14 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
             cat_build_FB(cat, resp);
         } else {
             uint32_t f = cat_parse_u(&cmd[2], 11U);
-            cat->vfo_b_freq = f;
-            if (cat->cb.set_vfo_b_freq) cat->cb.set_vfo_b_freq(f);
+            if (cat->active_vfo == 1U) {
+                /* VFO B = active slot (freq_hz) — defer LO retune via set_freq */
+                if (cat->cb.set_freq) cat->cb.set_freq(f);
+            } else {
+                /* VFO B = inactive slot (vfo_b.freq_hz) */
+                cat->vfo_b_freq = f;
+                if (cat->cb.set_vfo_b_freq) cat->cb.set_vfo_b_freq(f);
+            }
             /* ACK-only: no response */
         }
     }
@@ -464,7 +979,7 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
             } else if (cat->cb.set_mode) {
                 cat->cb.set_mode(CAT_CatModeToSDR(m));
             }
-            cat_build_MD(cat, resp);
+            /* ACK-only: TS-480 spec; Hamlib kenwood_transaction(NULL,0) does not read */
         }
     }
 
@@ -496,106 +1011,62 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         cat_copy(resp, "ID020;");
     }
 
-    /* AI */
+    /* AI — SET is ACK-only: Hamlib calls kenwood_transaction("AI0", NULL, 0).
+     * Echoing "AI0;" here would corrupt the next command's response buffer. */
     else if (cmd[0] == 'A' && cmd[1] == 'I') {
         if (cmd[2] != '\0') {
             uint8_t lv = (uint8_t)(cmd[2] - '0');
             cat->ai_level = (lv <= 2U) ? lv : 0U;
+            /* ACK-only: no response */
+        } else {
+            resp[0] = 'A'; resp[1] = 'I'; resp[2] = (char)('0' + cat->ai_level); resp[3] = ';'; resp[4] = '\0';
         }
-        resp[0] = 'A'; resp[1] = 'I'; resp[2] = (char)('0' + cat->ai_level); resp[3] = ';'; resp[4] = '\0';
     }
 
-    /* AG — 0-100% ↔ 0-255 internal */
+    /* AG — stub: volume control not in minimal CAT set */
     else if (cmd[0] == 'A' && cmd[1] == 'G') {
-        if (cmd[2] == '\0' || cmd[3] == '\0') {
-            /* GET: AG; or AG0; */
-            cat_build_AG(cat, resp);
-        } else if (cmd[2] == '0') {
-            /* SET: AG0xxx; — flrig sends 0-255, convert to internal 0-100 */
-            uint32_t raw = cat_parse_u(&cmd[3], 3U);
-            if (raw > 255U) raw = 255U;
-            if (cat->cb.set_volume) cat->cb.set_volume(cat_to_pct((uint8_t)raw));
-            cat_build_AG(cat, resp);
-        } else {
-            cat_copy(resp, "?;");
+        if (cmd[2] == '\0' || (cmd[2] == '0' && cmd[3] == '\0')) {
+            cat_copy(resp, "AG0127;");   /* fixed 50% — GET only */
         }
+        /* SET AG0nnn; — ACK-only stub */
     }
 
-    /* NR — Kenwood standard: 0=off, 1=on */
+    /* NR — stub: no DSP NR wired through CAT path */
     else if (cmd[0] == 'N' && cmd[1] == 'R') {
-        if (cmd[2] == '\0') {
-            cat_build_NR(cat, resp);
-        } else {
-            if (cat->cb.set_nr) cat->cb.set_nr(cmd[2] == '1');
-            cat_build_NR(cat, resp);
-        }
+        if (cmd[2] == '\0') { cat_copy(resp, "NR0;"); }
+        /* SET NRn; — ACK-only stub */
     }
 
-    /* NB — Kenwood standard: 0=off, 1=on */
+    /* NB — stub: no DSP NB wired through CAT path */
     else if (cmd[0] == 'N' && cmd[1] == 'B') {
-        if (cmd[2] == '\0') {
-            cat_build_NB(cat, resp);
-        } else {
-            if (cat->cb.set_nb) cat->cb.set_nb(cmd[2] == '1');
-            cat_build_NB(cat, resp);
-        }
+        if (cmd[2] == '\0') { cat_copy(resp, "NB0;"); }
+        /* SET NBn; — ACK-only stub */
     }
 
-    /* FW */
+    /* FW — stub: BW control not in minimal CAT set */
     else if (cmd[0] == 'F' && cmd[1] == 'W') {
-        if (cmd[2] == '\0') {
-            cat_build_FW(cat, resp);
-        } else {
-            uint32_t bw = cat_parse_u(&cmd[2], 4U);
-            if (bw < 100U) bw = 100U;
-            if (bw > 9999U) bw = 9999U;
-            if (cat->active_vfo == 1U) {
-                cat->vfo_b_bw = bw;
-                if (cat->cb.set_vfo_b_bw) cat->cb.set_vfo_b_bw(bw);
-            } else if (cat->cb.set_bw) {
-                cat->cb.set_bw(bw);
-            }
-            cat_build_FW(cat, resp);
-        }
+        if (cmd[2] == '\0') { cat_copy(resp, "FW3000;"); }
+        /* SET FWnnnn; — ACK-only stub */
     }
 
-    /* SH — TS-480 IF high-cut */
+    /* SH — stub: IF high-cut not in minimal CAT set */
     else if (cmd[0] == 'S' && cmd[1] == 'H') {
-        if (cmd[2] == '\0') {
-            cat_build_SH(cat, resp);
-        } else {
-            uint32_t idx = cat_parse_u(&cmd[2], 2U);
-            if (idx > 11U) idx = 11U;
-            uint32_t bw = s_sh_tbl[idx];
-            if (cat->active_vfo == 1U) {
-                cat->vfo_b_bw = bw;
-                if (cat->cb.set_vfo_b_bw) cat->cb.set_vfo_b_bw(bw);
-            } else if (cat->cb.set_bw) {
-                cat->cb.set_bw(bw);
-            }
-            cat_build_SH(cat, resp);
-        }
+        if (cmd[2] == '\0') { cat_copy(resp, "SH05;"); }  /* index 5, safe in any table */
+        /* SET SHnn; — ACK-only stub */
     }
 
-    /* SL — TS-480 IF low-cut (stub: always 0 Hz) */
+    /* SL — stub: IF low-cut not in minimal CAT set */
     else if (cmd[0] == 'S' && cmd[1] == 'L') {
-        cat_build_SL(resp);
+        if (cmd[2] == '\0') { cat_copy(resp, "SL00;"); }
+        /* SET SLnn; — ACK-only stub */
     }
 
-    /* SQ — 0-100% ↔ 0-255 internal */
+    /* SQ — stub: squelch not in minimal CAT set */
     else if (cmd[0] == 'S' && cmd[1] == 'Q') {
-        if (cmd[2] == '\0' || cmd[3] == '\0') {
-            /* GET: SQ; or SQ0; */
-            cat_build_SQ(cat, resp);
-        } else if (cmd[2] == '0') {
-            /* SET: SQ0xxx; — flrig sends 0-255, convert to internal 0-100 */
-            uint32_t raw = cat_parse_u(&cmd[3], 3U);
-            if (raw > 255U) raw = 255U;
-            if (cat->cb.set_squelch) cat->cb.set_squelch(cat_to_pct((uint8_t)raw));
-            cat_build_SQ(cat, resp);
-        } else {
-            cat_copy(resp, "?;");
+        if (cmd[2] == '\0' || (cmd[2] == '0' && cmd[3] == '\0')) {
+            cat_copy(resp, "SQ0000;");
         }
+        /* SET SQ0nnn; — ACK-only stub */
     }
 
     /* SM */
@@ -616,27 +1087,16 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         } else if (strlen(cmd) == 4U) {
             uint8_t lv = (uint8_t)(cmd[2] - '0') * 10U + (uint8_t)(cmd[3] - '0');
             if (cat->cb.set_att) cat->cb.set_att(lv > 3U ? 3U : lv);
-            resp[0] = 'R'; resp[1] = 'A';
-            resp[2] = (char)('0' + ((lv > 3U ? 3U : lv) / 10U));
-            resp[3] = (char)('0' + ((lv > 3U ? 3U : lv) % 10U));
-            resp[4] = ';';
-            resp[5] = '\0';
+            /* ACK-only */
         } else {
-            cat_copy(resp, "?;");
+            cat_mark_malformed(cmd); cat_copy(resp, "?;");
         }
     }
 
-    /* GT */
+    /* GT — stub: AGC speed not in minimal CAT set */
     else if (cmd[0] == 'G' && cmd[1] == 'T') {
-        if (cmd[2] == '\0') {
-            bool fast = cat->cb.get_agc_fast ? cat->cb.get_agc_fast() : true;
-            resp[0] = 'G'; resp[1] = 'T'; resp[2] = '0'; resp[3] = fast ? '0' : '1'; resp[4] = ';'; resp[5] = '\0';
-        } else if (strlen(cmd) == 4U && cmd[2] == '0') {
-            if (cat->cb.set_agc_fast) cat->cb.set_agc_fast(cmd[3] == '0');
-            resp[0] = 'G'; resp[1] = 'T'; resp[2] = '0'; resp[3] = cmd[3]; resp[4] = ';'; resp[5] = '\0';
-        } else {
-            cat_copy(resp, "?;");
-        }
+        if (cmd[2] == '\0') { cat_copy(resp, "GT00;"); }  /* fast AGC */
+        /* SET GT0n; — ACK-only stub */
     }
 
     /* PS */
@@ -644,18 +1104,16 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         cat_copy(resp, "PS1;");
     }
 
-    /* PC - ACK only */
+    /* PC — power control stub (no TX power control hardware) */
     else if (cmd[0] == 'P' && cmd[1] == 'C') {
-        if (cmd[2] == '\0' || strlen(cmd) == 5U) {
-            cat_copy(resp, "PC000;");
-        } else {
-            cat_copy(resp, "PC000;");
-        }
+        if (cmd[2] == '\0') { cat_copy(resp, "PC050;"); }
+        /* SET PCnnn; — ACK-only */
     }
 
-    /* BC — Beat Canceller (TS-2000); always stub off */
+    /* BC — Beat Canceller stub (no hardware) */
     else if (cmd[0] == 'B' && cmd[1] == 'C') {
-        cat_build_BC(resp);
+        if (cmd[2] == '\0') { cat_copy(resp, "BC0;"); }
+        /* SET BCn; — ACK-only */
     }
 
     /* VS — GET returns active VFO; SET selects active VFO (triggers hardware swap) */
@@ -679,87 +1137,79 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* FR — GET returns current VFO; SET selects active VFO */
+    /* FR — GET returns current RX VFO; SET is ACK-only.
+     * flrig sends FR0;FT0; or FR1;FT1; via sendCommand() without reading back.
+     * Echoing either pollutes the OS serial buffer and desynchronises all
+     * subsequent reads (every subsequent get_* reads the wrong response). */
     else if (cmd[0] == 'F' && cmd[1] == 'R') {
         if (cmd[2] != '\0') {
             cat->active_vfo = cat_clamp_vfo((uint8_t)(cmd[2] - '0'));
             if (cat->cb.set_active_vfo) cat->cb.set_active_vfo(cat->active_vfo);
+            /* ACK-only */
         } else {
             resp[0] = 'F'; resp[1] = 'R';
             resp[2] = cat_vfo_digit(cat->active_vfo); resp[3] = ';'; resp[4] = '\0';
         }
     }
 
-    /* FT — GET returns split TX VFO; SET is ACK-only */
+    /* FT — GET returns current TX VFO (split state); SET is ACK-only. */
     else if (cmd[0] == 'F' && cmd[1] == 'T') {
         if (cmd[2] != '\0') {
             cat->split_on = (cmd[2] == '1');
+            /* ACK-only */
         } else {
             resp[0] = 'F'; resp[1] = 'T';
             resp[2] = cat->split_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
         }
     }
 
-    /* RT — GET returns RIT state; SET is ACK-only */
+    /* RT — RIT on/off.  SET re-applies DSP nco_if offset via set_rit_hz re-trigger. */
     else if (cmd[0] == 'R' && cmd[1] == 'T') {
         if (cmd[2] != '\0') {
             cat->rit_on = (cmd[2] == '1');
-            if (!cat->rit_on && cat->cb.set_rit_hz) cat->cb.set_rit_hz(0);
+            /* Trigger cat_rit_dirty in main loop by calling set_rit_hz with current value */
+            if (cat->cb.set_rit_hz && cat->cb.get_rit_hz)
+                cat->cb.set_rit_hz(cat->cb.get_rit_hz());
         } else {
             resp[0] = 'R'; resp[1] = 'T';
             resp[2] = cat->rit_on ? '1' : '0'; resp[3] = ';'; resp[4] = '\0';
         }
     }
 
-    /* RC */
+    /* RC — RIT clear: zero offset and reapply DSP NCO */
     else if (cmd[0] == 'R' && cmd[1] == 'C') {
         if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(0);
-        cat_copy(resp, "RC;");
+        /* ACK-only */
     }
 
-    /* RU */
+    /* RU — RIT up. TS-480: RUnnnnn; (5-digit Hz step). Bare RU; = 10 Hz. */
     else if (cmd[0] == 'R' && cmd[1] == 'U') {
-        int32_t cur = cat->cb.get_rit_hz ? cat->cb.get_rit_hz() : 0;
-        int32_t delta = (strlen(cmd) >= 7U) ? (int32_t)cat_parse_u(&cmd[2], 5U) : 10;
-        if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(cur + delta);
-        cat_copy(resp, "RU;");
+        int32_t step = (cmd[2] != '\0') ? (int32_t)cat_parse_u(&cmd[2], 5U) : 10;
+        int32_t cur  = cat->cb.get_rit_hz ? cat->cb.get_rit_hz() : 0;
+        if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(cur + step);
+        /* ACK-only */
     }
 
-    /* RD */
+    /* RD — RIT down */
     else if (cmd[0] == 'R' && cmd[1] == 'D') {
-        int32_t cur = cat->cb.get_rit_hz ? cat->cb.get_rit_hz() : 0;
-        int32_t delta = (strlen(cmd) >= 7U) ? (int32_t)cat_parse_u(&cmd[2], 5U) : 10;
-        if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(cur - delta);
-        cat_copy(resp, "RD;");
+        int32_t step = (cmd[2] != '\0') ? (int32_t)cat_parse_u(&cmd[2], 5U) : 10;
+        int32_t cur  = cat->cb.get_rit_hz ? cat->cb.get_rit_hz() : 0;
+        if (cat->cb.set_rit_hz) cat->cb.set_rit_hz(cur - step);
+        /* ACK-only */
     }
 
-    /* XT */
+    /* XT — XIT on/off.  GET returns state; SET is ACK-only */
     else if (cmd[0] == 'X' && cmd[1] == 'T') {
-        cat_copy(resp, "XT0;");
+        if (cmd[2] == '\0') {
+            cat_copy(resp, "XT0;");
+        }
+        /* SET XT0;/XT1; — ACK-only */
     }
 
-    /* IS — IF shift: offset passband via NCO, BW unchanged */
+    /* IS — stub: IF shift not in minimal CAT set */
     else if (cmd[0] == 'I' && cmd[1] == 'S') {
-        if (cmd[2] == '\0' || cmd[3] == '\0') {
-            /* GET */
-            int16_t sh = cat->cb.get_if_shift
-                       ? (int16_t)cat->cb.get_if_shift()
-                       : cat->if_shift;
-            cat->if_shift = sh;
-            char *p = resp;
-            *p++ = 'I'; *p++ = 'S'; *p++ = '0';
-            *p++ = (sh >= 0) ? '+' : '-';
-            p = cat_put_u32(p, (uint32_t)(sh >= 0 ? sh : -sh), 4U);
-            *p++ = ';'; *p = '\0';
-        } else if (cmd[2] == '0') {
-            /* SET: IS0[+/-]nnnn; */
-            int16_t sh = (int16_t)cat_parse_u(&cmd[4], 4U);
-            cat->if_shift = (cmd[3] == '-') ? (int16_t)(-sh) : sh;
-            if (cat->cb.set_if_shift) cat->cb.set_if_shift((int32_t)cat->if_shift);
-            cat_copy(resp, "IS0;");
-        } else {
-            cat_copy(resp, "?;");
-        }
+        if (cmd[2] == '\0' || cmd[3] == '\0') { cat_copy(resp, "IS0+0000;"); }
+        /* SET IS0±nnnn; — ACK-only stub */
     }
 
     /* SP — GET returns split state; SET is ACK-only */
@@ -772,64 +1222,113 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* TS */
+    /* TS — stub: tuning step not in minimal CAT set */
     else if (cmd[0] == 'T' && cmd[1] == 'S') {
-        if (cmd[2] == '\0' || cmd[2] == '0') {
-            uint32_t st = cat->cb.get_step ? cat->cb.get_step() : 100U;
-            uint8_t idx = 6U;
-            if      (st >= 100000U) idx = 20U;
-            else if (st >= 10000U)  idx = 13U;
-            else if (st >= 5000U)   idx = 11U;
-            else if (st >= 1000U)   idx = 9U;
-            else if (st >= 500U)    idx = 8U;
-            else if (st >= 100U)    idx = 6U;
-            else if (st >= 10U)     idx = 3U;
-            else                    idx = 0U;
+        if ((uint8_t)strlen(cmd) <= 3U) { cat_copy(resp, "TS006;"); }  /* 100 Hz */
+        /* SET TS0nn; — ACK-only stub */
+    }
 
-            resp[0] = 'T'; resp[1] = 'S'; resp[2] = '0';
-            resp[3] = (char)('0' + ((idx / 10U) % 10U));
-            resp[4] = (char)('0' + (idx % 10U));
-            resp[5] = ';'; resp[6] = '\0';
-        } else if (strlen(cmd) == 5U && cmd[2] == '0') {
-            static const uint32_t ts_tbl[] = {
-                1U,2U,5U,10U,20U,50U,100U,200U,500U,1000U,2500U,5000U,6250U,
-                10000U,12500U,15000U,20000U,25000U,30000U,50000U,100000U
-            };
-            uint32_t idx = cat_parse_u(&cmd[3], 2U);
-            uint32_t st = (idx < 21U) ? ts_tbl[idx] : 100000U;
-            if (cat->cb.set_step) cat->cb.set_step(st);
-            resp[0] = 'T'; resp[1] = 'S'; resp[2] = '0';
-            resp[3] = (char)('0' + ((idx / 10U) % 10U));
-            resp[4] = (char)('0' + (idx % 10U));
-            resp[5] = ';'; resp[6] = '\0';
-        } else {
-            cat_copy(resp, "?;");
+    /* VV — ACK-only stub: VFO copy not triggered from CAT path */
+    else if (cmd[0] == 'V' && cmd[1] == 'V') { /* ACK-only stub */ }
+
+    /* ACK-only — Hamlib uses kenwood_transaction(cmd, NULL, 0) for all of these.
+     * Echoing them corrupts the next command's response buffer on the host. */
+    else if (cmd[0] == 'U' && cmd[1] == 'P') { /* ACK-only */ }
+    else if (cmd[0] == 'D' && cmd[1] == 'N') { /* ACK-only */ }
+    else if (cmd[0] == 'B' && cmd[1] == 'U') { /* ACK-only */ }
+    else if (cmd[0] == 'B' && cmd[1] == 'D') { /* ACK-only */ }
+    else if (cmd[0] == 'M' && cmd[1] == 'W') { /* ACK-only */ }
+    else if (cmd[0] == 'D' && cmd[1] == 'S') { /* ACK-only */ }
+    else if (cmd[0] == 'T' && cmd[1] == 'C') { /* ACK-only */ }
+    else if (cmd[0] == 'K' && cmd[1] == 'Y') { /* ACK-only */ }
+    else if (cmd[0] == 'M' && cmd[1] == 'R') { /* ACK-only: memory recall not implemented */ }
+
+    /* MN — menu item select.  flrig TS-480 init probes this; a ?; response
+     * causes stoi("") → std::invalid_argument → crash in flrig. Stub = 000. */
+    else if (cmd[0] == 'M' && cmd[1] == 'N') {
+        if (cmd[2] == '\0') { cat_copy(resp, "MN000;"); }
+        /* SET MNnnn; — ACK-only */
+    }
+
+    /* MP — menu parameter read/write.  Same crash risk as MN. Stub = 0. */
+    else if (cmd[0] == 'M' && cmd[1] == 'P') {
+        if (cmd[2] == '\0') { cat_copy(resp, "MP0000;"); }
+        /* SET MPnnnn; — ACK-only */
+    }
+
+    /* KS — CW keyer speed (WPM).  flrig TS-480 queries this during init;
+     * returning ?; without a guard check in flrig would stoi("") → crash. */
+    else if (cmd[0] == 'K' && cmd[1] == 'S') {
+        if (cmd[2] == '\0') {
+            cat_copy(resp, "KS010;");   /* 10 WPM stub */
         }
+        /* SET KSnnn; — ACK-only */
     }
 
-    /* VV — copy active VFO freq+mode to VFO B */
-    else if (cmd[0] == 'V' && cmd[1] == 'V') {
-        uint32_t f   = cat->cb.get_freq ? cat->cb.get_freq() : 7100000UL;
-        uint8_t  m   = cat->cb.get_mode ? cat->cb.get_mode() : 2U; /* SDR mode code */
-        cat->vfo_b_freq = f;
-        cat->vfo_b_mode = CAT_SDRModeToCat(m);
-        if (cat->cb.set_vfo_b_freq) cat->cb.set_vfo_b_freq(f);
-        if (cat->cb.set_vfo_b_mode) cat->cb.set_vfo_b_mode(m);
-        cat_copy(resp, "VV;");
+    /* LK — panel lock query/set.  Stub: always unlocked */
+    else if (cmd[0] == 'L' && cmd[1] == 'K') {
+        if (cmd[2] == '\0') {
+            cat_copy(resp, "LK0;");
+        }
+        /* SET LK0;/LK1; — ACK-only */
     }
 
-    /* ACK-only/common */
-    else if (cmd[0] == 'U' && cmd[1] == 'P') { cat_copy(resp, "UP;"); }
-    else if (cmd[0] == 'D' && cmd[1] == 'N') { cat_copy(resp, "DN;"); }
-    else if (cmd[0] == 'B' && cmd[1] == 'U') { cat_copy(resp, "BU;"); }
-    else if (cmd[0] == 'B' && cmd[1] == 'D') { cat_copy(resp, "BD;"); }
-    else if (cmd[0] == 'M' && cmd[1] == 'W') { cat_copy(resp, "MW;"); }
-    else if (cmd[0] == 'D' && cmd[1] == 'S') { cat_copy(resp, "DS;"); }
-    else if (cmd[0] == 'T' && cmd[1] == 'C') { cat_copy(resp, "TC;"); }
-    else if (cmd[0] == 'K' && cmd[1] == 'Y') { cat_copy(resp, "KY;"); }
-    else if (cmd[0] == 'M' && cmd[1] == 'R') { cat_copy(resp, "?;"); }
+    /* MG — microphone gain.  flrig TS-480 probes this; stub 50% */
+    else if (cmd[0] == 'M' && cmd[1] == 'G') {
+        if (cmd[2] == '\0') {
+            cat_copy(resp, "MG050;");
+        }
+        /* SET MGnnn; — ACK-only */
+    }
+
+    /* EX — extended menu (TS-480 specific).
+     * READ: flrig sends EXnnnXXXX; (9-char cmd, e.g. "EX0450000;") and expects an
+     *       11-char response: EXnnnXXXXY; where Y is the current menu value digit.
+     *       Stub: echo command back with '0' appended → all menu values = 0.
+     *       menu_45 = false → standard SL/SH filter tables (correct for stub).
+     * SET:  flrig sends EXnnnXXXXX; (10-char cmd, e.g. "EX01200000;") via
+     *       sendCommand() with NO readback.  Must be ACK-only and NOT auto-echoed
+     *       or the stale echo corrupts the next command's response buffer. */
+    else if (cmd[0] == 'E' && cmd[1] == 'X') {
+        size_t exlen = strlen(cmd);
+        if (exlen == 9U) {
+            /* READ: EXnnnXXXX → respond EXnnnXXXXY; (11 chars, Y='0' stub) */
+            memcpy(resp, cmd, 9U);
+            resp[9]  = '0';
+            resp[10] = ';';
+            resp[11] = '\0';
+        }
+        /* SET (exlen==10) or bare EX; — ACK-only, no response */
+    }
+
+    /* PA — preamplifier stub (no hardware preamp) */
+    else if (cmd[0] == 'P' && cmd[1] == 'A') {
+        if (cmd[2] == '\0') { cat_copy(resp, "PA0;"); }
+        /* SET PAn; — ACK-only */
+    }
+
+    /* RG — RF gain stub (no hardware RF gain control) */
+    else if (cmd[0] == 'R' && cmd[1] == 'G') {
+        if (cmd[2] == '\0') { cat_copy(resp, "RG100;"); }
+        /* SET RGnnn; — ACK-only */
+    }
+
+    /* RL — noise reduction level (0-09).  flrig TS-480 queries this during state read.
+     * Stub: level 00 (minimum) — consistent with NR0 (off) stub. */
+    else if (cmd[0] == 'R' && cmd[1] == 'L') {
+        if (cmd[2] == '\0') { cat_copy(resp, "RL00;"); }
+        /* SET RLnn; — ACK-only */
+    }
 
     else {
+        /* Capture raw frame — unknown opcode, not in handler list */
+        s_exec_status = CAT_PARSE_UNKNOWN;
+        {
+            size_t ulen = strlen(cmd);
+            if (ulen >= sizeof(dbg_last_unknown_cmd)) ulen = sizeof(dbg_last_unknown_cmd) - 1U;
+            memcpy(dbg_last_unknown_cmd, cmd, ulen);
+            memset(dbg_last_unknown_cmd + ulen, 0, sizeof(dbg_last_unknown_cmd) - ulen);
+        }
         cat_copy(resp, "?;");
     }
 
@@ -842,41 +1341,168 @@ void CAT_Process(CAT_Handle_t *cat)
 {
     if (!cat || !cat->initialized) return;
 
-    static char cmd[CAT_BUF_SIZE];
-    static uint8_t len = 0U;
-    bool skip_ai = false;
+    /* Reentrancy guard — uses file-scope dbg_cat_in_process (not a static local)
+     * so CAT_Init can reset it after a fault, and the debugger can watch it. */
+    if (dbg_cat_in_process) { dbg_process_reenters++; return; }
+    dbg_cat_in_process = 1U;
 
-    while (cat->rx_len > 0U) {
-        char c = cat->rx_buf[0];
-        memmove(cat->rx_buf, cat->rx_buf + 1, --cat->rx_len);
+    uint32_t t0_cyc = DWT->CYCCNT;
+    uint32_t now    = cat_now_ms();
+    bool     skip_ai = false;
+
+    dbg_cat_parse_calls++;
+
+    /* Partial-command timeout: if no ';' arrived within 200ms after the last
+     * received byte, the in-flight assembly is stale (split-packet that never
+     * completed, or line noise).  Discard it so it cannot prefix the next
+     * command from the host. */
+    if (cat->parser_len > 0U && (now - cat->parser_last_rx_tick) > 200U) {
+        dbg_cat_partial_timeouts++;
+        /* Capture partial frame before discarding */
+        cat->parser_cmd[cat->parser_len] = '\0';
+        {
+            size_t tlen = cat->parser_len;
+            if (tlen >= sizeof(dbg_last_timeout)) tlen = sizeof(dbg_last_timeout) - 1U;
+            memcpy(dbg_last_timeout, cat->parser_cmd, tlen);
+            memset(dbg_last_timeout + tlen, 0, sizeof(dbg_last_timeout) - tlen);
+        }
+        cat->parser_len = 0U;
+    }
+
+    /* Snapshot RX buffer in one atomic grab so CAT_Receive (USB ISR) cannot
+     * race with the parse loop below. */
+    char     work[CAT_BUF_SIZE];
+    uint16_t work_len;
+    __disable_irq();
+    work_len    = cat->rx_len;
+    memcpy(work, cat->rx_buf, work_len);
+    cat->rx_len = 0U;
+    __enable_irq();
+
+    uint16_t wi = 0U;
+    while (wi < work_len) {
+        char c = work[wi++];
 
         if (c == '\r' || c == '\n') continue;
-        if (len < (CAT_BUF_SIZE - 1U)) cmd[len++] = c;
+        if (c == '\0') { dbg_cat_rx_null_bytes++; continue; }
+        if (cat->parser_len < (CAT_BUF_SIZE - 1U)) cat->parser_cmd[cat->parser_len++] = c;
 
         if (c == ';') {
-            cmd[len - 1U] = '\0';
+            /* Strip terminator, NUL-terminate for cat_exec */
+            cat->parser_cmd[cat->parser_len - 1U] = '\0';
 
-            /* suppress AI IF notification after PTT commands */
-            if ((cmd[0] == 'T' && cmd[1] == 'X') || (cmd[0] == 'R' && cmd[1] == 'X')) {
+            /* Skip bare ';' (empty command, parser_len==1 means only the ';' was
+             * in the buffer).  cat_exec("") would fall through to '?;' which breaks
+             * kenwood_transaction on the host.  Reset and continue silently. */
+            if (cat->parser_len == 1U) {
+                cat->parser_len = 0U;
+                continue;
+            }
+
+            /* Track peak assembly length for overflow monitoring */
+            if (cat->parser_len > dbg_cat_max_cmd_len)
+                dbg_cat_max_cmd_len = cat->parser_len;
+
+            /* Capture last complete command — bounded copy + zero tail so debugger
+             * does not show stale bytes from a previous longer command. */
+            {
+                size_t clen = (cat->parser_len < sizeof(dbg_cat_last_cmd))
+                              ? cat->parser_len : sizeof(dbg_cat_last_cmd) - 1U;
+                memcpy(dbg_cat_last_cmd, cat->parser_cmd, clen);
+                memset(dbg_cat_last_cmd + clen, 0, sizeof(dbg_cat_last_cmd) - clen);
+            }
+
+            /* Suppress AI IF notification for the cycle that contains a PTT command */
+            if ((cat->parser_cmd[0] == 'T' && cat->parser_cmd[1] == 'X') ||
+                (cat->parser_cmd[0] == 'R' && cat->parser_cmd[1] == 'X')) {
                 skip_ai = true;
             }
 
             char resp[CAT_TX_BUF_SIZE];
-            cat_exec(cat, cmd, resp);
-            if (resp[0] != '\0') cat_tx_enqueue(resp);
-            /* No per-command flush — collect all responses first */
+            memset(resp, 0, sizeof(resp));  /* zero-init: eliminates stale stack bytes if a handler writes partial data */
+            cat_exec(cat, cat->parser_cmd, resp);
 
-            len = 0U;
+            /* Auto-echo for SET commands that produced no response.
+             * Condition: handler left resp empty (ACK-only) AND command has a payload
+             * (cmd[2] != '\0', so it is a SET, not a bare GET opcode).
+             * flrig reads back SET acknowledgements; Hamlib kenwood_transaction(cmd,NULL,0)
+             * reads and discards the echo — safe for both hosts.
+             *
+             * EXCEPTIONS: commands where Hamlib uses kenwood_transaction(cmd,NULL,0) and
+             * does NOT read any response.  Sending an unsolicited echo leaves it in the
+             * host serial buffer and corrupts the next command's response read. */
+            if (resp[0] == '\0' && cat->parser_cmd[2] != '\0') {
+                const char *_c = cat->parser_cmd;
+                bool _suppress =
+                    (_c[0]=='A' && _c[1]=='I') ||  /* AI0; — explicit: corrupts next resp */
+                    (_c[0]=='T' && _c[1]=='X') ||  /* TX;/TX0;/TX1; — all silent         */
+                    (_c[0]=='U' && _c[1]=='P') ||  /* UP  — Hamlib no-read               */
+                    (_c[0]=='D' && _c[1]=='N') ||  /* DN  — Hamlib no-read               */
+                    (_c[0]=='B' && _c[1]=='U') ||  /* BU  — Hamlib no-read               */
+                    (_c[0]=='B' && _c[1]=='D') ||  /* BD  — Hamlib no-read               */
+                    (_c[0]=='M' && _c[1]=='W') ||  /* MW  — Hamlib no-read               */
+                    (_c[0]=='D' && _c[1]=='S') ||  /* DS  — Hamlib no-read               */
+                    (_c[0]=='T' && _c[1]=='C') ||  /* TC  — Hamlib no-read               */
+                    (_c[0]=='K' && _c[1]=='Y') ||  /* KY  — Hamlib no-read               */
+                    (_c[0]=='M' && _c[1]=='R') ||  /* MR  — Hamlib no-read               */
+                    (_c[0]=='E' && _c[1]=='X') ||  /* EX SET: flrig sendCommand(), no readback — echo corrupts next resp */
+                    (_c[0]=='M' && _c[1]=='D') ||  /* MD SET: flrig sendCommand() for set_modeA/B — no readback        */
+                    (_c[0]=='S' && _c[1]=='L') ||  /* SL SET: flrig sendCommand() for lo-cut — no readback            */
+                    (_c[0]=='S' && _c[1]=='H') ||  /* SH SET: flrig sendCommand() for hi-cut — no readback            */
+                    (_c[0]=='F' && _c[1]=='R') ||  /* FR SET: flrig sendCommand(), no readback — echo desynchs buffer  */
+                    (_c[0]=='F' && _c[1]=='T');    /* FT SET: flrig sendCommand(), no readback — echo desynchs buffer  */
+                if (!_suppress) {
+                    uint8_t clen = (uint8_t)strlen(cat->parser_cmd);
+                    if (clen < (uint8_t)(CAT_TX_BUF_SIZE - 1U)) {
+                        memcpy(resp, cat->parser_cmd, clen);
+                        resp[clen]      = ';';
+                        resp[clen + 1U] = '\0';
+                    }
+                }
+            }
+
+            /* Classify and record the transaction */
+            {
+                CAT_ParseStatus_t st;
+                if (resp[0] == '\0') {
+                    st = CAT_PARSE_NORESP;
+                } else if (resp[0] == '?' && resp[1] == ';') {
+                    st = s_exec_status; /* UNKNOWN or ERROR set inside cat_exec */
+                    if (st == CAT_PARSE_UNKNOWN) dbg_cat_unknown_cmds++;
+                    else                          dbg_cat_malformed_frames++;
+                } else {
+                    st = CAT_PARSE_OK;
+                    cat_validate_resp(resp);
+                }
+                cat_txn_record(cat->parser_cmd, resp, st, now);
+            }
+
+            if (resp[0] != '\0') {
+                /* Guard: reject responses with embedded NUL or non-ASCII before ';'.
+                 * Such a response would either be silently truncated by cat_tx_enqueue
+                 * (stopping at the embedded NUL, sending no terminator) or corrupt the
+                 * host parser.  dbg_resp_null_drop is incremented on rejection. */
+                if (cat_resp_guard(resp)) {
+                    size_t rlen = strlen(resp) + 1U;
+                    if (rlen > sizeof(dbg_cat_last_resp)) rlen = sizeof(dbg_cat_last_resp);
+                    memcpy(dbg_cat_last_resp, resp, rlen);
+                    memset(dbg_cat_last_resp + rlen, 0, sizeof(dbg_cat_last_resp) - rlen);
+                    cat_tx_enqueue(resp);
+                }
+            }
+
+            cat->parser_len = 0U;
         }
     }
 
-    /* Flush all queued responses in one CDC transfer. */
-    CAT_FlushTX(cat);
-
     /* AI unsolicited IF — only when nothing is pending in the TX FIFO.
      * Injecting here while responses are queued would interleave with
-     * command-response pairs and break kenwood_transaction verification. */
-    if (cat->ai_level > 0U && !skip_ai && (s_tx_head == s_tx_tail)) {
+     * command-response pairs and break kenwood_transaction verification.
+     * dbg_cat_ai_push_disable=1 (default) suppresses all unsolicited push regardless
+     * of ai_level.  Set to 0 only after strict serialization is confirmed stable:
+     * an unsolicited IF injected between a command send and its response read
+     * leaves a stale IF frame in the OS serial buffer that desynchronizes flrig. */
+    if (!dbg_cat_ai_push_disable && cat->ai_level > 0U && !skip_ai && (s_tx_head == s_tx_tail)) {
         /* Always read live data through callbacks so AI fires after UI VFO swaps too */
         uint32_t cur_freq = (cat->active_vfo == 1U)
                           ? (cat->cb.get_vfo_b_freq ? cat->cb.get_vfo_b_freq() : cat->vfo_b_freq)
@@ -904,7 +1530,14 @@ void CAT_Process(CAT_Handle_t *cat)
             char if_buf[50];
             CAT_BuildIF(cat, if_buf);
             cat_tx_enqueue(if_buf);
-            CAT_FlushTX(cat);
+            /* Do NOT flush here — CDC IN is busy from the FlushTX above.
+             * The main-loop FlushTX fires within 1 ms and drains the FIFO. */
         }
     }
+
+    /* Record wall-time for this pass using DWT (µs resolution at 480 MHz).
+     * Unsigned subtraction handles the ~8.9 s CYCCNT wrap correctly. */
+    dbg_cat_parse_latency_us = (DWT->CYCCNT - t0_cyc) / (SystemCoreClock / 1000000U);
+
+    dbg_cat_in_process = 0U;
 }

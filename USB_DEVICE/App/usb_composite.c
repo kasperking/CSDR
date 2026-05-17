@@ -27,6 +27,7 @@
 #include "usbd_ctlreq.h"
 #include "usbd_cdc_if.h"
 #include "usb_audio.h"
+#include "csdr_app.h"
 #include <string.h>
 
 extern USBD_CDC_ItfTypeDef USBD_Interface_fops_FS;
@@ -61,6 +62,41 @@ volatile uint32_t dbg_iso_out_inc  = 0U;
 volatile uint32_t dbg_usb_sof_cnt    = 0U;
 volatile uint32_t dbg_usb_iso_in_cnt = 0U;
 volatile uint32_t dbg_usb_stall_cnt  = 0U;
+
+/* USB lifecycle counters — watch these in Live Expressions.
+ *  reset_cnt:    USB bus reset events (host re-enumeration, cable pull, suspend→resume).
+ *                Should increment once at attach. Multiple increments indicate bus noise.
+ *  suspend_cnt:  Host sent SUSPEND (PC sleep, idle 3ms+ without SOF). SOF stops.
+ *  resume_cnt:   Host sent RESUME (SOF restarts). Should pair 1:1 with suspend_cnt.
+ *  cdc_rx_pkts:  CDC OUT packets accepted from host (each CAT command burst = 1 packet).
+ *  cdc_tx_pkts:  CDC IN packets successfully queued to host.
+ *  cdc_tx_drop:  CAT FlushTX found USBD_BUSY — response deferred (retry next call).
+ *  cdc_busy_max: Longest BUSY run seen (consecutive CAT_FlushTX calls that returned BUSY).
+ *                If this climbs without bound, the CDC IN endpoint has stalled permanently.
+ *  cat_rx_bytes: Total bytes received by CAT_Receive from USB ISR.
+ *  cat_tx_bytes: Total bytes sent to CDC_Transmit_FS by CAT_FlushTX.
+ *  cat_tx_fifo_drop: Characters silently dropped because s_tx_fifo was full (512B limit). */
+volatile uint32_t dbg_usb_reset_cnt   = 0U;
+volatile uint32_t dbg_usb_suspend_cnt = 0U;
+volatile uint32_t dbg_usb_resume_cnt  = 0U;
+volatile uint32_t dbg_cdc_rx_pkts     = 0U;
+volatile uint32_t dbg_cdc_tx_pkts     = 0U;
+volatile uint32_t dbg_cdc_tx_drop     = 0U;
+volatile uint32_t dbg_cdc_busy_max    = 0U;
+static   uint32_t s_cdc_busy_run      = 0U;   /* current consecutive BUSY run length */
+
+/* dbg_cdc_fail_cnt: USBD_LL_Transmit returned a non-OK, non-BUSY status.
+ *   Non-zero at startup means enumeration incomplete when FlushTX fires.
+ *   Non-zero after streaming = endpoint closed or USB not configured. */
+volatile uint32_t dbg_cdc_fail_cnt   = 0U;
+/* dbg_comp_datain_cnt: CDC DataIn callback fire count.
+ *   Must grow at the same rate as dbg_cdc_tx_pkts.  If tx_pkts grows but
+ *   this stops, the CDC IN endpoint is stuck in hardware (FIFO stall). */
+volatile uint32_t dbg_comp_datain_cnt = 0U;
+/* dbg_cdc_stuck_recovery: s_cdc_tx_busy stuck with stalled EP, self-cleared.
+ *   Non-zero = stall-recovery path fired in Composite_CDC_IsBusy.
+ *   Increments on each stall detection. */
+volatile uint32_t dbg_cdc_stuck_recovery = 0U;
 
 static __ALIGN_BEGIN uint8_t s_audio_out_buf[COMP_EP_AUDIO_SIZE] __ALIGN_END;
 static __ALIGN_BEGIN uint8_t s_audio_in_buf [COMP_EP_AUDIO_SIZE] __ALIGN_END;
@@ -288,7 +324,8 @@ static void CDC_Open(USBD_HandleTypeDef *pdev)
   pdev->ep_in[COMP_EP_CDC_NOTIF & 0x0FU].is_used = 1U;
   pdev->ep_in[COMP_EP_CDC_NOTIF & 0x0FU].bInterval = 0x10U;
 
-  s_cdc_tx_busy = 0U;
+  s_cdc_tx_busy        = 0U;
+  dbg_comp_datain_cnt  = 0U;   /* reset per-session so it pairs 1:1 with dbg_cdc_tx_pkts */
   USBD_Interface_fops_FS.Init();
 
   USBD_LL_PrepareReceive(pdev, COMP_EP_CDC_OUT,
@@ -303,6 +340,13 @@ static void CDC_Close(USBD_HandleTypeDef *pdev)
   pdev->ep_out[COMP_EP_CDC_OUT & 0x0FU].is_used = 0U;
   USBD_LL_CloseEP(pdev, COMP_EP_CDC_NOTIF);
   pdev->ep_in[COMP_EP_CDC_NOTIF & 0x0FU].is_used = 0U;
+
+  s_cdc_tx_busy = 0U;
+  /* Flush stale CAT state so a reconnecting host gets a clean slate.
+   * Without this, partial commands from the previous session get parsed
+   * on reconnect, and queued responses cause infinite CAT_FlushTX retries
+   * until the endpoint is fully open. */
+  CSDR_CDC_ResetCAT();
 
   USBD_Interface_fops_FS.DeInit();
 }
@@ -545,6 +589,7 @@ static uint8_t Comp_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
 
   /* CDC IN bulk completion */
   if ((epnum | 0x80U) == COMP_EP_CDC_IN) {
+    dbg_comp_datain_cnt++;
     s_cdc_tx_busy = 0U;
     if (USBD_Interface_fops_FS.TransmitCplt != NULL) {
       uint32_t zero_len = 0U;
@@ -575,6 +620,7 @@ static uint8_t Comp_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
   /* CDC Data OUT */
   if (epnum == (COMP_EP_CDC_OUT & 0x0FU)) {
     uint32_t len = USBD_LL_GetRxDataSize(pdev, COMP_EP_CDC_OUT);
+    dbg_cdc_rx_pkts++;
     (void)USBD_Interface_fops_FS.Receive(s_cdc_rx_buf, &len);
     USBD_LL_PrepareReceive(pdev, COMP_EP_CDC_OUT,
                             s_cdc_rx_buf, COMP_EP_CDC_SIZE);
@@ -632,16 +678,52 @@ uint8_t Composite_CDC_Transmit(USBD_HandleTypeDef *pdev,
                                 uint8_t *buf, uint16_t len)
 {
   if (pdev == NULL || buf == NULL || len == 0U) return USBD_FAIL;
-  if (s_cdc_tx_busy) return USBD_BUSY;
+
+  /* Stall-recovery: if the host stalled then un-stalled CDC IN (e.g. Windows
+   * COM port reset), DataIn never fires so s_cdc_tx_busy stays 1 permanently.
+   * Detect this and self-recover so CAT TX is not silently frozen. */
+  if (s_cdc_tx_busy && USBD_LL_IsStallEP(pdev, COMP_EP_CDC_IN)) {
+    s_cdc_tx_busy = 0U;
+    s_cdc_busy_run = 0U;
+  }
+
+  if (s_cdc_tx_busy) {
+    dbg_cdc_tx_drop++;
+    s_cdc_busy_run++;
+    if (s_cdc_busy_run > dbg_cdc_busy_max) dbg_cdc_busy_max = s_cdc_busy_run;
+    return USBD_BUSY;
+  }
+  s_cdc_busy_run = 0U;
 
   s_cdc_tx_busy = 1U;
   USBD_StatusTypeDef st = USBD_LL_Transmit(pdev, COMP_EP_CDC_IN, buf, len);
   if (st != USBD_OK) {
     s_cdc_tx_busy = 0U;
+    if (st != USBD_BUSY) dbg_cdc_fail_cnt++;
     return (uint8_t)st;
   }
+  dbg_cdc_tx_pkts++;
   return USBD_OK;
 }
 
 uint8_t Composite_AudioIN_IsStreaming (void) { return s_as_in_alt; }
 uint8_t Composite_AudioOUT_IsStreaming(void) { return s_as_out_alt; }
+
+uint8_t Composite_CDC_IsBusy(void)
+{
+    /* Stall-recovery: Composite_CDC_Transmit has its own stall check, but the
+     * IsBusy guard in CAT_FlushTX prevents Transmit from being called while
+     * s_cdc_tx_busy=1.  If the endpoint stalled (DataIn will never fire),
+     * that creates a deadlock: IsBusy always returns 1, Transmit never runs,
+     * stall recovery never executes.  Mirror the check here so the guard itself
+     * can self-recover without relying on a Transmit call going through. */
+    if (s_cdc_tx_busy) {
+        extern USBD_HandleTypeDef hUsbDeviceFS;
+        if (USBD_LL_IsStallEP(&hUsbDeviceFS, COMP_EP_CDC_IN)) {
+            s_cdc_tx_busy  = 0U;
+            s_cdc_busy_run = 0U;
+            dbg_cdc_stuck_recovery++;
+        }
+    }
+    return s_cdc_tx_busy;
+}

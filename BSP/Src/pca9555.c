@@ -6,6 +6,9 @@
 /* USER CODE END Header */
 
 #include "pca9555.h"
+#include "input_scan.h"   /* for HAS_PCA9555 */
+
+#if HAS_PCA9555
 
 #define PCA9555_TIMEOUT_MS  5U
 
@@ -56,3 +59,5 @@ HAL_StatusTypeDef PCA9555_ReadInputs(PCA9555_t *dev)
   }
   return ret;
 }
+
+#endif /* HAS_PCA9555 */
