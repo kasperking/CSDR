@@ -887,8 +887,51 @@ static void cat_build_MD(CAT_Handle_t *cat, char *buf)
     *p = '\0';
 }
 
-/* AG/NR/NB/FW/SH/SL/SQ builders removed — those handlers are now fixed stubs.
- * cat_build_SM kept: SM is in the minimal set and reads live signal level. */
+static void cat_build_FW(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    uint32_t bw = (cat->active_vfo == 1U)
+                ? (cat->cb.get_vfo_b_bw ? cat->cb.get_vfo_b_bw() : cat->vfo_b_bw)
+                : (cat->cb.get_bw       ? cat->cb.get_bw()        : 3000U);
+    if (bw > 9999U) bw = 9999U;
+    *p++ = 'F'; *p++ = 'W';
+    p = cat_put_u32(p, bw, 4U);
+    *p++ = ';';
+    *p = '\0';
+}
+
+/* TS-480 SH high-cut table: index 00-11 → Hz */
+static const uint32_t s_sh_tbl[12] = {
+    1000U, 1200U, 1400U, 1600U, 1800U, 2000U,
+    2200U, 2400U, 2600U, 2800U, 3000U, 3400U
+};
+
+static uint8_t cat_bw_to_sh(uint32_t bw)
+{
+    for (uint8_t i = 0U; i < 11U; i++) {
+        if (bw <= s_sh_tbl[i]) return i;
+    }
+    return 11U;
+}
+
+static void cat_build_SH(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    uint32_t bw = (cat->active_vfo == 1U)
+                ? (cat->cb.get_vfo_b_bw ? cat->cb.get_vfo_b_bw() : cat->vfo_b_bw)
+                : (cat->cb.get_bw       ? cat->cb.get_bw()        : 3000U);
+    uint8_t idx = cat_bw_to_sh(bw);
+    *p++ = 'S'; *p++ = 'H';
+    *p++ = (char)('0' + (idx / 10U));
+    *p++ = (char)('0' + (idx % 10U));
+    *p++ = ';';
+    *p = '\0';
+}
+
+static void cat_build_SL(char *buf)
+{
+    buf[0] = 'S'; buf[1] = 'L'; buf[2] = '0'; buf[3] = '0'; buf[4] = ';'; buf[5] = '\0';
+}
 
 static void cat_build_SM(CAT_Handle_t *cat, char *buf)
 {
@@ -1043,22 +1086,48 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         /* SET NBn; — ACK-only stub */
     }
 
-    /* FW — stub: BW control not in minimal CAT set */
+    /* FW — filter width: GET/SET routed to active VFO BW callbacks */
     else if (cmd[0] == 'F' && cmd[1] == 'W') {
-        if (cmd[2] == '\0') { cat_copy(resp, "FW3000;"); }
-        /* SET FWnnnn; — ACK-only stub */
+        if (cmd[2] == '\0') {
+            cat_build_FW(cat, resp);
+        } else {
+            uint32_t bw = cat_parse_u(&cmd[2], 4U);
+            if (bw < 100U) bw = 100U;
+            if (bw > 9999U) bw = 9999U;
+            if (cat->active_vfo == 1U) {
+                cat->vfo_b_bw = bw;
+                if (cat->cb.set_vfo_b_bw) cat->cb.set_vfo_b_bw(bw);
+            } else if (cat->cb.set_bw) {
+                cat->cb.set_bw(bw);
+            }
+            cat_build_FW(cat, resp);
+        }
     }
 
-    /* SH — stub: IF high-cut not in minimal CAT set */
+    /* SH — IF high-cut index: GET returns live BW→index; SET maps index→Hz, updates BW */
     else if (cmd[0] == 'S' && cmd[1] == 'H') {
-        if (cmd[2] == '\0') { cat_copy(resp, "SH05;"); }  /* index 5, safe in any table */
-        /* SET SHnn; — ACK-only stub */
+        if (cmd[2] == '\0') {
+            cat_build_SH(cat, resp);
+        } else {
+            uint32_t idx = cat_parse_u(&cmd[2], 2U);
+            if (idx > 11U) idx = 11U;
+            uint32_t bw = s_sh_tbl[idx];
+            if (cat->active_vfo == 1U) {
+                cat->vfo_b_bw = bw;
+                if (cat->cb.set_vfo_b_bw) cat->cb.set_vfo_b_bw(bw);
+            } else if (cat->cb.set_bw) {
+                cat->cb.set_bw(bw);
+            }
+            /* ACK-only: SH SET suppress list prevents auto-echo (flrig no readback) */
+        }
     }
 
-    /* SL — stub: IF low-cut not in minimal CAT set */
+    /* SL — IF low-cut: always SL00 (no independent low-cut control) */
     else if (cmd[0] == 'S' && cmd[1] == 'L') {
-        if (cmd[2] == '\0') { cat_copy(resp, "SL00;"); }
-        /* SET SLnn; — ACK-only stub */
+        if (cmd[2] == '\0') {
+            cat_build_SL(resp);
+        }
+        /* SET SLnn; — ACK-only: flrig no readback, suppress list handles auto-echo */
     }
 
     /* SQ — stub: squelch not in minimal CAT set */

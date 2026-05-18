@@ -11,7 +11,7 @@
 #include <string.h>
 
 /* USER CODE BEGIN PV */
-extern TIM_HandleTypeDef htim17;   /* Fan TIM17_CH1 = PB9 */
+extern TIM_HandleTypeDef htim17;   /* Fan — TIM17_CH1 = PB9 */
 FSDR_Analog_t g_analog = {0};
 
 static uint8_t  s_fan_pct   = 0U;

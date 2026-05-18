@@ -40,9 +40,9 @@
   *  │ AG   │ Audio gain                   │ STUB   │ AG0127; (fixed)       │
   *  │ NR   │ Noise reduction              │ STUB   │ NR0; (fixed off)      │
   *  │ NB   │ Noise blanker                │ STUB   │ NB0; (fixed off)      │
-  *  │ FW   │ Filter width                 │ STUB   │ FW3000; (fixed)       │
-  *  │ SH   │ IF high-cut                  │ STUB   │ SH05; (fixed)         │
-  *  │ SL   │ IF low-cut                   │ STUB   │ SL00; (fixed)         │
+  *  │ FW   │ Filter width                 │ REAL   │ FWnnnn; live BW       │
+  *  │ SH   │ IF high-cut                  │ REAL   │ SHnn; live BW→index   │
+  *  │ SL   │ IF low-cut                   │ STUB   │ SL00; (no low-cut HW) │
   *  │ SQ   │ Squelch                      │ STUB   │ SQ0000; (fixed off)   │
   *  │ GT   │ AGC speed                    │ STUB   │ GT00; (fixed fast)    │
   *  │ PC   │ TX power                     │ STUB   │ PC050; (no HW)        │
@@ -448,7 +448,7 @@ uint8_t CAT_CatModeToSDR(uint8_t cat_mode);
 #define CAT_HAS_NR          0   /* NR stub: NR0; fixed — no DSP NR through CAT path     */
 #define CAT_HAS_NB          0   /* NB stub: NB0; fixed — no DSP NB through CAT path     */
 #define CAT_HAS_VOLUME      0   /* AG stub: AG0127; fixed — volume not in minimal set   */
-#define CAT_HAS_BW          0   /* FW/SH/SL stubs: BW not in minimal set                */
+#define CAT_HAS_BW          1   /* FW/SH: live BW read/write via get_bw/set_bw callbacks */
 #define CAT_HAS_SQUELCH     0   /* SQ stub: SQ0000; fixed — squelch not in minimal set  */
 #define CAT_HAS_AGC_CTRL    0   /* GT stub: GT00; fixed — AGC speed not in minimal set  */
 

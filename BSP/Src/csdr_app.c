@@ -37,9 +37,9 @@ extern SAI_HandleTypeDef  hsai_BlockA1;
 extern SAI_HandleTypeDef  hsai_BlockB1;
 extern I2C_HandleTypeDef  hi2c1;
 extern I2C_HandleTypeDef  hi2c2;    /* PCA9555 button expander (I2C2: PB10/PB11) */
-extern TIM_HandleTypeDef  htim3;    /* Encoder TIM3_CH1/CH2 = PB4/PB5 */
-extern TIM_HandleTypeDef  htim8;    /* Backlight TIM8_CH4 = PC9 */
-extern TIM_HandleTypeDef  htim17;   /* Fan TIM17_CH1 = PB9 */
+extern TIM_HandleTypeDef  htim3;    /* Encoder — TIM3 CH1=PB4, CH2=PB5 */
+extern TIM_HandleTypeDef  htim8;    /* Backlight — TIM8_CH4 = PC9 */
+extern TIM_HandleTypeDef  htim17;   /* Fan — TIM17_CH1 = PB9 */
 extern ADC_HandleTypeDef  hadc1;
 extern ADC_HandleTypeDef  hadc2;
 extern ADC_HandleTypeDef  hadc3;
@@ -283,7 +283,7 @@ void CSDR_Init(void)
   DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
   AGC_SetSpeed(&g_dsp.agc, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
 
-  /* Encoder – direct MCU (TIM1 quadrature + ENC_SW GPIO) */
+  /* Encoder – TIM3 quadrature (PB4/PB5), initialised as encoder in MX_TIM3_Init */
   Encoder_Init(&g_encoder, &htim3);
 
   /* PCA9555 button expander – all function keys on I2C2 */
@@ -1243,6 +1243,7 @@ static void cat_set_bw(uint32_t hz)
     if (hz < 100U)   hz = 100U;
     if (hz > 24000U) hz = 24000U;
     g_sdr.bw_hz = hz;
+    DSP_SetBW(&g_dsp, (float)hz);
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBR);
 }
 static void     cat_set_agc_fast(bool f)  { g_sdr.agc_fast = f; g_sdr.display_dirty |= DIRTY_SBL; }

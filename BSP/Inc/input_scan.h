@@ -5,12 +5,12 @@
   * @brief   Centralized input scan – PCA9555 managed path
   *
   *  Architecture:
-  *    - Encoder (ENC_SW, TIM1 quadrature): direct MCU, handled by encoder.c
+  *    - Encoder (ENC_SW, TIM3 quadrature on PB4/PB5): direct MCU, handled by encoder.c
   *    - All function buttons: PCA9555 on I2C2, managed here
   *
   *  Call order each main loop iteration:
   *    Input_Scan()           <- refresh g_pca9555_raw from PCA9555 once
-  *    csdr_handle_encoder()  <- reads TIM1 + ENC_SW direct GPIO
+  *    csdr_handle_encoder()  <- reads TIM3 + ENC_SW direct GPIO
   *    csdr_handle_keys()     <- calls Key_Poll() which reads g_pca9555_raw
   *
   *  Input_F4_IsPressed() does a live I2C read and is used only by the

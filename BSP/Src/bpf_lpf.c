@@ -70,10 +70,13 @@ const char *BPF_BandName(uint8_t idx) {
 
 static void set_bpf_ch(uint8_t ch)
 {
-  /* BPF_S0 = select bit 0 (PA4), BPF_S1 = select bit 1 (PA5) */
-  HAL_GPIO_WritePin(BPF_S0_GPIO_Port, BPF_S0_Pin,
-                    (ch & 0x01U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  /* BPF_S1_Pin (PA4) = relay select bit 0; BPF_S2_Pin (PA5) = relay select bit 1.
+   * CubeMX names these S1/S2 but the hardware truth table calls them S0/S1.
+   * Do NOT revert to BPF_S0_Pin — that define was removed when GPIOD was
+   * reclaimed for FMC; BPF_S0/S1 are now PA4/PA5 named BPF_S1/BPF_S2 in main.h. */
   HAL_GPIO_WritePin(BPF_S1_GPIO_Port, BPF_S1_Pin,
+                    (ch & 0x01U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(BPF_S2_GPIO_Port, BPF_S2_Pin,
                     (ch & 0x02U) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
