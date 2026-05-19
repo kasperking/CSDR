@@ -21,9 +21,9 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ── Screen geometry ────────────────────────────────── */
-#define LCD_W   320U
-#define LCD_H   240U
+/* ── Screen geometry (ST7796S landscape 480×320) ────── */
+#define LCD_W   480U
+#define LCD_H   320U
 
 /* ── Pixel byte-swap ────────────────────────────────── */
 #define SWAP16(x)  (uint16_t)((((x) & 0x00FFU) << 8U) | (((x) >> 8U) & 0x00FFU))

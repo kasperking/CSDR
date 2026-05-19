@@ -46,6 +46,29 @@ typedef struct {
   uint32_t underrun_ui_us;
   uint32_t underrun_loop_stall_us;
   uint32_t ui_section_max_us[RUNTIME_DIAG_UI_SECTION_COUNT];
+  /* UI adaptive-skip state (reported by CSDR_Loop waterfall tick) */
+  uint32_t wf_skip_count;      /*!< Waterfall frames suppressed by overload-hysteresis */
+  uint32_t wf_render_max_us;   /*!< Alias: ui_section_max_us[RUNTIME_DIAG_UI_WATERFALL] */
+  uint32_t spec_render_max_us; /*!< Alias: ui_section_max_us[RUNTIME_DIAG_UI_SPECTRUM]  */
+  bool     ui_load_high;       /*!< true = system load too high for waterfall            */
+  /* Chunked LCD push statistics (reported by sdr_ui via RuntimeDiag_LcdChunkReport) */
+  uint32_t lcd_chunk_count;          /*!< Total 8-row LCD strips pushed since boot      */
+  uint32_t lcd_chunk_abort_count;    /*!< Waterfall renders aborted mid-way by overload */
+  uint32_t wf_partial_render_count;  /*!< Same as abort_count — partial waterfall frames*/
+  uint32_t max_chunk_render_us;      /*!< Peak µs to push one 8-row LCD strip           */
+  /* FFT execution timing — filled by RuntimeDiag_FftReport after each FFT call.
+   * FFT runs at ~187 Hz (256 samples / 48 kHz); these counters let us compare
+   * CMSIS arm_cfft_f32 against the custom fallback and detect regressions. */
+  uint32_t max_fft_us;    /*!< Peak FFT execution time (µs)                  */
+  uint32_t avg_fft_us;    /*!< Rolling-average FFT time (µs, EMA α=1/64)     */
+  /* Spectrum partial-redraw statistics (reported by sdr_ui via RuntimeDiag_SpecReport) */
+  uint32_t spec_partial_redraw_count; /*!< Spectrum frames pushed as partial column band */
+  uint32_t spec_skip_count;           /*!< Spectrum frames skipped (delta < 2 px)        */
+  uint32_t max_spec_partial_us;       /*!< Peak µs for a partial spectrum push            */
+  /* VFO glyph-level redraw statistics (reported by sdr_ui via RuntimeDiag_VfoReport) */
+  uint32_t vfo_glyph_redraw_count;    /*!< VFO partial glyph-band pushes since boot       */
+  uint32_t vfo_skip_count;            /*!< VFO upper-section pushes skipped (unchanged)   */
+  uint32_t max_vfo_redraw_us;         /*!< Peak µs for a glyph-level VFO push             */
 } RuntimeDiag_Snapshot_t;
 
 extern volatile uint32_t rx_overrun_count;
@@ -67,6 +90,34 @@ void RuntimeDiag_MainLoopBeat(void);
 void RuntimeDiag_ServiceSlow(uint32_t now_ms);
 void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out);
 void RuntimeDiag_ResetPeaks(void);
+
+/* Report waterfall adaptive-skip state from the main-loop waterfall tick */
+void RuntimeDiag_WfSkipReport(uint32_t skip_count, bool load_high);
+
+/* Quick overload query used by sdr_ui between LCD chunks.
+ * Returns true when the adaptive waterfall hysteresis flag is raised,
+ * signalling that the system is under enough load to warrant aborting
+ * a partially-rendered waterfall strip rather than stalling further. */
+bool RuntimeDiag_IsUiOverload(void);
+
+/* Called by sdr_ui after every waterfall render to sync chunk counters
+ * into the runtime-diag snapshot.  Passing the cumulative totals is safe
+ * because this function simply copies them; it does not double-count. */
+void RuntimeDiag_LcdChunkReport(uint32_t chunk_count, uint32_t abort_count,
+                                 uint32_t partial_count, uint32_t max_chunk_us);
+
+/* Called by sdr_dsp after each FFT_Precomp() invocation with the raw DWT
+ * cycle count consumed.  Updates peak and rolling-average FFT timing so the
+ * snapshot can compare CMSIS vs custom backend cost at any time. */
+void RuntimeDiag_FftReport(uint32_t cycles);
+
+/* Called by sdr_ui after each spectrum render with cumulative partial-push stats. */
+void RuntimeDiag_SpecReport(uint32_t partial_count, uint32_t skip_count,
+                             uint32_t max_partial_us);
+
+/* Called by sdr_ui after each VFO render with cumulative glyph-push stats. */
+void RuntimeDiag_VfoReport(uint32_t glyph_count, uint32_t skip_count,
+                            uint32_t max_redraw_us);
 
 uint32_t RuntimeDiag_RxHalfIsr(uint8_t half_index);
 void RuntimeDiag_RxHalfConsumed(uint8_t half_index, uint32_t sequence);

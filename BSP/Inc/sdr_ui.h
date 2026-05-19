@@ -2,29 +2,34 @@
 /**
   ******************************************************************************
   * @file    sdr_ui.h
-  * @brief   CSDR SDR UI – 8-zone layout 320×240 over FMC LCD
+  * @brief   CSDR SDR UI – 9-zone layout 480×320 over FMC LCD
   *
-  *  ┌──────────────────────────────────────────────────┐  Y=0
-  *  │  HEADER  320×18    [RX] ATT:6  13.9V            │
-  *  ├──────────┬─────────────────────────┬─────────────┤  Y=18
-  *  │ SBL 60   │  VFO  200×44            │ SBR 60      │
-  *  │ Mode     │  28.564.000        1kHz  │ RIT  +150   │
-  *  │ VFO A/B  │ A  B:28.564.000   2.7k  │ MIC  21     │
-  *  │ NR  NB   ├─────────────────────────┤ DSP  6      │
-  *  │ VOL  78  │  METER  200×38          │ LEN  45     │
-  *  │ SQL   0  │  S▐▐▐▐▐▐░░░  S7        │             │
-  *  ├──────────┴─────────────────────────┴─────────────┤  Y=100
-  *  │  (background spacer 320×62, filled by DrawFrame) │
-  *  ├──────────────────────────────────────────────────┤  Y=162
-  *  │  SPECTRUM  320×38                                │
-  *  ├──────────────────────────────────────────────────┤  Y=200
-  *  │  WATERFALL  320×30                               │
-  *  ├──────────────────────────────────────────────────┤  Y=230
-  *  │  FOOTER  320×10  -24k    0    +24k               │
-  *  └──────────────────────────────────────────────────┘  Y=240
+  *  ┌─────────────────────────────────────────────────────────────┐  Y=0
+  *  │  HEADER  480×24                              13.9V          │
+  *  ├─────────┬────────────────────────────────────┬─────────────┤  Y=24
+  *  │ SBL 80  │  VFO  320×64                       │ SBR 80      │
+  *  │ Mode    │  14.200.000                         │BW 2.7k ST1k│
+  *  │ VFO A/B │  A  USB  RX                         │MIC 25  AT6d│
+  *  │ NR  NB  ├────────────────────────────────────┤DSP  1      │
+  *  │ VOL 78  │  METER  320×32  2-px ruler style    │            │
+  *  │ SQL  0  │  S 1   3   5   7   9  +20 +40      │            │
+  *  │         │  |---|---|---|===|===|  ← 2 px act  │            │
+  *  ├─────────┴────────────────────────────────────┴─────────────┤  Y=120
+  *  │  INFO STRIP  480×24  (function key labels / status text)   │
+  *  ├─────────────────────────────────────────────────────────────┤  Y=144
+  *  │  SPECTRUM  480×72                                          │
+  *  ├─────────────────────────────────────────────────────────────┤  Y=216
+  *  │  WATERFALL  480×72                                         │
+  *  ├─────────────────────────────────────────────────────────────┤  Y=288
+  *  │  FOOTER  480×32   -24k      0      +24k                    │
+  *  └─────────────────────────────────────────────────────────────┘  Y=320
   *
   *  Transport: FMC 8080-mode (ST7796S) via LCD_PushWindow / LCD_Clear.
   *  No SPI, no DMA wait loops, no CS toggling.
+  *
+  *  Single-zone push times at 8-bit FMC / 116.7 ns/byte:
+  *    Spectrum  (480×72):  8.06 ms   < 10.67 ms (2 DMA half-periods) ✓
+  *    Waterfall (480×72):  8.06 ms   < 10.67 ms                      ✓
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -36,67 +41,78 @@
 extern "C" {
 #endif
 
-/* UI canvas uses the legacy 320×240 geometry; lcd_bus_fmc.h #ifndef guards
- * preserve these values even though the physical display is 480×320. */
-#include "lcd_render.h"    /* SWAP16, Font6x8, LCD_LineFill/Str helpers, LCD_W=320 */
+#include "lcd_render.h"    /* SWAP16, Font6x8, LCD_LineFill/Str helpers, LCD_W=480 */
 #include "lcd_bus_fmc.h"   /* LCD_PushWindow, LCD_Clear, LCD_FillRect              */
 
 /* ── Zone geometry ──────────────────────────────────── */
 
 #define HDR_Y    0U
-#define HDR_H   18U
-#define HDR_Y2  18U
+#define HDR_H   24U
+#define HDR_Y2  24U
 
 #define SBL_X    0U
-#define SBL_W   60U
-#define SBL_Y   18U
-#define SBL_H   82U
-#define SBL_Y2 100U
+#define SBL_W   80U
+#define SBL_Y   24U
+#define SBL_H   96U
+#define SBL_Y2 120U
 
-#define SBR_W   60U
-#define SBR_X  260U          /* LCD_W - SBR_W */
-#define SBR_Y   18U
-#define SBR_H   82U
-#define SBR_Y2 100U
+#define SBR_W   80U
+#define SBR_X  400U          /* LCD_W - SBR_W = 480 - 80 */
+#define SBR_Y   24U
+#define SBR_H   96U
+#define SBR_Y2 120U
 
-#define VFO_X   60U
-#define VFO_W  200U
-#define VFO_Y   18U
-#define VFO_H   44U
-#define VFO_Y2  62U
+#define VFO_X   80U
+#define VFO_W  320U
+#define VFO_Y   24U
+#define VFO_H   64U
+#define VFO_Y2  88U
 
-#define MTR_X   60U
-#define MTR_W  200U
-#define MTR_Y   62U
-#define MTR_H   38U
-#define MTR_Y2 100U
+#define MTR_X   80U
+#define MTR_W  320U
+#define MTR_Y   88U
+#define MTR_H   32U
+#define MTR_Y2 120U
+
+/* Info strip – spacer between top panel and spectrum */
+#define INFO_Y  120U
+#define INFO_H   24U
+#define INFO_Y2 144U
 
 #define SPEC_X    0U
-#define SPEC_W  320U
-#define SPEC_Y  162U
-#define SPEC_H   38U
-#define SPEC_Y2 200U
+#define SPEC_W  480U
+#define SPEC_Y  144U
+#define SPEC_H   72U
+#define SPEC_Y2 216U
 /* Zoom levels: 0=±24k  1=±18k  2=±12k  3=±6k  4=±3k  (display-only, DSP unchanged) */
 #define SPEC_ZOOM_COUNT  5U
 
 #define WF_X     0U
-#define WF_W   320U
-#define WF_Y   200U
-#define WF_H    30U
-#define WF_Y2  230U
+#define WF_W   480U
+#define WF_Y   216U
+#define WF_H    72U
+#define WF_Y2  288U
 
-#define FTR_Y  230U
-#define FTR_H   10U
-#define FTR_Y2 240U
+#define FTR_Y  288U
+#define FTR_H   32U
+#define FTR_Y2 320U
 
-/* ── S-meter bar geometry (inside MTR) ──────────────── */
+/* ── S-meter ruler geometry (inside MTR) ─────────────
+ *  Ruler style: thin 1-px level line with tick marks.
+ *  SM_UNIT_W  : pixels per segment (same total span as before)
+ *  SM_RULER_W : total ruler span (12 × 14 = 168 px)
+ * ─────────────────────────────────────────────────── */
 #define SM_BARS      12U
-#define SM_BAR_W     13U
-#define SM_BAR_GAP    1U
-#define SM_BAR_H     20U
-#define SM_BAR_YOFF  11U
+#define SM_UNIT_W    14U
 #define SM_START_X    4U
-#define SM_TOTAL_W   (SM_BARS * (SM_BAR_W + SM_BAR_GAP))  /* 168 */
+#define SM_RULER_W   (SM_BARS * SM_UNIT_W)  /* 168 px */
+
+/* Row offsets within the 32-row MTR zone (RX S-meter) */
+#define SM_LBL_ROW    2U   /* scale labels (rows 2–9)                    */
+#define SM_TICK_ROW  10U   /* tick-mark pixels (row 10), 1 px            */
+#define SM_RULER_ROW 11U   /* level indicator top row (active+bg) 1 px   */
+#define SM_RULER_ROW2 12U  /* level indicator bottom row (active only)   */
+#define SM_VAL_ROW   13U   /* S-value text (rows 13–20)                  */
 
 /* ── Dirty-zone bitmask ─────────────────────────────── */
 #define DIRTY_HDR   0x01U
@@ -106,7 +122,7 @@ extern "C" {
 #define DIRTY_MTR   0x10U
 #define DIRTY_ALL   0x1FU
 
-/* ── Legacy aliases (used by menu.c) ────────────────── */
+/* ── Legacy aliases (used by menu.c / sdr_scan.c) ──── */
 #define ZONE_SPEC_Y   SPEC_Y
 #define ZONE_SPEC_H   SPEC_H
 #define ZONE_SPEC_Y2  SPEC_Y2
@@ -122,7 +138,7 @@ extern "C" {
 #define UI_VFO_BG         0x0000U
 #define UI_MTR_BG         0x0000U
 #define UI_BORDER         0x18C6U
-#define UI_DIVIDER        0x10A2
+#define UI_DIVIDER        0x10A2U
 
 #define UI_FREQ_MHZ       0x07FFU
 #define UI_FREQ_KHZ       0x3FE0U
@@ -143,17 +159,17 @@ extern "C" {
 #define UI_SMETER_BG      0x1082U
 #define UI_SMETER_TICK    0x5AEBU
 
-#define UI_STATUS_LBL     0x4E7D
-#define UI_STATUS_VAL     0xFFFF
+#define UI_STATUS_LBL     0x3433U   /* dimmed: subdues sidebar labels vs. values */
+#define UI_STATUS_VAL     0xFFFFU
 #define UI_STATUS_ON      0x07E0U
 #define UI_STATUS_OFF     0xF800U
 
-#define UI_TX_BG          0x001F
+#define UI_TX_BG          0xF800U   /* TX = red                    */
 #define UI_TX_FG          0xFFFFU
-#define UI_RX_BG          0xF800
-#define UI_RX_FG          0x07E0U
+#define UI_RX_BG          0x07E0U   /* RX = green (subtle)         */
+#define UI_RX_FG          0xFFFFU
 
-#define UI_SPEC_BG        0x0843
+#define UI_SPEC_BG        0x0843U
 #define UI_SPEC_GRID      0x18C6U
 #define UI_SPEC_CENTER    0xF81FU
 #define UI_SPEC_BW        0x07FFU
@@ -234,6 +250,10 @@ void SDR_UI_RedrawFooter(void);
 
 /* Spectrum delta-skip counters */
 void SDR_UI_GetSpecSkipStats(uint32_t *skip_hits, uint32_t *draw_hits);
+
+/* Waterfall adaptive-skip control (called by csdr_app) */
+void SDR_UI_SetWaterfallSuppressed(bool suppressed);
+bool SDR_UI_GetWaterfallSuppressed(void);
 
 #ifdef __cplusplus
 }

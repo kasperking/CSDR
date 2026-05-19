@@ -120,9 +120,7 @@ extern SDR_State_t g_sdr;
 #define SI5351_I2C_ADDR     (0x60U << 1U)
 #define SI5351_XTAL_HZ      25000000UL
 
-/* LCD (FMC parallel, ST7796S) */
-#define LCD_W  320U
-#define LCD_H  240U
+/* LCD geometry: defined in lcd_render.h (480×320), do not redefine here. */
 
 /* NTC / ADC */
 #define ADC_VREF_MV       3300U

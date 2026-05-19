@@ -29,7 +29,35 @@
 /* USER CODE BEGIN Includes */
 #include <math.h>
 #include <string.h>
+#include "runtime_diag.h"
 /* USER CODE END Includes */
+
+/* ── FFT backend selection ──────────────────────────────────────────────────
+ * Default: CMSIS-DSP arm_cfft_f32 (SDR_USE_CMSIS_FFT defined below).
+ * Fallback: comment out SDR_USE_CMSIS_FFT to revert to the custom radix-2
+ *           twiddle-LUT FFT if the CMSIS build proves unstable.
+ *
+ * CMSIS build requirements (link prebuilt library OR add source files):
+ *   ARM_MATH_CM7 preprocessor define (STM32CubeIDE: C/C++ Build → Settings
+ *     → MCU GCC Compiler → Preprocessor), or defined here below.
+ *   Link: Middlewares/ST/ARM/DSP/Lib/arm_cortexM7lfsp_math.lib
+ *   OR add: arm_cfft_f32.c, arm_cfft_radix8_f32.c,
+ *           arm_const_structs.c, arm_common_tables.c
+ *
+ * Complex_f{float re; float im;} is bit-identical to CMSIS float32_t
+ * interleaved [Re,Im,...] — arm_cfft_f32 operates in-place, no extra copy.
+ * Both backends produce the same natural DFT bin ordering; fftshift semantics
+ * in FFT_ComputeMag_dB and spectrum/waterfall display are unchanged. */
+#define SDR_USE_CMSIS_FFT
+
+#ifdef SDR_USE_CMSIS_FFT
+#ifndef ARM_MATH_CM7
+#define ARM_MATH_CM7
+#endif
+#include "arm_math.h"
+#include "arm_const_structs.h"
+static const arm_cfft_instance_f32 *s_cfft_inst;
+#endif /* SDR_USE_CMSIS_FFT */
 
 /* USER CODE BEGIN PD */
 #define DSP_TWO_PI      6.28318530717958647692f
@@ -45,10 +73,18 @@
 /* USER CODE BEGIN PV */
 static float   s_nco_sin_lut[NCO_LUT_SIZE];
 static uint8_t s_nco_lut_init = 0U;
+
+/* Precomputed FFT twiddle factors for N=DSP_FFT_SIZE=256.
+ * W_N^k = exp(-j2πk/N): cos(-2πk/256) and sin(-2πk/256) for k=0..127.
+ * Built once in DSP_Init; eliminates repeated cosf/sinf inside the FFT loop. */
+static float   s_fft_tw_cos[DSP_FFT_SIZE / 2U];
+static float   s_fft_tw_sin[DSP_FFT_SIZE / 2U];
+static uint8_t s_fft_tw_init = 0U;
 /* USER CODE END PV */
 
 /* USER CODE BEGIN PFP */
 static void bit_reverse(Complex_f *buf, uint16_t n);
+static void FFT_Precomp(Complex_f *buf, uint16_t n);
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
@@ -62,6 +98,43 @@ static void bit_reverse(Complex_f *buf, uint16_t n)
     j ^= bit;
     if (i < j) { Complex_f tmp = buf[i]; buf[i] = buf[j]; buf[j] = tmp; }
   }
+}
+/* FFT with precomputed twiddle table — eliminates per-stage sinf/cosf and
+ * per-butterfly incremental twiddle rotation (saves ~4 FP mults per butterfly).
+ * Requires s_fft_tw_cos/sin built by DSP_Init before first call.
+ *
+ * When SDR_USE_CMSIS_FFT is defined this function delegates to arm_cfft_f32
+ * instead.  Complex_f{float re; float im;} is bit-identical to CMSIS
+ * float32_t interleaved [Re,Im,...] so no copy is needed.  The CMSIS call
+ * with bitReverseFlag=1 performs bit-reversal internally, so our own
+ * bit_reverse() call is skipped on that path.  Output order and fftshift
+ * semantics in FFT_ComputeMag_dB are unchanged. */
+static void FFT_Precomp(Complex_f *buf, uint16_t n)
+{
+#ifdef SDR_USE_CMSIS_FFT
+  (void)n;
+  /* Forward FFT, in-place, with internal bit-reversal.
+   * s_cfft_inst points to arm_cfft_sR_f32_len256 (N=256, set in DSP_Init). */
+  arm_cfft_f32(s_cfft_inst, (float32_t *)buf, 0U /*forward*/, 1U /*bitReverse*/);
+#else
+  bit_reverse(buf, n);
+  for (uint16_t len = 2U; len <= n; len <<= 1U) {
+    uint16_t step = n / len;          /* twiddle index step into W_N table */
+    for (uint16_t i = 0U; i < n; i += len) {
+      uint16_t half = len >> 1U;
+      for (uint16_t j = 0U; j < half; j++) {
+        uint16_t tw   = (uint16_t)(j * step);
+        uint16_t even = i + j;
+        uint16_t odd  = i + j + half;
+        Complex_f u   = buf[even];
+        float vr = buf[odd].re * s_fft_tw_cos[tw] - buf[odd].im * s_fft_tw_sin[tw];
+        float vi = buf[odd].re * s_fft_tw_sin[tw] + buf[odd].im * s_fft_tw_cos[tw];
+        buf[even].re = u.re + vr;  buf[even].im = u.im + vi;
+        buf[odd].re  = u.re - vr;  buf[odd].im  = u.im - vi;
+      }
+    }
+  }
+#endif /* SDR_USE_CMSIS_FFT */
 }
 /* USER CODE END 0 */
 
@@ -342,6 +415,25 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
     s_nco_lut_init = 1U;
   }
 
+  /* Build FFT twiddle table once: W_N^k = exp(-j2πk/N) for k=0..N/2-1.
+   * Used by the custom twiddle-LUT path.  Also built when CMSIS FFT is active
+   * so the fallback path is always available for debugging. */
+  if (!s_fft_tw_init) {
+    for (uint16_t k = 0U; k < (DSP_FFT_SIZE / 2U); k++) {
+      float ang = -DSP_TWO_PI * (float)k / (float)DSP_FFT_SIZE;
+      s_fft_tw_cos[k] = cosf(ang);
+      s_fft_tw_sin[k] = sinf(ang);
+    }
+    s_fft_tw_init = 1U;
+  }
+
+#ifdef SDR_USE_CMSIS_FFT
+  /* Point to the CMSIS pre-computed instance for N=256.
+   * arm_cfft_sR_f32_len256 is a const struct in arm_const_structs.c
+   * (part of CMSIS-DSP).  No dynamic initialisation needed. */
+  s_cfft_inst = &arm_cfft_sR_f32_len256;
+#endif
+
   NCO_SetFrequency(&dsp->nco,    0, sample_rate);
   NCO_SetFrequency(&dsp->nco_if, 0, sample_rate);
 
@@ -528,7 +620,9 @@ void DSP_Process(DSP_State_t *dsp,
       if (dsp->fft_fill >= DSP_FFT_SIZE)
       {
         float peak;
-        FFT_Radix2(dsp->fft_buf, DSP_FFT_SIZE);
+        { uint32_t fft_t0 = DWT->CYCCNT;
+          FFT_Precomp(dsp->fft_buf, DSP_FFT_SIZE);
+          RuntimeDiag_FftReport((uint32_t)(DWT->CYCCNT - fft_t0)); }
         FFT_ComputeMag_dB(dsp->fft_buf, dsp->fft_mag_db, DSP_FFT_SIZE, &peak);
         dsp->fft_ready = true;
         if (dsp->wf_lines < 8U) dsp->wf_lines++;
@@ -790,7 +884,9 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
       if (dsp->fft_fill >= DSP_FFT_SIZE)
       {
         float peak;
-        FFT_Radix2(dsp->fft_buf, DSP_FFT_SIZE);
+        { uint32_t fft_t0 = DWT->CYCCNT;
+          FFT_Precomp(dsp->fft_buf, DSP_FFT_SIZE);
+          RuntimeDiag_FftReport((uint32_t)(DWT->CYCCNT - fft_t0)); }
         FFT_ComputeMag_dB(dsp->fft_buf, dsp->fft_mag_db, DSP_FFT_SIZE, &peak);
         dsp->fft_ready = true;
         dsp->fft_fill  = 0U;

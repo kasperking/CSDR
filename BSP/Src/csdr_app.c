@@ -129,6 +129,10 @@ extern volatile uint32_t dbg_cat_parse_latency_us; /* last CAT_Process duration 
 extern char              dbg_cat_last_cmd[];        /* last complete command, NUL-terminated       */
 extern char              dbg_cat_last_resp[];       /* last non-empty response enqueued            */
 
+/* Waterfall adaptive-skip counters */
+static volatile uint32_t dbg_wf_skip_count = 0U; /* waterfall frames suppressed by overload-hysteresis */
+static volatile uint8_t  dbg_ui_load_high  = 0U; /* 1 = system load too high for waterfall */
+
 /* Set to 1 in debugger to skip waterfall/LCD DMA while diagnosing USB audio. */
 static volatile uint8_t dbg_disable_lcd_dma = 0;
 
@@ -136,8 +140,10 @@ static volatile uint8_t dbg_disable_lcd_dma = 0;
 static void csdr_apply_volume(uint8_t vol);
 static void csdr_apply_tx(void);
 
-#define CSDR_UI_WF_RX_PERIOD_MS       67U   /* ~15 fps waterfall in RX; smaller buffer makes this safe */
-#define CSDR_UI_DISPLAY_RX_PERIOD_MS 200U   /* 5 fps spectrum/meter; keep low — rate × size drives LCD BW */
+#define CSDR_UI_SPEC_RX_PERIOD_MS    36U    /* ~28 fps spectrum in RX — decoupled from waterfall */
+#define CSDR_UI_WF_RX_PERIOD_MS      75U    /* ~13 fps waterfall in RX */
+#define UI_OVERLOAD_DECAY_MS         500U   /* suppress waterfall for 500ms after load clears */
+#define CSDR_UI_DISPLAY_RX_PERIOD_MS 100U   /* 10 fps dirty-zone + meter refresh */
 #define CSDR_UI_DISPLAY_TX_PERIOD_MS 1000U  /* 1 Hz compact TX meter refresh */
 #define CSDR_UI_TX_DIRTY_MIN_MS      1000U  /* defer knob/menu redraws while TX audio is time-critical */
 
@@ -178,10 +184,10 @@ static void csdr_apply_band(uint8_t band);
 static void csdr_handle_encoder(void);
 static void csdr_handle_keys(void);
 static void csdr_process_audio_pending(void);
+static void csdr_update_spectrum(void);
 static void csdr_update_waterfall(void);
 static void csdr_refresh_display(void);
 static void menu_apply_cb(void);
-static uint8_t  default_zoom_for_mode(SDR_Mode_t m);
 static uint32_t default_bw_for_mode(SDR_Mode_t m);
 static void csdr_vfo_swap(void);
 static void csdr_vfo_copy_to_b(void);
@@ -467,7 +473,7 @@ void CSDR_Loop(void)
   csdr_handle_keys();
 
   /* Timed tasks */
-  static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0;
+  static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0, t_spec=0;
   uint32_t now = HAL_GetTick();
 
   if (now - t_analog >= 100U) {
@@ -477,11 +483,46 @@ void CSDR_Loop(void)
   }
   if (now - t_fan    >= 1000U){ t_fan    = now; Fan_Update(g_analog.temp_c); }
   if (now - t_pwr    >= 100U) { t_pwr    = now; PWR_Poll(); }
-  /* Waterfall: 25 fps cap in RX.  Freeze it in TX so the 320x62 two-split
-   * SPI push (~39.7 kB plus cache clean/DMA wait) cannot periodically block
-   * TX audio generation at the same cadence as WSJT-X audio deadlines. */
+
+  /* Spectrum: ~28 fps in RX.  Independent timer from waterfall — allows fast
+   * peak-trace responsiveness without pulling the slower waterfall scroll rate. */
+  if (!g_sdr.tx_mode && (now - t_spec >= CSDR_UI_SPEC_RX_PERIOD_MS)) {
+    t_spec = now;
+    if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
+      csdr_process_audio_pending();
+      RuntimeDiag_UiRenderBegin();
+      csdr_update_spectrum();
+      RuntimeDiag_UiRenderEnd();
+    }
+  } else if (g_sdr.tx_mode) {
+    t_spec = now;
+  }
+
+  /* Waterfall: ~13 fps in RX.  Frozen in TX to avoid the 480×72 FMC push
+   * (8.06ms) competing with SAI TX DMA fill at WSJT-X audio deadlines. */
   if (!g_sdr.tx_mode && (now - t_wf >= CSDR_UI_WF_RX_PERIOD_MS)) {
     t_wf = now;
+    /* Adaptive waterfall skip: suppress FMC push when audio load or UI stall is elevated.
+     * Hysteresis: once triggered, suppression holds for UI_OVERLOAD_DECAY_MS (500ms). */
+    {
+      static uint32_t s_wf_overload_ms = 0U;
+      RuntimeDiag_Snapshot_t snap;
+      RuntimeDiag_GetSnapshot(&snap);
+      if (snap.max_ui_us > 15000U || snap.max_loop_stall_us > 20000U ||
+          snap.rx_overrun_per_sec > 0U || snap.tx_underrun_per_sec > 0U) {
+        s_wf_overload_ms = UI_OVERLOAD_DECAY_MS;
+        dbg_ui_load_high = 1U;
+      } else if (s_wf_overload_ms > CSDR_UI_WF_RX_PERIOD_MS) {
+        s_wf_overload_ms -= CSDR_UI_WF_RX_PERIOD_MS;
+      } else {
+        s_wf_overload_ms = 0U;
+        dbg_ui_load_high = 0U;
+      }
+      bool wf_suppressed = (s_wf_overload_ms > 0U);
+      if (wf_suppressed) dbg_wf_skip_count++;
+      SDR_UI_SetWaterfallSuppressed(wf_suppressed);
+      RuntimeDiag_WfSkipReport(dbg_wf_skip_count, wf_suppressed);
+    }
     if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
       csdr_process_audio_pending();
       RuntimeDiag_UiRenderBegin();
@@ -539,7 +580,6 @@ void CSDR_Loop(void)
       g_sdr.cat_mode_dirty = false;
       DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
       DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
-      SDR_UI_SetSpecZoom(default_zoom_for_mode(g_sdr.mode));
     }
     if (g_sdr.cat_tx_dirty) {
       g_sdr.cat_tx_dirty = false;
@@ -761,7 +801,6 @@ static void csdr_handle_encoder(void)
     g_sdr.bw_hz  = default_bw_for_mode(g_sdr.mode);
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
-    SDR_UI_SetSpecZoom(default_zoom_for_mode(g_sdr.mode));
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
   }
   if (Encoder_GetLongPress(&g_encoder)) {
@@ -881,7 +920,6 @@ static void csdr_handle_keys(void)
     g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
-    SDR_UI_SetSpecZoom(default_zoom_for_mode(g_sdr.mode));
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
   }
 
@@ -891,6 +929,27 @@ static void csdr_handle_keys(void)
     g_sdr.display_dirty |= _tx ? DIRTY_HDR : (uint8_t)DIRTY_ALL;
     csdr_apply_tx();   /* immediate for physical PTT — no deferred path */
   }
+}
+
+static void csdr_update_spectrum(void)
+{
+  if (g_sdr.tx_mode || !g_dsp.fft_ready || Menu_IsOpen(&g_menu)) return;
+  g_dsp.fft_ready = false;
+
+  float bw_lo_ratio = 0.0f, bw_hi_ratio = 0.0f;
+  if (g_dsp.sample_rate > 0U && g_sdr.bw_hz > 0U) {
+    float full = (float)g_sdr.bw_hz / (float)g_dsp.sample_rate;
+    float half = full * 0.5f;
+    switch (g_sdr.mode) {
+      case MODE_LSB: bw_lo_ratio = full; bw_hi_ratio = 0.0f; break;
+      case MODE_USB:
+      case MODE_CW:  bw_lo_ratio = 0.0f; bw_hi_ratio = full; break;
+      default:       bw_lo_ratio = half; bw_hi_ratio = half; break;
+    }
+  }
+  RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_SPECTRUM);
+  SDR_UI_DrawSpectrum(g_dsp.fft_mag_db, DSP_FFT_SIZE, bw_lo_ratio, bw_hi_ratio, NULL);
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_SPECTRUM);
 }
 
 static void csdr_update_waterfall(void)
@@ -905,33 +964,6 @@ static void csdr_update_waterfall(void)
 static void csdr_refresh_display(void)
 {
   bool menu_open = Menu_IsOpen(&g_menu);
-
-  /* Spectrum: RX only.  During TX the spectrum/waterfall region is the largest
-   * LCD workload (68 full-width rows), so leave it frozen and reserve main-loop
-   * time for filling the next SAI TX half-buffer. */
-  if (!g_sdr.tx_mode && g_dsp.fft_ready && !menu_open) {
-    g_dsp.fft_ready = false;
-
-    float bw_lo_ratio = 0.0f, bw_hi_ratio = 0.0f;
-    if (g_dsp.sample_rate > 0U && g_sdr.bw_hz > 0U)
-    {
-      float full = (float)g_sdr.bw_hz / (float)g_dsp.sample_rate;
-      float half = full * 0.5f;
-      switch (g_sdr.mode)
-      {
-        case MODE_LSB: bw_lo_ratio = full; bw_hi_ratio = 0.0f; break;
-        case MODE_USB:
-        case MODE_CW:  bw_lo_ratio = 0.0f; bw_hi_ratio = full; break;
-        case MODE_AM:
-        case MODE_FM:
-        default:       bw_lo_ratio = half; bw_hi_ratio = half; break;
-      }
-    }
-    RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_SPECTRUM);
-    SDR_UI_DrawSpectrum(g_dsp.fft_mag_db, DSP_FFT_SIZE,
-                        bw_lo_ratio, bw_hi_ratio, NULL);
-    RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_SPECTRUM);
-  }
 
   uint8_t dirty = g_sdr.display_dirty;
   if (dirty != 0U) {
@@ -999,18 +1031,6 @@ static void csdr_refresh_display(void)
       SDR_UI_UpdateSMeter(g_dsp.signal_power_db);
       RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     }
-  }
-}
-
-static uint8_t default_zoom_for_mode(SDR_Mode_t m)
-{
-  switch (m) {
-    case MODE_CW:            return 4U;  /* ±3k */
-    case MODE_USB:
-    case MODE_LSB:           return 3U;  /* ±6k */
-    case MODE_AM:
-    case MODE_FM:
-    default:                 return 0U;  /* ±24k */
   }
 }
 
@@ -1085,7 +1105,6 @@ static void csdr_vfo_swap(void)
   DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
   DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
-  SDR_UI_SetSpecZoom(default_zoom_for_mode(g_sdr.mode));
   g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
 }
 
@@ -1164,7 +1183,7 @@ static void     cat_set_mode(uint8_t m)
   if (g_sdr.cat_mode_dirty) dbg_cat_blocked_updates++;
   g_sdr.mode  = (SDR_Mode_t)m;
   g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
-  g_sdr.cat_mode_dirty = true; /* DSP + zoom applied by CSDR_Loop */
+  g_sdr.cat_mode_dirty = true; /* DSP mode + BW applied by CSDR_Loop */
   g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
 }
 /* CAT callback — deferred: sets dirty flag, hardware applied by CSDR_Loop.

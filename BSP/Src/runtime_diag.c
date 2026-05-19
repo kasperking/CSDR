@@ -36,6 +36,24 @@ static uint32_t s_last_watchdog_ms = 0U;
 static uint32_t s_dsp_stack_words = 0U;
 static uint32_t s_gui_stack_words = 0U;
 static uint32_t s_cat_stack_words = 0U;
+static uint32_t s_wf_skip_count          = 0U;
+static uint8_t  s_ui_load_high           = 0U;
+/* LCD chunk stats — written by RuntimeDiag_LcdChunkReport (called from sdr_ui) */
+static uint32_t s_lcd_chunk_count        = 0U;
+static uint32_t s_lcd_chunk_abort_count  = 0U;
+static uint32_t s_wf_partial_count       = 0U;
+static uint32_t s_max_chunk_render_us    = 0U;
+/* FFT timing — written by RuntimeDiag_FftReport (called from sdr_dsp) */
+static uint32_t s_max_fft_cycles         = 0U;
+static uint32_t s_avg_fft_cycles         = 0U;  /* EMA, α = 1/64 */
+/* Spectrum partial-redraw stats — written by RuntimeDiag_SpecReport (sdr_ui) */
+static uint32_t s_spec_partial_count     = 0U;
+static uint32_t s_spec_skip_count        = 0U;
+static uint32_t s_max_spec_partial_us    = 0U;
+/* VFO glyph-redraw stats — written by RuntimeDiag_VfoReport (sdr_ui) */
+static uint32_t s_vfo_glyph_count        = 0U;
+static uint32_t s_vfo_skip_count         = 0U;
+static uint32_t s_max_vfo_us             = 0U;
 
 #if RUNTIMEDIAG_FREERTOS_AVAILABLE
 static TaskHandle_t s_dsp_task = NULL;
@@ -86,6 +104,8 @@ void RuntimeDiag_Init(void)
     s_ui_section_start_cyc[i] = 0U;
     s_ui_section_max_cyc[i] = 0U;
   }
+  s_max_fft_cycles = 0U;
+  s_avg_fft_cycles = 0U;
   diag_enable_cycle_counter();
   s_cpu_window_start_ms = HAL_GetTick();
   s_cpu_window_start_cyc = DWT->CYCCNT;
@@ -228,6 +248,22 @@ void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out)
   for (uint8_t i = 0U; i < (uint8_t)RUNTIME_DIAG_UI_SECTION_COUNT; i++) {
     out->ui_section_max_us[i] = diag_cycles_to_us(s_ui_section_max_cyc[i]);
   }
+  out->wf_skip_count           = s_wf_skip_count;
+  out->wf_render_max_us        = diag_cycles_to_us(s_ui_section_max_cyc[RUNTIME_DIAG_UI_WATERFALL]);
+  out->spec_render_max_us      = diag_cycles_to_us(s_ui_section_max_cyc[RUNTIME_DIAG_UI_SPECTRUM]);
+  out->ui_load_high            = (s_ui_load_high != 0U);
+  out->lcd_chunk_count         = s_lcd_chunk_count;
+  out->lcd_chunk_abort_count   = s_lcd_chunk_abort_count;
+  out->wf_partial_render_count = s_wf_partial_count;
+  out->max_chunk_render_us     = s_max_chunk_render_us;
+  out->max_fft_us              = diag_cycles_to_us(s_max_fft_cycles);
+  out->avg_fft_us              = diag_cycles_to_us(s_avg_fft_cycles);
+  out->spec_partial_redraw_count = s_spec_partial_count;
+  out->spec_skip_count           = s_spec_skip_count;
+  out->max_spec_partial_us       = s_max_spec_partial_us;
+  out->vfo_glyph_redraw_count    = s_vfo_glyph_count;
+  out->vfo_skip_count            = s_vfo_skip_count;
+  out->max_vfo_redraw_us         = s_max_vfo_us;
 }
 
 uint32_t RuntimeDiag_RxHalfIsr(uint8_t half_index)
@@ -290,6 +326,60 @@ void RuntimeDiag_ResetPeaks(void)
   }
   s_max_rx_overrun_per_sec = 0U;
   s_max_tx_underrun_per_sec = 0U;
+  s_wf_skip_count = 0U;
+  s_max_chunk_render_us = 0U;  /* reset peak; cumulative counters are not reset */
+  s_max_fft_cycles = 0U;
+  s_max_spec_partial_us = 0U;
+  s_max_vfo_us = 0U;
+  /* rolling averages / cumulative totals not reset */
+}
+
+void RuntimeDiag_WfSkipReport(uint32_t skip_count, bool load_high)
+{
+  s_wf_skip_count = skip_count;
+  s_ui_load_high  = load_high ? 1U : 0U;
+}
+
+bool RuntimeDiag_IsUiOverload(void)
+{
+  return (s_ui_load_high != 0U);
+}
+
+void RuntimeDiag_LcdChunkReport(uint32_t chunk_count, uint32_t abort_count,
+                                 uint32_t partial_count, uint32_t max_chunk_us)
+{
+  s_lcd_chunk_count       = chunk_count;
+  s_lcd_chunk_abort_count = abort_count;
+  s_wf_partial_count      = partial_count;
+  if (max_chunk_us > s_max_chunk_render_us) s_max_chunk_render_us = max_chunk_us;
+}
+
+void RuntimeDiag_FftReport(uint32_t cycles)
+{
+  /* FFT runs at ~187 Hz (256-sample frame / 48 kHz), making it the largest
+   * single DSP cost.  Tracking peak and rolling average here lets the debugger
+   * confirm that CMSIS arm_cfft_f32 beats the custom twiddle-LUT fallback and
+   * catches any regression without external instrumentation.
+   * EMA with α = 1/64 smooths transient spikes while converging in ~3 s. */
+  if (cycles > s_max_fft_cycles) s_max_fft_cycles = cycles;
+  s_avg_fft_cycles = (s_avg_fft_cycles * 63U + cycles) / 64U;
+}
+
+void RuntimeDiag_SpecReport(uint32_t partial_count, uint32_t skip_count,
+                             uint32_t max_partial_us)
+{
+  s_spec_partial_count  = partial_count;
+  s_spec_skip_count     = skip_count;
+  if (max_partial_us > s_max_spec_partial_us)
+    s_max_spec_partial_us = max_partial_us;
+}
+
+void RuntimeDiag_VfoReport(uint32_t glyph_count, uint32_t skip_count,
+                            uint32_t max_redraw_us)
+{
+  s_vfo_glyph_count = glyph_count;
+  s_vfo_skip_count  = skip_count;
+  if (max_redraw_us > s_max_vfo_us) s_max_vfo_us = max_redraw_us;
 }
 
 void RuntimeDiag_WatchdogRefreshIfHealthy(uint32_t now_ms)
