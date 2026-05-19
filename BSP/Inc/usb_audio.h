@@ -78,12 +78,18 @@ typedef struct {
   volatile uint16_t tx_count;   /* Bytes available – written by both contexts  */
 
   /* Stats */
-  uint32_t rx_overrun;
-  uint32_t rx_underrun;
-  uint32_t tx_overrun;
-  uint32_t tx_underrun;
-  uint32_t usb_rx_frames;   /* Frames received from USB */
-  uint32_t usb_tx_frames;   /* Frames sent to USB       */
+  uint32_t rx_overrun;      /* Total RX overflow events (ring > 75% → packet discarded) */
+  uint32_t rx_underrun;     /* Total RX underrun events  (ring empty at USB ISO IN time) */
+  uint32_t tx_overrun;      /* Total TX overflow events  (USB OUT arrived, ring full)    */
+  uint32_t tx_underrun;     /* Total TX underrun events  (SAI DMA fired, ring empty)     */
+  uint32_t dropped_packets; /* RX packets silently discarded at the 75% overflow path    */
+  uint32_t usb_rx_frames;   /* Frames received from USB host (USB OUT, PC→SAI)  */
+  uint32_t usb_tx_frames;   /* Frames sent to USB host      (USB IN,  SAI→PC)   */
+
+  /* rx_overrun_pending: set by USB IRQ (ReadRXPacket) on every overflow event.
+   * Cleared by main loop after detection.  Allows CSDR_Loop to react within
+   * one waterfall tick (75 ms) rather than waiting for the 1-second rate window. */
+  volatile bool rx_overrun_pending;
 
   volatile bool usb_streaming;   /* True khi USB host đang stream */
 } USB_Audio_Handle_t;

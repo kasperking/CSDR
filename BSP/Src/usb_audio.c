@@ -26,9 +26,22 @@ void USB_Audio_SetStreaming(USB_Audio_Handle_t *au, bool enable)
   /* USER CODE BEGIN USB_Audio_SetStreaming_0 */
   au->usb_streaming = enable;
   if (!enable) {
-    /* Clear rings on stop */
+    /* Stop: clear ring state so stale data is not replayed on reconnect.
+     * Keep error counters alive until the next session start so they remain
+     * visible in the diagnostic snapshot after the host disconnects. */
     au->rx_wr = au->rx_rd = au->rx_count = 0U;
     au->tx_wr = au->tx_rd = au->tx_count = 0U;
+  } else {
+    /* Start: reset per-session stats so counters reflect the new session only.
+     * Ring state was already zeroed on the preceding Stop call (or at Init). */
+    au->rx_overrun        = 0U;
+    au->rx_underrun       = 0U;
+    au->tx_overrun        = 0U;
+    au->tx_underrun       = 0U;
+    au->dropped_packets   = 0U;
+    au->usb_rx_frames     = 0U;
+    au->usb_tx_frames     = 0U;
+    au->rx_overrun_pending = false;
   }
   /* USER CODE END USB_Audio_SetStreaming_0 */
 }
@@ -53,14 +66,16 @@ void USB_Audio_WriteRX(USB_Audio_Handle_t *au,
   /* Critical section: read rx_count + overrun check must be atomic.
    * USB IRQ (ReadRXPacket) can decrement rx_count at any time.  A stale
    * read here is conservative — the IRQ can only create MORE free space,
-   * so if we see "no overrun" with a slightly high rx_count, that is safe. */
-  __disable_irq();
+   * so if we see "no overrun" with a slightly high rx_count, that is safe.
+   * BASEPRI = 0x20: masks USB OTG (priority 2 → 0x20) while leaving
+   * SAI/DMA (priority 0 → 0x00) unmasked. */
+  __set_BASEPRI(0x20U);
   if (au->rx_count + bytes > USB_AUDIO_RING_SIZE) {
     au->rx_overrun++;
-    __enable_irq();
+    __set_BASEPRI(0U);
     return;
   }
-  __enable_irq();
+  __set_BASEPRI(0U);
 
   /* rx_wr is exclusively written by this function (main-loop context only).
    * USB IRQ never touches rx_wr, so the write loop needs no critical section. */
@@ -88,12 +103,13 @@ void USB_Audio_WriteRX(USB_Audio_Handle_t *au,
    * inside the CS so the increment correctly accounts for that decrement.
    * If streaming was stopped (SetStreaming fired from IRQ) while we were
    * writing, the ring was already reset; discard this update to avoid
-   * inflating rx_count against a zero'd ring. */
-  __disable_irq();
+   * inflating rx_count against a zero'd ring.
+   * BASEPRI = 0x20: masks USB OTG (priority 2 → 0x20); SAI/DMA unmasked. */
+  __set_BASEPRI(0x20U);
   if (au->usb_streaming) {
     au->rx_count = (uint16_t)(au->rx_count + bytes);
   }
-  __enable_irq();
+  __set_BASEPRI(0U);
   /* USER CODE END USB_Audio_WriteRX_0 */
 }
 
@@ -117,6 +133,11 @@ uint16_t USB_Audio_ReadRXPacket(USB_Audio_Handle_t *au, uint8_t *dst)
     au->rx_rd    = (uint16_t)((au->rx_rd + pkt) % USB_AUDIO_RING_SIZE);
     au->rx_count = (uint16_t)(au->rx_count - pkt);
     au->rx_overrun++;
+    au->dropped_packets++;
+    /* Signal the main loop immediately — do not wait for the 1-second
+     * rate window in RuntimeDiag_ServiceSlow.  The volatile write is a
+     * single store instruction on Cortex-M7; no critical section needed. */
+    au->rx_overrun_pending = true;
   }
 
   if (au->rx_count < pkt) {

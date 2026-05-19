@@ -13,6 +13,7 @@ extern "C" {
 #define FAULT_I2S_TX_UND  (1UL << 1)
 #define FAULT_CODEC       (1UL << 2)
 #define FAULT_PLL         (1UL << 3)
+#define FAULT_IRQ_CFG     (1UL << 4)  /* IRQ priority hierarchy violated (CubeMX regen risk) */
 
 typedef enum {
   RUNTIME_DIAG_UI_WATERFALL = 0,

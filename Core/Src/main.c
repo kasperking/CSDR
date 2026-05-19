@@ -1078,6 +1078,9 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, ATT_LATCH_Pin|T_R_SW_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level — LCD_RESET deasserted high before FMC/LCD init */
+  HAL_GPIO_WritePin(LCD_RESET_GPIO_Port, LCD_RESET_Pin, GPIO_PIN_SET);
+
   /*Configure GPIO pins : LPF_A0_Pin LPF_A1_Pin LPF_A2_Pin BPF_S1_Pin
                            BPF_S2_Pin BPF_OE1_Pin BPF_OE2_Pin FLASH_CS_Pin */
   GPIO_InitStruct.Pin = LPF_A0_Pin|LPF_A1_Pin|LPF_A2_Pin|BPF_S1_Pin
@@ -1112,6 +1115,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LCD_RESET_Pin (PD13) */
+  GPIO_InitStruct.Pin = LCD_RESET_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(LCD_RESET_GPIO_Port, &GPIO_InitStruct);
 
   /* PC6 legacy LCD_RS: unused, RS/DC is now FMC_A16 (PD11). Kept as a
    * driven-low output at LOW speed to prevent the pin floating. */

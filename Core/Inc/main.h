@@ -123,6 +123,8 @@ void Error_Handler(void);
 #define FLASH_MISO_GPIO_Port GPIOC
 #define FLASH_MOSI_Pin GPIO_PIN_12
 #define FLASH_MOSI_GPIO_Port GPIOC
+#define LCD_RESET_Pin GPIO_PIN_13
+#define LCD_RESET_GPIO_Port GPIOD
 
 /* USER CODE BEGIN Private defines */
 

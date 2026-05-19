@@ -133,6 +133,9 @@ extern char              dbg_cat_last_resp[];       /* last non-empty response e
 static volatile uint32_t dbg_wf_skip_count = 0U; /* waterfall frames suppressed by overload-hysteresis */
 static volatile uint8_t  dbg_ui_load_high  = 0U; /* 1 = system load too high for waterfall */
 
+/* USB/SAI drift mitigation */
+static volatile uint32_t dbg_drift_corrections = 0U; /* TX ring resets applied for chronic underrun */
+
 /* Set to 1 in debugger to skip waterfall/LCD DMA while diagnosing USB audio. */
 static volatile uint8_t dbg_disable_lcd_dma = 0;
 
@@ -368,6 +371,35 @@ void CSDR_Init(void)
       CSDR_AUDIO_BUF_TOTAL * 2U);
   HAL_Delay(10U);
 
+  /* ── E. Boot-time IRQ priority safety check ───────────────────────────────
+   * Verifies that SAI and DMA audio IRQs are strictly higher priority
+   * (lower number) than USB OTG.  CubeMX regeneration reverts the OTG_FS
+   * priority to 0, putting it on par with SAI — the most common regen bug.
+   *
+   * If the hierarchy is wrong, the FAULT_IRQ_CFG bit is set in the runtime
+   * fault register so it appears in the diagnostic snapshot.  In debug builds
+   * (NDEBUG not defined) we halt in the debugger so the violation is
+   * impossible to miss; a watchdog reset is the release-build recovery.
+   *
+   * Priority encoding (STM32H7, NVIC_PRIORITYGROUP_4, __NVIC_PRIO_BITS=4):
+   *   HAL_NVIC_SetPriority(x, N, 0) stores N<<4 in the IPR register.
+   *   Numerically lower IPR value = higher urgency = must preempt USB. */
+  {
+    uint32_t sai_prio  = NVIC_GetPriority(SAI1_IRQn);
+    uint32_t dma0_prio = NVIC_GetPriority(DMA1_Stream0_IRQn);
+    uint32_t dma1_prio = NVIC_GetPriority(DMA1_Stream1_IRQn);
+    uint32_t otg_prio  = NVIC_GetPriority(OTG_FS_IRQn);
+    if (sai_prio >= otg_prio || dma0_prio >= otg_prio || dma1_prio >= otg_prio) {
+      RuntimeDiag_SetFault(FAULT_IRQ_CFG);
+#if !defined(NDEBUG)
+      /* Halt in debugger.  Check usbd_conf.c USER CODE USB_OTG_FS_MspInit 1
+       * for the HAL_NVIC_SetPriority(OTG_FS_IRQn, 2, 0) override — it is
+       * the first thing CubeMX regen silently removes. */
+      while ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) != 0U) { __BKPT(0); }
+#endif
+    }
+  }
+
   /* Re-activate WM8731 now that SAI clocks are running.
    * First activate may have failed because BCLK/LRCK weren't running.
    * Register 0x09 (Active) = 0x0001 → I2C write:
@@ -503,13 +535,34 @@ void CSDR_Loop(void)
   if (!g_sdr.tx_mode && (now - t_wf >= CSDR_UI_WF_RX_PERIOD_MS)) {
     t_wf = now;
     /* Adaptive waterfall skip: suppress FMC push when audio load or UI stall is elevated.
-     * Hysteresis: once triggered, suppression holds for UI_OVERLOAD_DECAY_MS (500ms). */
+     * Hysteresis: once triggered, suppression holds for UI_OVERLOAD_DECAY_MS (500ms).
+     *
+     * Trigger conditions (any one is sufficient):
+     *  a) rx_overrun_pending — USB IRQ flagged a ring overflow THIS tick (immediate)
+     *  b) rx ring occupancy  > 75% — main-loop audio processing is falling behind
+     *  c) slow-path overrun/underrun rate from RuntimeDiag (1-second lag, kept for
+     *     longer-horizon load awareness)
+     *  d) UI or loop stall timing peaks from RuntimeDiag
+     *
+     * The pending flag is consumed here (cleared after check) so it does not
+     * permanently lock out the waterfall if the overrun was transient. */
     {
       static uint32_t s_wf_overload_ms = 0U;
+
+      /* a+b: direct ring checks — react within one waterfall period (75 ms) */
+      bool ring_pressure = g_usb_audio.rx_overrun_pending ||
+                           (g_usb_audio.rx_count > (USB_AUDIO_RING_SIZE * 3U / 4U));
+      if (g_usb_audio.rx_overrun_pending) g_usb_audio.rx_overrun_pending = false;
+
+      /* c+d: slow-path diagnostics (1-second window) */
       RuntimeDiag_Snapshot_t snap;
       RuntimeDiag_GetSnapshot(&snap);
-      if (snap.max_ui_us > 15000U || snap.max_loop_stall_us > 20000U ||
-          snap.rx_overrun_per_sec > 0U || snap.tx_underrun_per_sec > 0U) {
+      bool diag_pressure = (snap.max_ui_us > 15000U ||
+                            snap.max_loop_stall_us > 20000U ||
+                            snap.rx_overrun_per_sec > 0U ||
+                            snap.tx_underrun_per_sec > 0U);
+
+      if (ring_pressure || diag_pressure) {
         s_wf_overload_ms = UI_OVERLOAD_DECAY_MS;
         dbg_ui_load_high = 1U;
       } else if (s_wf_overload_ms > CSDR_UI_WF_RX_PERIOD_MS) {
@@ -550,6 +603,49 @@ void CSDR_Loop(void)
       RuntimeDiag_UiRenderEnd();
     }
   }
+  /* ── D. USB/SAI clock drift mitigation ───────────────────────────────────
+   * USB ISO delivers 1 packet/ms from the host 48 MHz PLL; SAI DMA consumes
+   * samples from the MCO/PLL2 audio clock.  Small frequency differences
+   * accumulate over minutes, pushing the TX ring toward chronic underrun.
+   *
+   * Detection: once per second, check whether USB is actively delivering
+   * (usb_rx_frames ≥ 900) while the TX ring is consistently near-empty
+   * (< 1 packet).  Three consecutive seconds of this pattern indicates
+   * structural drift rather than a burst starve.
+   *
+   * Correction: reset tx_rd = tx_wr (ring appears empty) so the next USB
+   * OUT packets fill a clean ring.  Penalty: ≤4 ms of DAC silence, which
+   * is identical to the silence already produced by the underrun path.
+   * After correction, the ring stabilises at its natural fill level.
+   *
+   * Uses BASEPRI = 0x20 (same as the TX-ring drain above) to protect
+   * tx_count + tx_rd from USB_Audio_WriteTX running in USB IRQ. */
+  {
+    static uint32_t s_drift_check_ms        = 0U;
+    static uint32_t s_drift_last_rx_frames  = 0U;
+    static uint8_t  s_drift_underrun_streak = 0U;
+
+    if (g_usb_audio.usb_streaming && now - s_drift_check_ms >= 1000U) {
+      s_drift_check_ms = now;
+      uint32_t rx_frames_this_sec = g_usb_audio.usb_rx_frames - s_drift_last_rx_frames;
+      s_drift_last_rx_frames      = g_usb_audio.usb_rx_frames;
+
+      if (rx_frames_this_sec >= 900U &&
+          g_usb_audio.tx_count < USB_AUDIO_BYTES_PER_FRAME) {
+        if (++s_drift_underrun_streak >= 3U) {
+          __set_BASEPRI(0x20U);
+          g_usb_audio.tx_rd    = g_usb_audio.tx_wr;
+          g_usb_audio.tx_count = 0U;
+          __set_BASEPRI(0U);
+          dbg_drift_corrections++;
+          s_drift_underrun_streak = 0U;
+        }
+      } else {
+        s_drift_underrun_streak = 0U;
+      }
+    }
+  }
+
   RuntimeDiag_ServiceSlow(now);
   Diag_Process();
   RuntimeDiag_WatchdogRefreshIfHealthy(now);
@@ -603,13 +699,13 @@ void CSDR_Loop(void)
     /* Discard buffered PC TX audio when not transmitting.
      * Without this the ring fills to 6144 bytes and stays there,
      * causing every subsequent USB OUT packet to hit the overrun path.
-     * Critical section: tx_wr is written by USB_Audio_WriteTX (USB IRQ), so
-     * the snapshot of tx_wr and the reset of tx_count must be atomic. */
+     * BASEPRI = 0x20: masks USB OTG IRQ (priority 2 → 0x20) that writes
+     * tx_wr via USB_Audio_WriteTX; SAI/DMA (priority 0) unmasked. */
     if (!g_sdr.tx_mode && g_usb_audio.tx_count > 0U) {
-      __disable_irq();
+      __set_BASEPRI(0x20U);
       g_usb_audio.tx_rd    = g_usb_audio.tx_wr;
       g_usb_audio.tx_count = 0U;
-      __enable_irq();
+      __set_BASEPRI(0U);
     }
   }
 
@@ -647,12 +743,14 @@ void CSDR_CDC_ResetCAT(void)
 {
   /* Snapshot callbacks before CAT_Init wipes them via memset.
    * CAT_Init(&g_cat, &g_cat.cb) would zero g_cat.cb first and then copy
-   * the already-zeroed struct back — losing all function pointers. */
+   * the already-zeroed struct back — losing all function pointers.
+   * BASEPRI = 0x20: masks USB OTG IRQ (CAT_Receive appends to rx_len);
+   * SAI/DMA (priority 0) unmasked — audio continues during this copy. */
   CAT_Callbacks_t saved_cb;
-  __disable_irq();
-  saved_cb    = g_cat.cb;
+  __set_BASEPRI(0x20U);
+  saved_cb     = g_cat.cb;
   g_cat.rx_len = 0U;
-  __enable_irq();
+  __set_BASEPRI(0U);
   CAT_Init(&g_cat, &saved_cb);
 }
 

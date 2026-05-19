@@ -1439,14 +1439,19 @@ void CAT_Process(CAT_Handle_t *cat)
     }
 
     /* Snapshot RX buffer in one atomic grab so CAT_Receive (USB ISR) cannot
-     * race with the parse loop below. */
+     * race with the parse loop below.
+     * BASEPRI = 0x20: masks USB OTG IRQ (priority 2 → encoded 0x20) while
+     * leaving SAI/DMA audio IRQs (priority 0 → 0x00) fully unmasked.
+     * The memcpy must stay inside the masked window: after rx_len is zeroed
+     * the ISR would write new bytes from rx_buf[0], corrupting our snapshot.
+     * At 480 MHz, copying ≤512 B takes ~1 µs — audio is unaffected. */
     char     work[CAT_BUF_SIZE];
     uint16_t work_len;
-    __disable_irq();
+    __set_BASEPRI(0x20U);
     work_len    = cat->rx_len;
     memcpy(work, cat->rx_buf, work_len);
     cat->rx_len = 0U;
-    __enable_irq();
+    __set_BASEPRI(0U);
 
     uint16_t wi = 0U;
     while (wi < work_len) {

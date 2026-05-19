@@ -20,6 +20,7 @@
 
 #include "lcd_bus_fmc.h"
 #include "stm32h7xx_hal.h"
+#include "main.h"      /* LCD_RESET_Pin / LCD_RESET_GPIO_Port (PD13 from .ioc) */
 
 /* ── MPU region 1: FMC LCD space, Strongly-Ordered ──────────────────────── */
 static void fmc_lcd_mpu_config(void)
@@ -232,8 +233,43 @@ static void lcd_init_sequence(void)
 
 /* ── Public init ─────────────────────────────────────────────────────────── */
 
+/*
+ * WHY BOTH HARDWARE AND SOFTWARE RESET?
+ *
+ * Hardware reset (RESX pulse via PD13):
+ *   Forces the ST7796 to its power-on state unconditionally — works even if
+ *   the bus is in an unknown state from a previous partial init, watchdog
+ *   restart, or warm reboot.  All internal registers return to factory
+ *   defaults and the display controller halts any ongoing DBI transfer.
+ *
+ * Software reset (command 0x01, SWRESET) that follows in lcd_init_sequence():
+ *   Provides an additional full reset of the ST7796 digital and analog
+ *   sections after any startup oscillator transients have settled.  The
+ *   datasheet recommends issuing SWRESET after RESX to guarantee a clean
+ *   analog power-up baseline before programming gamma, VCOM, and power
+ *   control registers.
+ *
+ * Together they give a deterministic, order-independent init regardless
+ * of the MCU reset source (power-on, NRST pin, watchdog, software reset).
+ *
+ * Compile-time fallback:
+ *   If LCD_RESET_Pin is not defined (board without dedicated reset pin),
+ *   hardware reset is skipped — only software reset runs.  The #ifdef
+ *   guard makes this safe without separate build variants.
+ */
 void LCD_Bus_Init(void)
 {
     fmc_lcd_mpu_config();
-    lcd_init_sequence();
+
+#ifdef LCD_RESET_Pin
+    /* Assert hardware reset: hold RESX low for 10 ms (≥1 ms per ST7796 spec) */
+    HAL_GPIO_WritePin(LCD_RESET_GPIO_Port, LCD_RESET_Pin, GPIO_PIN_RESET);
+    HAL_Delay(10U);
+    /* Deassert and wait ≥120 ms for display oscillator and analog supply to settle
+     * before the first command (SWRESET in lcd_init_sequence).                    */
+    HAL_GPIO_WritePin(LCD_RESET_GPIO_Port, LCD_RESET_Pin, GPIO_PIN_SET);
+    HAL_Delay(120U);
+#endif
+
+    lcd_init_sequence(); /* begins with SWRESET + 120 ms, then full register prog */
 }
