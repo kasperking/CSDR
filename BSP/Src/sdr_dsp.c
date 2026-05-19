@@ -13,7 +13,7 @@
   *   - DEMOD : AM, FM (atan2 differentiator), USB, LSB, CW (BFO 700Hz)
   *
   *  RX pipeline per sample:
-  *   pre-DC → NCO mix (LO offset) → post-DC → FFT feed → NCO mix (IF shift) → FIR LPF → Demod → audio LPF → AGC → out
+  *   pre-DC → NCO mix (LO offset) → post-DC → FFT feed → NCO mix (IF shift) → FIR LPF → [S-meter] → Demod → audio LPF → AGC → out
   *
   *  TX pipeline per sample:
   *   USB pull → audio DC → gain → audio FIR LPF → SSB mod → FFT feed → DAC out
@@ -178,6 +178,12 @@ void FIR_Init_LPF(FIR_Filter_t *fir, float cutoff_norm, uint16_t taps)
   fir->idx  = 0U;
   memset(fir->buf, 0, sizeof(fir->buf));
 
+  /* Linear-phase FIR requires an odd tap count (Type I).  With even taps the
+   * Hann window zeros both endpoints, leaving one unmatched near-edge tap that
+   * breaks perfect symmetry.  Forcing odd ensures n = −M…0…+M with a true
+   * centre tap and symmetric coefficient pairs — exact linear phase at the cost
+   * of one unused array slot.  Group delay = (taps−1)/2 samples. */
+  if ((taps & 1U) == 0U) { taps--; }
   int32_t half = (int32_t)taps / 2;
   float   sum  = 0.0f;
   for (uint16_t i = 0U; i < taps; i++)
@@ -406,7 +412,8 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
 {
   /* USER CODE BEGIN DSP_Init_0 */
   memset(dsp, 0, sizeof(DSP_State_t));
-  dsp->mode = MODE_AM;
+  dsp->mode        = MODE_AM;
+  dsp->sample_rate = sample_rate;
 
   /* Build NCO LUT once (shared across all DSP instances via static) */
   if (!s_nco_lut_init) {
@@ -531,6 +538,22 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   IIR_DCBlock_Init(&dsp->dc_block_q);
   IIR_DCBlock_Init(&dsp->dc_postmix_i);
   IIR_DCBlock_Init(&dsp->dc_postmix_q);
+  IIR_DCBlock_Init(&dsp->dc_block_audio);
+
+  /* Reset FM differentiator and de-emphasis to avoid stale IQ leaking into FM */
+  dsp->fm.prev_re    = 0.0f;
+  dsp->fm.prev_im    = 0.0f;
+  dsp->fm.de_emph.y1 = 0.0f;
+
+  /* Flush audio FIR buffer to prevent cross-mode transient (up to 64/4kHz ~16ms) */
+  memset(dsp->fir_audio.buf, 0, sizeof(dsp->fir_audio.buf));
+  dsp->fir_audio.idx = 0U;
+
+  /* Reset AGC runtime: inherited level/gain from previous mode can cause
+   * an initial burst (if previous mode was loud) or silence (if quiet) */
+  dsp->agc.level      = 0.0f;
+  dsp->agc.gain       = 1.0f;
+  dsp->agc.hang_timer = 0U;
 
   /* Recompute CW BFO increment for the current sample rate */
   dsp->cw_bfo_inc = (uint32_t)(int64_t)(700.0 / (double)sample_rate * 4294967296.0);
@@ -640,6 +663,13 @@ void DSP_Process(DSP_State_t *dsp,
     float filt_i = FIR_Process(&dsp->fir_i, shift_i);
     float filt_q = FIR_Process(&dsp->fir_q, shift_q);
 
+    /* ── 5b. S-meter: band-limited IQ power before AGC.
+     *        filt_i²+filt_q² is the instantaneous complex baseband power,
+     *        band-limited to the selected passband, independent of demod mode.
+     *        Measuring post-AGC audio (as previously done) produced a nearly
+     *        constant value (~AGC target²) regardless of signal strength. */
+    power_acc += filt_i * filt_i + filt_q * filt_q;
+
     /* ── 6. Demodulate */
     float audio;
     switch (dsp->mode)
@@ -663,10 +693,7 @@ void DSP_Process(DSP_State_t *dsp,
     /* ── 8. AGC */
     audio = AGC_Process(&dsp->agc, audio);
 
-    /* ── 9. Power for S-meter */
-    power_acc += audio * audio;
-
-    /* ── 10. Write: MSB-align 16-bit sample into 32-bit DAC word [31:16] */
+    /* ── 9. Write: MSB-align 16-bit sample into 32-bit DAC word [31:16] */
     int32_t out_val = (int32_t)(audio * 32767.0f);
     if (out_val >  32767)  out_val =  32767;
     if (out_val < -32768)  out_val = -32768;
@@ -906,10 +933,16 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
 
   /* Single atomic decrement: subtract only what was consumed.  Any bytes
    * added by USB_Audio_WriteTX (USB IRQ) after the snapshot are preserved
-   * because we re-read tx_count inside the CS before subtracting. */
+   * because the IRQ only adds (never subtracts) and we subtract only the
+   * snapshotted amount.  Clamp defensively: bytes_consumed <= tx_avail <=
+   * tx_count_at_subtract by design, but underflow would be catastrophic
+   * (uint16_t wrap makes ring appear full). */
   if (bytes_consumed > 0U) {
     __disable_irq();
-    g_usb_audio.tx_count = (uint16_t)(g_usb_audio.tx_count - bytes_consumed);
+    if (g_usb_audio.tx_count >= bytes_consumed)
+      g_usb_audio.tx_count = (uint16_t)(g_usb_audio.tx_count - bytes_consumed);
+    else
+      g_usb_audio.tx_count = 0U;   /* should not happen; guard against wrap */
     __enable_irq();
   }
   /* USER CODE END DSP_ProcessTX_0 */

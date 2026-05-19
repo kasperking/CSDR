@@ -117,7 +117,9 @@ Footer frequency labels are redrawn immediately on zoom change.
 
 ### RX S-meter
 
-- **Source:** `dsp.signal_power_db` — exponentially smoothed (α=0.9/0.1) post-AGC audio RMS in dBFS.  
+- **Source:** `dsp.signal_power_db` — exponentially smoothed (α=0.9/0.1) pre-AGC band-limited IQ power in dBFS.  
+  Measured as RMS of `√(filt_i²+filt_q²)` after the FIR LPF, before demodulation and AGC.  
+  Strong signal ≈ 0 dBFS; noise floor ≈ −50…−70 dBFS depending on front-end noise figure.  
 - **Bar mapping:** `bars = (signal_db + 73) / 3`, clamped 0–12.  
   - bars=0 ≈ −73 dBFS floor · bars=9 ≈ −46 dBFS · bars=10/11 ≡ S9+20/+40  
 - **Segments:** 12 × 13 px + 1 px gap; S1–S6 green, S7–S9 yellow, S9+ red.  

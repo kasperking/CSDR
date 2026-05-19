@@ -2,20 +2,3 @@
 # The CMSIS-DSP symbols are provided by source files compiled via
 # Middlewares/ST/ARM/DSP/Src/subdir.mk, so no prebuilt library is needed.
 LIBS :=
-
-# arm_bitreversal_32 — C fallback for the assembly helper (arm_bitreversal2.S).
-# Compiled separately here so the auto-generated subdir.mk is not touched.
-BITREVERSAL_OBJ := Middlewares/ST/ARM/DSP/Src/arm_bitreversal.o
-
-$(BITREVERSAL_OBJ): ../Middlewares/ST/ARM/DSP/Src/arm_bitreversal.c | Middlewares/ST/ARM/DSP/Src
-	arm-none-eabi-gcc "$<" -mcpu=cortex-m7 -std=gnu11 -DARM_MATH_CM7 \
-	  -c -Os -ffunction-sections -fdata-sections \
-	  -I../Middlewares/ST/ARM/DSP/Inc \
-	  -I../Drivers/CMSIS/Include \
-	  --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb \
-	  -o "$@"
-
-Middlewares/ST/ARM/DSP/Src:
-	mkdir -p $@
-
-USER_OBJS += $(BITREVERSAL_OBJ)
