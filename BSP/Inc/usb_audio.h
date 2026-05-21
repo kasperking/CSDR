@@ -48,17 +48,33 @@ extern "C" {
   (USB_AUDIO_SAMPLE_RATE / 1000U * USB_AUDIO_CHANNELS * USB_AUDIO_BYTES_PER_SAMPLE)
   /* = 48 × 2 × 2 = 192 byte/ms */
 
-/* Ring buffer: 32 packets = 32ms (cần đủ lớn để chứa >= 2 SAI DMA block).
- * SAI block = 256 samples × 2ch × 2B = 1024B = ~5.3 packets/block
- * Min safe = 4×block ≈ 22 packets → round up to 32 for headroom. */
-#define USB_AUDIO_RING_PACKETS   32U
+/* Ring buffer: 48 packets = 48 ms latency capacity.
+ * SAI block = 256 samples × 2ch × 2B = 1024B = ~5.3 packets/block.
+ * RAM cost: 2 rings × 48 × 192 = 18432 B in DMA_SRAM. */
+#define USB_AUDIO_RING_PACKETS   48U
 #define USB_AUDIO_RING_SIZE      (USB_AUDIO_RING_PACKETS * USB_AUDIO_BYTES_PER_FRAME)
-  /* = 32 × 192 = 6144 byte */
+  /* = 48 × 192 = 9216 byte */
 
-/* Thresholds */
-#define USB_AUDIO_LATENCY_TARGET_MS  4U   /* Mục tiêu: 4ms latency */
-#define USB_AUDIO_UNDERRUN_THR       2U   /* < 2 packets → underrun */
-#define USB_AUDIO_OVERRUN_THR        7U   /* > 7 packets → overrun  */
+/* Overflow discard threshold (bytes): rx_count above this → drop one packet per SOF.
+ *
+ * Formula: (ring_packets − 8) × frame_size.  The 8-packet margin keeps the
+ * threshold 1536 B below the WriteRX overrun guard (fires at ring_size − 1024 B),
+ * so the discard path always fires before WriteRX silently drops a block.
+ *
+ * 75 % (= 6912 B, 36 pkts) created a stable limit-cycle with the 48-packet ring:
+ * WriteRX adds one 1024-byte block every ~5.3 ms.  If rx_count was in the
+ * [5888, 6912]-byte oscillation band, that block pushed rx_count back above the
+ * threshold, making overflow fire on every SOF frame indefinitely.
+ *
+ * 83 % (= 7680 B, 40 pkts) raises the oscillation-zone floor to 6656 B ≈ 35 pkts,
+ * unreachable from the natural operating fill of ~4–10 packets. */
+#define USB_AUDIO_OVERRUN_BYTES \
+  ((USB_AUDIO_RING_PACKETS - 8U) * USB_AUDIO_BYTES_PER_FRAME)
+  /* 48 pkts → (48-8)×192 = 7680 B (83 %);  32 pkts → (32-8)×192 = 4608 B (75 %) */
+
+#define USB_AUDIO_LATENCY_TARGET_MS  4U   /* target latency                          */
+#define USB_AUDIO_UNDERRUN_THR       2U   /* < 2 packets → underrun (documentation)  */
+#define USB_AUDIO_OVERRUN_THR       40U   /* threshold in packets; see OVERRUN_BYTES  */
 
 /* Exported types ------------------------------------------------------------*/
 
@@ -78,13 +94,15 @@ typedef struct {
   volatile uint16_t tx_count;   /* Bytes available – written by both contexts  */
 
   /* Stats */
-  uint32_t rx_overrun;      /* Total RX overflow events (ring > 75% → packet discarded) */
-  uint32_t rx_underrun;     /* Total RX underrun events  (ring empty at USB ISO IN time) */
-  uint32_t tx_overrun;      /* Total TX overflow events  (USB OUT arrived, ring full)    */
-  uint32_t tx_underrun;     /* Total TX underrun events  (SAI DMA fired, ring empty)     */
-  uint32_t dropped_packets; /* RX packets silently discarded at the 75% overflow path    */
-  uint32_t usb_rx_frames;   /* Frames received from USB host (USB OUT, PC→SAI)  */
-  uint32_t usb_tx_frames;   /* Frames sent to USB host      (USB IN,  SAI→PC)   */
+  uint32_t rx_overrun;       /* Total RX overflow events (both soft+hard paths)          */
+  uint32_t rx_overrun_write; /* WriteRX hard-path drops only (ring + block > ring_size)  */
+  uint32_t rx_underrun;      /* Total RX underrun events  (ring empty at USB ISO IN time)*/
+  uint32_t tx_overrun;       /* Total TX overflow events  (USB OUT arrived, ring full)   */
+  uint32_t tx_underrun;      /* Total TX underrun events  (SAI DMA fired, ring empty)    */
+  uint32_t dropped_packets;  /* ReadRXPacket soft-path drops (ring > 83% at SOF time)    */
+  uint32_t usb_rx_frames;    /* Frames received from USB host (USB OUT, PC→SAI)          */
+  uint32_t usb_tx_frames;    /* Frames sent to USB host      (USB IN,  SAI→PC)           */
+  uint16_t rx_count_peak;    /* Peak rx_count seen since session start (ST-Link watch)   */
 
   /* rx_overrun_pending: set by USB IRQ (ReadRXPacket) on every overflow event.
    * Cleared by main loop after detection.  Allows CSDR_Loop to react within

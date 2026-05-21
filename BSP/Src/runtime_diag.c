@@ -54,6 +54,10 @@ static uint32_t s_max_spec_partial_us    = 0U;
 static uint32_t s_vfo_glyph_count        = 0U;
 static uint32_t s_vfo_skip_count         = 0U;
 static uint32_t s_max_vfo_us             = 0U;
+/* Async LCD DMA stats — written by RuntimeDiag_LcdDmaReport (sdr_ui) */
+static uint32_t s_lcd_dma_max_latency_us = 0U;
+static uint32_t s_lcd_dma_queued_count   = 0U;
+static uint8_t  s_lcd_dma_busy           = 0U;
 
 #if RUNTIMEDIAG_FREERTOS_AVAILABLE
 static TaskHandle_t s_dsp_task = NULL;
@@ -264,6 +268,9 @@ void RuntimeDiag_GetSnapshot(RuntimeDiag_Snapshot_t *out)
   out->vfo_glyph_redraw_count    = s_vfo_glyph_count;
   out->vfo_skip_count            = s_vfo_skip_count;
   out->max_vfo_redraw_us         = s_max_vfo_us;
+  out->lcd_dma_max_latency_us    = s_lcd_dma_max_latency_us;
+  out->lcd_dma_queued_count      = s_lcd_dma_queued_count;
+  out->lcd_dma_busy              = (s_lcd_dma_busy != 0U);
 }
 
 uint32_t RuntimeDiag_RxHalfIsr(uint8_t half_index)
@@ -331,6 +338,7 @@ void RuntimeDiag_ResetPeaks(void)
   s_max_fft_cycles = 0U;
   s_max_spec_partial_us = 0U;
   s_max_vfo_us = 0U;
+  s_lcd_dma_max_latency_us = 0U;
   /* rolling averages / cumulative totals not reset */
 }
 
@@ -380,6 +388,16 @@ void RuntimeDiag_VfoReport(uint32_t glyph_count, uint32_t skip_count,
   s_vfo_glyph_count = glyph_count;
   s_vfo_skip_count  = skip_count;
   if (max_redraw_us > s_max_vfo_us) s_max_vfo_us = max_redraw_us;
+}
+
+void RuntimeDiag_LcdDmaReport(uint32_t max_latency_us, uint32_t queued_count,
+                               bool busy)
+{
+  /* Peak latency is reported per-tick; keep the all-time maximum. */
+  if (max_latency_us > s_lcd_dma_max_latency_us)
+    s_lcd_dma_max_latency_us = max_latency_us;
+  s_lcd_dma_queued_count = queued_count;
+  s_lcd_dma_busy         = busy ? 1U : 0U;
 }
 
 void RuntimeDiag_WatchdogRefreshIfHealthy(uint32_t now_ms)

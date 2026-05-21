@@ -130,11 +130,15 @@ extern char              dbg_cat_last_cmd[];        /* last complete command, NU
 extern char              dbg_cat_last_resp[];       /* last non-empty response enqueued            */
 
 /* Waterfall adaptive-skip counters */
-static volatile uint32_t dbg_wf_skip_count = 0U; /* waterfall frames suppressed by overload-hysteresis */
-static volatile uint8_t  dbg_ui_load_high  = 0U; /* 1 = system load too high for waterfall */
+static volatile uint32_t dbg_wf_skip_count  = 0U; /* waterfall frames suppressed by overload-hysteresis */
+static volatile uint8_t  dbg_ui_load_high   = 0U; /* 1 = system load too high for waterfall */
+/* Spectrum adaptive-skip counters */
+static volatile uint32_t dbg_spec_skip_count = 0U; /* spectrum frames suppressed by overload-hysteresis */
 
 /* USB/SAI drift mitigation */
-static volatile uint32_t dbg_drift_corrections = 0U; /* TX ring resets applied for chronic underrun */
+static volatile uint32_t dbg_drift_corrections       = 0U; /* TX ring resets applied for chronic underrun */
+static volatile uint32_t dbg_rx_drift_corrections    = 0U; /* RX ring trims applied for chronic overrun drift */
+static volatile uint32_t dbg_rx_underdrift_corrections = 0U; /* RX ring refills applied for chronic underflow drift */
 
 /* Set to 1 in debugger to skip waterfall/LCD DMA while diagnosing USB audio. */
 static volatile uint8_t dbg_disable_lcd_dma = 0;
@@ -143,7 +147,7 @@ static volatile uint8_t dbg_disable_lcd_dma = 0;
 static void csdr_apply_volume(uint8_t vol);
 static void csdr_apply_tx(void);
 
-#define CSDR_UI_SPEC_RX_PERIOD_MS    36U    /* ~28 fps spectrum in RX — decoupled from waterfall */
+#define CSDR_UI_SPEC_RX_PERIOD_MS    75U    /* ~13 fps spectrum in RX — decoupled from waterfall */
 #define CSDR_UI_WF_RX_PERIOD_MS      75U    /* ~13 fps waterfall in RX */
 #define UI_OVERLOAD_DECAY_MS         500U   /* suppress waterfall for 500ms after load clears */
 #define CSDR_UI_DISPLAY_RX_PERIOD_MS 100U   /* 10 fps dirty-zone + meter refresh */
@@ -417,6 +421,7 @@ void CSDR_Init(void)
 /* ══════════════════════════════════════════════════════════
  *  CSDR_Loop  – gọi trong while(1) của main.c
  * ══════════════════════════════════════════════════════════ */
+
 static void csdr_process_audio_pending(void)
 {
   /* DSP ping/pong */
@@ -493,6 +498,21 @@ static void csdr_process_audio_pending(void)
 
 }
 
+/* CSDR_ProcessAudioPending — public wrapper around csdr_process_audio_pending.
+ *
+ * SAFE call sites: top-level CSDR_Loop body, or equivalent main-loop context
+ *   where no LCD/FMC strip DMA is in flight and no outer audio call is active.
+ *
+ * DO NOT call from inside LCD strip loops (spec_push_partial, SDR_UI_DrawSpectrum
+ * full-push loop, or any tight render loop).  Doing so caused a runaway overrun
+ * explosion in testing: USB_Audio_WriteRX's BASEPRI critical section interacts
+ * badly with the LCD DMA TC ISR timing, and repeated calls within a single
+ * render trip the USB ring throttle path hundreds of times per second. */
+void CSDR_ProcessAudioPending(void)
+{
+  csdr_process_audio_pending();
+}
+
 void CSDR_Loop(void)
 {
   RuntimeDiag_MainLoopBeat();
@@ -516,15 +536,37 @@ void CSDR_Loop(void)
   if (now - t_fan    >= 1000U){ t_fan    = now; Fan_Update(g_analog.temp_c); }
   if (now - t_pwr    >= 100U) { t_pwr    = now; PWR_Poll(); }
 
-  /* Spectrum: ~28 fps in RX.  Independent timer from waterfall — allows fast
-   * peak-trace responsiveness without pulling the slower waterfall scroll rate. */
+  /* Spectrum: ~15 fps in RX.  Independent timer from waterfall — allows fast
+   * peak-trace responsiveness without pulling the slower waterfall scroll rate.
+   * Adaptive suppression mirrors the waterfall policy:
+   *  a) rx_overrun_pending — ring overflow flagged this tick (read, not cleared —
+   *     the waterfall block owns the clear on its 75 ms tick)
+   *  b) rx ring occupancy > 75% — main-loop is falling behind
+   *  c) RuntimeDiag UI-overload flag (set by waterfall hysteresis)
+   * Hysteresis: once triggered, suppression holds for UI_OVERLOAD_DECAY_MS. */
   if (!g_sdr.tx_mode && (now - t_spec >= CSDR_UI_SPEC_RX_PERIOD_MS)) {
     t_spec = now;
     if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
-      csdr_process_audio_pending();
-      RuntimeDiag_UiRenderBegin();
-      csdr_update_spectrum();
-      RuntimeDiag_UiRenderEnd();
+      static uint32_t s_spec_overload_ms = 0U;
+      bool spec_ring_pressure = g_usb_audio.rx_overrun_pending ||
+                                (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
+      if (spec_ring_pressure || RuntimeDiag_IsUiOverload()) {
+        s_spec_overload_ms = UI_OVERLOAD_DECAY_MS;
+      } else if (s_spec_overload_ms > CSDR_UI_SPEC_RX_PERIOD_MS) {
+        s_spec_overload_ms -= CSDR_UI_SPEC_RX_PERIOD_MS;
+      } else {
+        s_spec_overload_ms = 0U;
+      }
+      if (s_spec_overload_ms > 0U) {
+        /* Suppressed: yield audio but skip the 8 ms FMC render. */
+        csdr_process_audio_pending();
+        dbg_spec_skip_count++;
+      } else {
+        csdr_process_audio_pending();
+        RuntimeDiag_UiRenderBegin();
+        csdr_update_spectrum();
+        RuntimeDiag_UiRenderEnd();
+      }
     }
   } else if (g_sdr.tx_mode) {
     t_spec = now;
@@ -551,7 +593,7 @@ void CSDR_Loop(void)
 
       /* a+b: direct ring checks — react within one waterfall period (75 ms) */
       bool ring_pressure = g_usb_audio.rx_overrun_pending ||
-                           (g_usb_audio.rx_count > (USB_AUDIO_RING_SIZE * 3U / 4U));
+                           (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
       if (g_usb_audio.rx_overrun_pending) g_usb_audio.rx_overrun_pending = false;
 
       /* c+d: slow-path diagnostics (1-second window) */
@@ -646,6 +688,105 @@ void CSDR_Loop(void)
     }
   }
 
+  /* ── E2. USB/SAI RX ring drift correction ────────────────────────────────
+   * The RX ring (SAI→USB host) fills slightly faster than the host consumes
+   * when the MCU PLL2 audio clock runs above the USB host's reference.
+   * At ±50 ppm mismatch: ~9.6 bytes/sec drift → ring reaches the 40-packet
+   * overrun threshold in ~12 minutes, causing sustained rx_overrun events.
+   *
+   * Detection: rx_count above 12 packets (2304 B) for 2 consecutive seconds
+   *   while the USB host is actively receiving (usb_tx_frames ≥ 900/sec).
+   * Correction: under BASEPRI = 0x20, advance rx_rd to discard the excess
+   *   and restore rx_count to 8 packets (1536 B).  Eight packets keeps the
+   *   ring minimum (≈ 512 B before each WriteRX) above the 192-B underrun
+   *   threshold, preventing the systematic ~166 Hz underrun pattern.
+   * Penalty: < 0.8 ms of IQ data trimmed — imperceptible to SDR software.
+   *
+   * rx_rd is ordinarily owned by the USB OTG IRQ (ReadRXPacket).  Writing it
+   * here under BASEPRI = 0x20 is safe: that IRQ (priority 2, encoded 0x20)
+   * is masked for the duration of the update.  SAI/DMA (priority 0) never
+   * touch rx_rd.  re-check rx_count inside the CS to avoid uint16 underflow
+   * if the IRQ drained the ring between the outer check and the CS entry. */
+  {
+    static uint32_t s_rx_drift_check_ms        = 0U;
+    static uint32_t s_rx_drift_last_tx_frames  = 0U;
+    static uint8_t  s_rx_drift_high_streak     = 0U;
+
+    if (g_usb_audio.usb_streaming && now - s_rx_drift_check_ms >= 1000U) {
+      s_rx_drift_check_ms = now;
+      uint32_t tx_frames_this_sec = g_usb_audio.usb_tx_frames - s_rx_drift_last_tx_frames;
+      s_rx_drift_last_tx_frames   = g_usb_audio.usb_tx_frames;
+
+      if (tx_frames_this_sec >= 900U &&
+          g_usb_audio.rx_count > (12U * USB_AUDIO_BYTES_PER_FRAME)) {
+        if (++s_rx_drift_high_streak >= 2U) {
+          __set_BASEPRI(0x20U);
+          if (g_usb_audio.rx_count > (8U * USB_AUDIO_BYTES_PER_FRAME)) {
+            uint16_t excess =
+              (uint16_t)(g_usb_audio.rx_count - 8U * USB_AUDIO_BYTES_PER_FRAME);
+            g_usb_audio.rx_rd =
+              (uint16_t)((g_usb_audio.rx_rd + excess) % USB_AUDIO_RING_SIZE);
+            g_usb_audio.rx_count = (uint16_t)(8U * USB_AUDIO_BYTES_PER_FRAME);
+            dbg_rx_drift_corrections++;
+          }
+          __set_BASEPRI(0U);
+          s_rx_drift_high_streak = 0U;
+        }
+      } else {
+        s_rx_drift_high_streak = 0U;
+      }
+    }
+  }
+
+  /* ── E3. RX ring underflow drift correction ──────────────────────────────
+   * Mirror of E2 for the opposite drift direction: when the SAI PLL2 runs
+   * slightly slower than the USB host's reference, rx_count drains to zero
+   * and rx_underrun fires at ~1000 Hz indefinitely.
+   *
+   * Detection: rx_count < 2 packets (384 B) for 2 consecutive 1-second
+   *   windows while the USB host is actively receiving (usb_tx_frames ≥ 900/sec).
+   *   The 2-second streak avoids false triggers during normal startup or a
+   *   momentary main-loop stall.
+   *
+   * Correction: under BASEPRI = 0x20, zero-fill the first 8 packets of the
+   *   ring and reset rx_wr / rx_rd / rx_count to the same state as the
+   *   SetStreaming prefill.  The 1536-B silent cushion keeps rx_count above
+   *   the 192-B underrun threshold until the next WriteRX block arrives.
+   *
+   * Why reset to offset 0: the ring is nearly empty so there is nothing
+   * worth preserving; starting at 0 avoids any partial-overlap with stale
+   * data past the old rx_wr. */
+  {
+    static uint32_t s_rx_underdrift_check_ms     = 0U;
+    static uint32_t s_rx_underdrift_tx_frames    = 0U;
+    static uint8_t  s_rx_underdrift_low_streak   = 0U;
+
+    if (g_usb_audio.usb_streaming && now - s_rx_underdrift_check_ms >= 1000U) {
+      s_rx_underdrift_check_ms = now;
+      uint32_t tx_frames_this_sec = g_usb_audio.usb_tx_frames - s_rx_underdrift_tx_frames;
+      s_rx_underdrift_tx_frames   = g_usb_audio.usb_tx_frames;
+
+      if (tx_frames_this_sec >= 900U &&
+          g_usb_audio.rx_count < (2U * USB_AUDIO_BYTES_PER_FRAME)) {
+        if (++s_rx_underdrift_low_streak >= 2U) {
+          __set_BASEPRI(0x20U);
+          if (g_usb_audio.rx_count < (2U * USB_AUDIO_BYTES_PER_FRAME)) {
+            const uint16_t prefill = (uint16_t)(8U * USB_AUDIO_BYTES_PER_FRAME);
+            memset(g_usb_audio.rx_ring, 0, prefill);
+            g_usb_audio.rx_wr    = prefill;
+            g_usb_audio.rx_rd    = 0U;
+            g_usb_audio.rx_count = prefill;
+            dbg_rx_underdrift_corrections++;
+          }
+          __set_BASEPRI(0U);
+          s_rx_underdrift_low_streak = 0U;
+        }
+      } else {
+        s_rx_underdrift_low_streak = 0U;
+      }
+    }
+  }
+
   RuntimeDiag_ServiceSlow(now);
   Diag_Process();
   RuntimeDiag_WatchdogRefreshIfHealthy(now);
@@ -697,7 +838,7 @@ void CSDR_Loop(void)
     }
     USB_Audio_Process(&g_usb_audio);
     /* Discard buffered PC TX audio when not transmitting.
-     * Without this the ring fills to 6144 bytes and stays there,
+     * Without this the ring fills to 9216 bytes and stays there,
      * causing every subsequent USB OUT packet to hit the overrun path.
      * BASEPRI = 0x20: masks USB OTG IRQ (priority 2 → 0x20) that writes
      * tx_wr via USB_Audio_WriteTX; SAI/DMA (priority 0) unmasked. */

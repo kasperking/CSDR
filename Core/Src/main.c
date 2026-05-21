@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "csdr_app.h"
 #include "lcd_bus_fmc.h"
+#include "lcd_dma.h"
 #include "lcd_test_fmc.h"
 #include "boot_dfu.h"
 /* USER CODE END Includes */
@@ -1034,6 +1035,12 @@ static void MX_FMC_Init(void)
    * Placed here so protection is active before USB or any other IRQ fires.
    * This USER CODE block survives CubeMX regeneration. */
   LCD_Bus_Init();
+
+  /* Async DMA overlay: DMA2 Stream0, M2M, MEDIUM priority.
+   * Initialised here so the DMA layer is ready before any LCD push occurs.
+   * Must follow LCD_Bus_Init() (needs FMC + MPU Region 1 already active).
+   * Priority 5 ISR: below audio (0) and USB (2); clears one flag per TC. */
+  LCD_DMA_Init();
 
   /* ── USB DFU boot check ────────────────────────────────────────────────
    * GPIO and FMC/LCD are ready; USB stack has NOT started yet.

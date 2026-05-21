@@ -144,6 +144,12 @@ int32_t *CSDR_GetTxBuf(void);
 int32_t *CSDR_GetRxBuf(void);
 void     CSDR_ClearDspFlags(void);
 
+/* Drain pending SAI DMA halves into the USB ring.
+ * ONLY call from top-level CSDR_Loop context.
+ * DO NOT call from inside LCD/FMC strip loops — causes USB ring throttle
+ * runaway due to BASEPRI/DMA TC ISR interaction (confirmed by testing). */
+void CSDR_ProcessAudioPending(void);
+
 void CSDR_Loop(void);
 
 void CSDR_SysTickCallback(void);

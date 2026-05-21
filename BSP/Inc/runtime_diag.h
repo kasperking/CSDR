@@ -70,6 +70,10 @@ typedef struct {
   uint32_t vfo_glyph_redraw_count;    /*!< VFO partial glyph-band pushes since boot       */
   uint32_t vfo_skip_count;            /*!< VFO upper-section pushes skipped (unchanged)   */
   uint32_t max_vfo_redraw_us;         /*!< Peak µs for a glyph-level VFO push             */
+  /* Async LCD DMA statistics (reported by sdr_ui via RuntimeDiag_LcdDmaReport) */
+  uint32_t lcd_dma_max_latency_us;    /*!< Peak µs from DMA start to TC callback         */
+  uint32_t lcd_dma_queued_count;      /*!< Total async DMA chunk launches since boot      */
+  bool     lcd_dma_busy;              /*!< DMA transfer currently in progress             */
 } RuntimeDiag_Snapshot_t;
 
 extern volatile uint32_t rx_overrun_count;
@@ -119,6 +123,11 @@ void RuntimeDiag_SpecReport(uint32_t partial_count, uint32_t skip_count,
 /* Called by sdr_ui after each VFO render with cumulative glyph-push stats. */
 void RuntimeDiag_VfoReport(uint32_t glyph_count, uint32_t skip_count,
                             uint32_t max_redraw_us);
+
+/* Called by sdr_ui after each async DMA push with current DMA metrics.
+ * Integrates DMA chunk latency and queue state into the snapshot. */
+void RuntimeDiag_LcdDmaReport(uint32_t max_latency_us, uint32_t queued_count,
+                               bool busy);
 
 uint32_t RuntimeDiag_RxHalfIsr(uint8_t half_index);
 void RuntimeDiag_RxHalfConsumed(uint8_t half_index, uint32_t sequence);

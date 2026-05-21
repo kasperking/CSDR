@@ -10,7 +10,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "csdr_app.h"
-#include "csdr_app.h"
+#include "lcd_dma.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -248,4 +248,13 @@ void OTG_FS_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+/**
+  * @brief  DMA2 stream0 global interrupt — LCD async pixel DMA.
+  *         Priority 5: below audio DMA (0) and USB (2).
+  *         TC callback in lcd_dma.c clears the busy flag; no other work done.
+  */
+void DMA2_Stream0_IRQHandler(void)
+{
+  LCD_DMA_IRQHandler();
+}
 /* USER CODE END 1 */

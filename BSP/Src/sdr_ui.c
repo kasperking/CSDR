@@ -8,23 +8,25 @@
   *  handled at the FMC MPU region level – Region 1 is Strongly-Ordered,
   *  so no D-Cache flush is needed before pushing.
   *
-  *  Each Draw* function renders its buffer then pushes in ONE LCD_PushWindow
-  *  call.  FMC writes are synchronous memory-mapped operations: no DMA wait
-  *  loops, no CS toggling, no IRQ disable around transfers.
+  *  Spectrum and waterfall zones use LCD_PushWindowAsync (DMA2 Stream0 M2M).
+  *  CPU still handles CASET/RASET/RAMWR window setup synchronously, then DMA
+  *  carries the pixel payload to the fixed FMC data address.
   *
-  *  Waterfall uses a 2-split ring push for zero-copy true scroll.
+  *  Async strip sequence: LCD_Wait() → LCD_PushWindowAsync() → MainLoopBeat().
+  *  Audio/USB ISRs preempt freely during the cooperative NOP poll in LCD_Wait.
+  *  Other zones (header, sidebar, VFO, meter) retain synchronous LCD_PushWindow.
   *
-  *  Single-zone worst-case push times (8-bit FMC, 116.7 ns/byte):
-  *    Spectrum  (480×72 = 69,120 px = 138,240 B): ~8.06 ms
-  *    Waterfall (480×72 = 69,120 px = 138,240 B): ~8.06 ms
-  *  Both are safely below 2 DMA half-periods (10.67 ms @ 48kHz/256).
-  *  csdr_app.c calls csdr_process_audio_pending() before each push.
+  *  Single-zone worst-case transfer times (8-bit FMC, 116.7 ns/byte):
+  *    Spectrum  (480×72 = 69,120 px = 138,240 B): ~8.06 ms (9 × 8-row strips)
+  *    Waterfall (480×1  =    480 px =     960 B): ~112 µs  (1-row ring push)
+  *  Waterfall uses a single-row ring-slot push — no chunking needed.
   ******************************************************************************
   */
 /* USER CODE END Header */
 
 #include "sdr_ui.h"
 #include "runtime_diag.h"
+#include "lcd_dma.h"    /* LCD_Wait / LCD_PushWindowAsync / diagnostics */
 #include "core_cm7.h"   /* DWT->CYCCNT for chunk render timing */
 #include <string.h>
 #include <stdio.h>
@@ -1254,21 +1256,26 @@ void SDR_UI_DrawStatusPanel(const SDR_UI_State_t *ui)
  * Returns the elapsed µs for the full partial push. */
 static uint32_t spec_push_partial(uint16_t x_lo, uint16_t x_hi)
 {
-  uint16_t w = (uint16_t)(x_hi - x_lo + 1U);
+  uint16_t w    = (uint16_t)(x_hi - x_lo + 1U);
   uint32_t cyc0 = DWT->CYCCNT;
   for (uint16_t strip = 0U; strip < SPEC_H; strip += SPEC_CHUNK_ROWS) {
     uint16_t rows = (uint16_t)(SPEC_H - strip);
     if (rows > SPEC_CHUNK_ROWS) rows = SPEC_CHUNK_ROWS;
+    /* Wait for previous DMA to finish reading s_spec_strip before overwriting. */
+    LCD_Wait();
     for (uint16_t r = 0U; r < rows; r++) {
       memcpy(&s_spec_strip[(uint32_t)r * w],
              &s_spec_buf[strip + r][x_lo],
              (uint32_t)w * 2U);
     }
-    LCD_PushWindow((uint16_t)(SPEC_X + x_lo), (uint16_t)(SPEC_Y + strip),
-                   (uint16_t)(SPEC_X + x_hi), (uint16_t)(SPEC_Y + strip + rows - 1U),
-                   s_spec_strip, (uint32_t)w * rows);
+    LCD_PushWindowAsync((uint16_t)(SPEC_X + x_lo), (uint16_t)(SPEC_Y + strip),
+                        (uint16_t)(SPEC_X + x_hi),
+                        (uint16_t)(SPEC_Y + strip + rows - 1U),
+                        s_spec_strip, (uint32_t)w * rows * 2U);
     RuntimeDiag_MainLoopBeat();
   }
+  /* Wait for the final strip DMA before returning so timing is accurate. */
+  LCD_Wait();
   return ui_cyc_to_us(DWT->CYCCNT - cyc0);
 }
 
@@ -1339,7 +1346,7 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     s_peak_hold_valid = true;
     s_peak_decay_ctr  = 0U;
   } else {
-    /* Decay once every 4 render calls (~140 ms at 28 fps → slow visible fall) */
+    /* Decay once every 4 render calls (~264 ms at 15 fps → slow visible fall) */
     s_peak_decay_ctr++;
     bool do_decay = (s_peak_decay_ctr >= 4U);
     if (do_decay) s_peak_decay_ctr = 0U;
@@ -1487,17 +1494,22 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     s_spec_partial_count++;
     if (us > s_max_spec_partial_us) s_max_spec_partial_us = us;
   } else {
-    /* Full chunked push — always completes (no abort path for spectrum) */
+    /* Full chunked async push — 8-row strips, no abort path for spectrum.
+     * LCD_Wait() before each strip ensures the previous DMA has finished
+     * (source buffer safe to reuse) and gives audio ISRs a preemption window. */
     for (uint16_t strip = 0U; strip < SPEC_H; strip += SPEC_CHUNK_ROWS) {
       uint16_t rows   = (uint16_t)(SPEC_H - strip);
       if (rows > SPEC_CHUNK_ROWS) rows = SPEC_CHUNK_ROWS;
       uint16_t lcd_y0 = (uint16_t)(SPEC_Y + strip);
       uint16_t lcd_y1 = (uint16_t)(lcd_y0 + rows - 1U);
-      LCD_PushWindow(SPEC_X, lcd_y0,
-                     (uint16_t)(SPEC_X + SPEC_W - 1U), lcd_y1,
-                     &s_spec_buf[strip][0], (uint32_t)SPEC_W * rows);
+      LCD_Wait();
+      LCD_PushWindowAsync(SPEC_X, lcd_y0,
+                          (uint16_t)(SPEC_X + SPEC_W - 1U), lcd_y1,
+                          &s_spec_buf[strip][0], (uint32_t)SPEC_W * rows * 2U);
       RuntimeDiag_MainLoopBeat();
     }
+    /* Ensure the final strip DMA completes before leaving this function. */
+    LCD_Wait();
   }
 
   RuntimeDiag_SpecReport(s_spec_partial_count, s_spec_skip_hits, s_max_spec_partial_us);
@@ -1574,12 +1586,15 @@ void SDR_UI_WaterfallPush(uint8_t buf_idx)
   uint16_t      *row = s_wf_buf[s_wf_head];
   for (uint16_t x = 0U; x < WF_W; x++) row[x] = s_wf_lut[src[x]];
 
-  /* Push only the new row to its fixed LCD Y position (~112 µs) */
+  /* Async DMA push: wait for any previous waterfall row DMA, then launch new.
+   * row_us measures only the wait + DMA-start latency, not transfer time.
+   * Actual pixel transfer time is tracked in LCD_DMA_GetMaxLatencyUs(). */
   uint16_t lcd_y = (uint16_t)(WF_Y + s_wf_head);
   uint32_t cyc0  = DWT->CYCCNT;
-  LCD_PushWindow(WF_X, lcd_y,
-                 (uint16_t)(WF_X + WF_W - 1U), lcd_y,
-                 row, (uint32_t)WF_W);
+  LCD_Wait();
+  LCD_PushWindowAsync(WF_X, lcd_y,
+                      (uint16_t)(WF_X + WF_W - 1U), lcd_y,
+                      row, (uint32_t)WF_W * 2U);
   uint32_t row_us = ui_cyc_to_us(DWT->CYCCNT - cyc0);
 
   s_lcd_chunk_count++;
@@ -1587,6 +1602,8 @@ void SDR_UI_WaterfallPush(uint8_t buf_idx)
 
   RuntimeDiag_LcdChunkReport(s_lcd_chunk_count, s_lcd_chunk_abort_count,
                                s_wf_partial_count, s_max_chunk_render_us);
+  RuntimeDiag_LcdDmaReport(LCD_DMA_GetMaxLatencyUs(), LCD_DMA_GetQueuedCount(),
+                            LCD_IsBusy());
 
   RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_WF_SCROLL);
 }
