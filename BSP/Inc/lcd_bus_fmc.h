@@ -45,13 +45,11 @@ extern "C" {
 #define LCD_FMC_CMD_ADDR   ((volatile uint8_t *)0x60000000UL)
 #define LCD_FMC_DATA_ADDR  ((volatile uint8_t *)0x60010000UL)
 
-/* ── Screen geometry (ST7796S landscape 480×320) ─────────────────────────── */
-#ifndef LCD_W
-#define LCD_W   480U
-#endif
-#ifndef LCD_H
-#define LCD_H   320U
-#endif
+/* ── Screen geometry ──────────────────────────────────────────────────────── *
+ * LCD_W and LCD_H are defined by lcd_panel_config.h.                         *
+ * Fallback defaults retain the original ST7796 values so that files which    *
+ * include lcd_bus_fmc.h without lcd_render.h still compile correctly.        */
+#include "lcd_panel_config.h"
 
 /* ── ST7796S command set (subset for bring-up) ───────────────────────────── */
 #define ST7796_SWRESET    0x01U   /* Software reset                          */
@@ -66,7 +64,7 @@ extern "C" {
 #define ST7796_MADCTL     0x36U   /* Memory data access control              */
 #define ST7796_COLMOD     0x3AU   /* Interface pixel format                  */
 
-/* ── MADCTL landscape configuration ─────────────────────────────────────────
+/* ── MADCTL landscape configuration (ST7796S) ───────────────────────────────
  * ST7796S native resolution: 320 columns × 480 rows (portrait).
  *
  * MADCTL bit layout:  MY | MX | MV | ML | BGR | MH | 0 | 0
@@ -83,7 +81,27 @@ extern "C" {
 #define ST7796_MADCTL_LANDSCAPE  0xE8U   /* MY|MX|MV|BGR — confirmed for this panel */
 
 /* COLMOD: 16-bit/pixel (RGB565) for both DPI and DBI */
-#define ST7796_COLMOD_16BIT          0x55U
+#define ST7796_COLMOD_16BIT      0x55U
+
+/* ── ST7789V command set (portrait 240×320) ──────────────────────────────── *
+ * Shared commands (CASET/RASET/RAMWR/MADCTL/COLMOD/SWRESET/SLPOUT/DISPON)   *
+ * use the same opcodes as ST7796S — LCD_SetWindow works unchanged.           */
+#define ST7789_SWRESET    0x01U
+#define ST7789_SLPOUT     0x11U
+#define ST7789_INVON      0x21U   /* Inversion on — required for normal mode  */
+#define ST7789_DISPON     0x29U
+#define ST7789_CASET      0x2AU
+#define ST7789_RASET      0x2BU
+#define ST7789_RAMWR      0x2CU
+#define ST7789_MADCTL     0x36U
+#define ST7789_COLMOD     0x3AU
+
+/* MADCTL portrait — no axis swap (MV=0), BGR color filter.
+ * MY=0 MX=0 MV=0 ML=0 BGR=1 MH=0 → 0x08.
+ * X-axis: 0..239 left→right.  Y-axis: 0..319 top→bottom. */
+#define ST7789_MADCTL_PORTRAIT   0x08U   /* BGR — confirmed for this panel */
+
+#define ST7789_COLMOD_16BIT      0x55U   /* RGB565 */
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 

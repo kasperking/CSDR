@@ -21,9 +21,10 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ── Screen geometry (ST7796S landscape 480×320) ────── */
-#define LCD_W   480U
-#define LCD_H   320U
+/* ── Screen geometry ────────────────────────────────── *
+ * LCD_W and LCD_H come from lcd_panel_config.h so that  *
+ * all resolution-dependent code stays in one place.     */
+#include "lcd_panel_config.h"
 
 /* ── Pixel byte-swap ────────────────────────────────── */
 #define SWAP16(x)  (uint16_t)((((x) & 0x00FFU) << 8U) | (((x) >> 8U) & 0x00FFU))
@@ -47,7 +48,7 @@ void LCD_LineRect(uint16_t *ln, uint16_t x0, uint16_t w,
                   uint16_t row, uint16_t total_h, uint16_t border,
                   uint16_t fill, uint16_t border_color);
 
-/* ── Line buffer (320 px, DMA_SRAM) ─────────────────── */
+/* ── Line buffer (LCD_W px, DMA_SRAM) ───────────────── */
 uint16_t *LCD_GetLineBuf(void);
 
 #ifdef __cplusplus

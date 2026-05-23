@@ -1,0 +1,44 @@
+/* USER CODE BEGIN Header */
+/**
+ * @file  lcd_panel_config.h
+ * @brief Compile-time panel selection for the FMC 8080-mode LCD driver.
+ *
+ *  Uncomment exactly ONE of the LCD_PANEL defines below to select the
+ *  target panel.  All resolution-dependent code derives LCD_W and LCD_H
+ *  from this header — do not hard-code 480 or 320 elsewhere.
+ *
+ *  ST7796 480×320  – landscape, wide SDR UI with sidebars (default)
+ *  ST7789 240×320  – portrait, compact SDR UI, lower FMC bandwidth
+ *
+ *  Include order:
+ *    lcd_panel_config.h  (this file, included by lcd_render.h and lcd_bus_fmc.h)
+ *    lcd_render.h        (SWAP16, Font6x8, line-buffer helpers)
+ *    lcd_bus_fmc.h       (LCD_PushWindow, LCD_SetWindow, etc.)
+ *    sdr_ui.h            (zone geometry and UI API)
+ */
+/* USER CODE END Header */
+
+#ifndef LCD_PANEL_CONFIG_H
+#define LCD_PANEL_CONFIG_H
+
+/* ── Panel identifiers ────────────────────────────────────────────────────── */
+#define LCD_PANEL_ST7796  1   /*!< ST7796S 480×320, landscape FMC 8080  */
+#define LCD_PANEL_ST7789  2   /*!< ST7789V 240×320, portrait  FMC 8080  */
+
+/* ── Active panel selection ───────────────────────────────────────────────── *
+ * Change this line to switch between panels.  Rebuild the entire project.   */
+#define LCD_PANEL  LCD_PANEL_ST7796
+/* #define LCD_PANEL  LCD_PANEL_ST7789 */
+
+/* ── Derived resolution constants ─────────────────────────────────────────── */
+#if LCD_PANEL == LCD_PANEL_ST7796
+#  define LCD_W  480U   /*!< Landscape pixel columns */
+#  define LCD_H  320U   /*!< Landscape pixel rows    */
+#elif LCD_PANEL == LCD_PANEL_ST7789
+#  define LCD_W  240U   /*!< Portrait pixel columns  */
+#  define LCD_H  320U   /*!< Portrait pixel rows     */
+#else
+#  error "Unknown LCD_PANEL.  Set LCD_PANEL to LCD_PANEL_ST7796 or LCD_PANEL_ST7789."
+#endif
+
+#endif /* LCD_PANEL_CONFIG_H */

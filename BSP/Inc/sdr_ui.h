@@ -2,8 +2,9 @@
 /**
   ******************************************************************************
   * @file    sdr_ui.h
-  * @brief   CSDR SDR UI – 9-zone layout 480×320 over FMC LCD
+  * @brief   CSDR SDR UI – zone layout over FMC LCD (ST7796 480×320 or ST7789 240×320)
   *
+  *  ── ST7796 480×320 (LCD_PANEL_ST7796, default) ─────────────────────────────
   *  ┌─────────────────────────────────────────────────────────────┐  Y=0
   *  │  HEADER  480×24                              13.9V          │
   *  ├─────────┬────────────────────────────────────┬─────────────┤  Y=24
@@ -24,12 +25,25 @@
   *  │  FOOTER  480×32   -24k      0      +24k                    │
   *  └─────────────────────────────────────────────────────────────┘  Y=320
   *
-  *  Transport: FMC 8080-mode (ST7796S) via LCD_PushWindow / LCD_Clear.
-  *  No SPI, no DMA wait loops, no CS toggling.
+  *  ── ST7789 240×320 (LCD_PANEL_ST7789, compact) ─────────────────────────────
+  *  ┌───────────────────────┐  Y=0
+  *  │  HEADER  240×16       │  voltage
+  *  ├───────────────────────┤  Y=16
+  *  │  VFO  240×48          │  14.200.000  A  USB  RX
+  *  ├───────────────────────┤  Y=64
+  *  │  METER  240×24        │  S 1  3  5  7  9  +20 +40
+  *  ├───────────────────────┤  Y=88
+  *  │  SPECTRUM  240×76     │
+  *  ├───────────────────────┤  Y=164
+  *  │  WATERFALL  240×96    │
+  *  ├───────────────────────┤  Y=260
+  *  │  STATUS  240×28       │  USB  VOL:78  SQL:0 / BW:2.7k  NR NB
+  *  ├───────────────────────┤  Y=288
+  *  │  FOOTER  240×32       │  -24k   0   +24k
+  *  └───────────────────────┘  Y=320
   *
-  *  Single-zone push times at 8-bit FMC / 116.7 ns/byte:
-  *    Spectrum  (480×72):  8.06 ms   < 10.67 ms (2 DMA half-periods) ✓
-  *    Waterfall (480×72):  8.06 ms   < 10.67 ms                      ✓
+  *  Panel is selected in lcd_panel_config.h (LCD_PANEL define).
+  *  Transport: FMC 8080-mode via LCD_PushWindow / LCD_Clear.
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -41,10 +55,15 @@
 extern "C" {
 #endif
 
-#include "lcd_render.h"    /* SWAP16, Font6x8, LCD_LineFill/Str helpers, LCD_W=480 */
-#include "lcd_bus_fmc.h"   /* LCD_PushWindow, LCD_Clear, LCD_FillRect              */
+#include "lcd_render.h"    /* SWAP16, Font6x8, LCD_LineFill/Str helpers, LCD_W  */
+#include "lcd_bus_fmc.h"   /* LCD_PushWindow, LCD_Clear, LCD_FillRect            */
 
-/* ── Zone geometry ──────────────────────────────────── */
+/* ════════════════════════════════════════════════════════════════════════════
+ *  Zone geometry — two conditional layouts selected by lcd_panel_config.h
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+#if LCD_PANEL == LCD_PANEL_ST7796
+/* ── ST7796 480×320 layout (9-zone with sidebars) ────────────────────────── */
 
 #define HDR_Y    0U
 #define HDR_H   24U
@@ -84,8 +103,6 @@ extern "C" {
 #define SPEC_Y  144U
 #define SPEC_H   72U
 #define SPEC_Y2 216U
-/* Zoom levels: 0=±24k  1=±18k  2=±12k  3=±6k  4=±3k  (display-only, DSP unchanged) */
-#define SPEC_ZOOM_COUNT  5U
 
 #define WF_X     0U
 #define WF_W   480U
@@ -97,36 +114,117 @@ extern "C" {
 #define FTR_H   32U
 #define FTR_Y2 320U
 
-/* ── S-meter segment bargraph geometry (inside MTR) ──
+/* S-meter row offsets within 32-row MTR zone (UHSDR compact ruler style):
+ *   row   0:    top margin
+ *   rows  1– 8: scale labels   (SM_LBL_ROW=1, Font6x8)
+ *   rows  9–10: tick marks     (SM_TICK_ROW, major 2-px / minor 1-px)
+ *   row  11:    thin 1-px horizontal baseline rail (SM_SEG_ROW)
+ *   rows 12–13: 2-px thin fill bar (active level indicator)
+ *   rows 14+:   unused / TX meter area                           */
+#define SM_LBL_ROW    1U
+#define SM_TICK_ROW  11U   /* ticks below top rail (rows 11-12) */
+#define SM_SEG_ROW   10U   /* top rail row */
+#define SM_SEG_H     16U   /* active area height rows 0-16 */
+#define SM_VAL_ROW    1U   /* inline S-value shares label row band */
+
+/* No compact STATUS zone on ST7796 */
+#define STS_Y   FTR_Y
+#define STS_H    0U
+#define STS_Y2  FTR_Y
+
+#elif LCD_PANEL == LCD_PANEL_ST7789
+/* ── ST7789 240×320 compact layout (no sidebars) ────────────────────────── *
+ *
+ *  Total: 16+48+24+76+96+28+32 = 320 px ✓
+ *
+ *  SBL/SBR are defined as zero-size so callers compile cleanly.
+ *  DrawSidebarLeft renders the STATUS zone; DrawSidebarRight is a no-op.
+ */
+
+#define HDR_Y    0U
+#define HDR_H   16U      /* compact header */
+#define HDR_Y2  16U
+
+#define SBL_X    0U
+#define SBL_W    0U      /* not rendered */
+#define SBL_H    0U
+#define SBL_Y   HDR_Y2
+#define SBL_Y2  HDR_Y2
+
+#define SBR_W    0U      /* not rendered */
+#define SBR_X   LCD_W    /* off-screen origin (unused) */
+#define SBR_Y   HDR_Y2
+#define SBR_H    0U
+#define SBR_Y2  HDR_Y2
+
+#define VFO_X    0U
+#define VFO_W   LCD_W    /* full width — no sidebars */
+#define VFO_Y   HDR_Y2   /* = 16 */
+#define VFO_H   48U
+#define VFO_Y2  64U      /* HDR_Y2 + VFO_H */
+
+#define MTR_X    0U
+#define MTR_W   LCD_W
+#define MTR_Y   VFO_Y2   /* = 64 */
+#define MTR_H   24U
+#define MTR_Y2  88U      /* MTR_Y + MTR_H */
+
+/* No info strip on compact */
+#define INFO_Y  MTR_Y2
+#define INFO_H    0U
+#define INFO_Y2 MTR_Y2
+
+#define SPEC_X    0U
+#define SPEC_W   LCD_W
+#define SPEC_Y   MTR_Y2  /* = 88 */
+#define SPEC_H   76U
+#define SPEC_Y2 164U     /* SPEC_Y + SPEC_H */
+
+#define WF_X     0U
+#define WF_W    LCD_W
+#define WF_Y    SPEC_Y2  /* = 164 */
+#define WF_H    96U
+#define WF_Y2  260U      /* WF_Y + WF_H */
+
+/* Compact status bar — replaces sidebars (mode/vol/sq/bw/step/NR/NB) */
+#define STS_Y   WF_Y2    /* = 260 */
+#define STS_H   28U
+#define STS_Y2 288U      /* STS_Y + STS_H */
+
+#define FTR_Y   STS_Y2   /* = 288 */
+#define FTR_H   32U
+#define FTR_Y2  LCD_H    /* = 320 */
+
+/* S-meter row offsets within 24-row MTR zone (UHSDR compact ruler style):
+ *   row   0:    top margin
+ *   rows  1– 8: scale labels   (SM_LBL_ROW=1, Font6x8)
+ *   rows  9–10: tick marks     (SM_TICK_ROW, major 2-px / minor 1-px)
+ *   row  11:    thin 1-px horizontal baseline rail (SM_SEG_ROW)
+ *   rows 12–13: 2-px thin fill bar (active level indicator)
+ *   rows 14+:   unused                                          */
+#define SM_LBL_ROW    1U
+#define SM_TICK_ROW   9U
+#define SM_SEG_ROW   11U
+#define SM_SEG_H     13U
+#define SM_VAL_ROW    1U   /* inline S-value shares label row band */
+
+#else
+#  error "Unknown LCD_PANEL in sdr_ui.h — check lcd_panel_config.h"
+#endif /* LCD_PANEL */
+
+/* ── Zoom levels: 0=±24k  1=±18k  2=±12k  3=±6k  4=±3k ─────────────────── */
+#define SPEC_ZOOM_COUNT  5U
+
+/* ── S-meter bargraph geometry (shared, fits both MTR widths) ────────────── *
  *  SM_UNIT_W  : pixel pitch per segment (14 px)
  *  SM_SEG_W   : lit pixel width per segment (10 px); gap = 4 px
- *  SM_RULER_W : total bar span (12 × 14 = 168 px)
- * ─────────────────────────────────────────────────── */
+ *  SM_RULER_W : total bar span (12 × 14 = 168 px) — fits in MTR_W for both panels
+ * ─────────────────────────────────────────────────────────────────────────── */
 #define SM_BARS      12U
 #define SM_UNIT_W    14U
 #define SM_SEG_W     10U
 #define SM_START_X    4U
 #define SM_RULER_W   (SM_BARS * SM_UNIT_W)  /* 168 px */
-
-/* Row offsets within the 32-row MTR zone (RX S-meter)
- *   rows  0– 1: top margin
- *   rows  2– 9: scale labels (SM_LBL_ROW,  Font6x8)
- *   row  10:    tick marks   (SM_TICK_ROW)
- *   rows 11–23: segment bars (SM_SEG_ROW,  SM_SEG_H=13)
- *   rows 24–31: S-value text (SM_VAL_ROW,  Font6x8)    */
-#define SM_LBL_ROW    2U   /* scale labels                               */
-#define SM_TICK_ROW  10U   /* tick-mark row                              */
-#define SM_SEG_ROW   11U   /* segment bars top row                       */
-#define SM_SEG_H     13U   /* segment bar height (rows)                  */
-#define SM_VAL_ROW   24U   /* S-value text                               */
-
-/* ── Dirty-zone bitmask ─────────────────────────────── */
-#define DIRTY_HDR   0x01U
-#define DIRTY_SBL   0x02U
-#define DIRTY_VFO   0x04U
-#define DIRTY_SBR   0x08U
-#define DIRTY_MTR   0x10U
-#define DIRTY_ALL   0x1FU
 
 /* ── Legacy aliases (used by menu.c / sdr_scan.c) ──── */
 #define ZONE_SPEC_Y   SPEC_Y
@@ -135,6 +233,14 @@ extern "C" {
 #define ZONE_WF_Y     WF_Y
 #define ZONE_WF_H     WF_H
 #define ZONE_WF_Y2    WF_Y2
+
+/* ── Dirty-zone bitmask ─────────────────────────────── */
+#define DIRTY_HDR   0x01U
+#define DIRTY_SBL   0x02U
+#define DIRTY_VFO   0x04U
+#define DIRTY_SBR   0x08U
+#define DIRTY_MTR   0x10U
+#define DIRTY_ALL   0x1FU
 
 /* ── Colour palette (RGB565) ────────────────────────── */
 #define UI_BG             0x0000U
@@ -149,7 +255,7 @@ extern "C" {
 #define UI_FREQ_MHZ       0x07FFU  /* menu edit-mode highlight */
 #define UI_FREQ_KHZ       0x3FE0U  /* BW/step sidebar values  */
 #define UI_FREQ_FG        0xFFFFU  /* main VFO frequency       */
-#define UI_FREQ_SUB       0x528AU  /* inactive-VFO sub-line    */
+#define UI_FREQ_SUB       0x2945U  /* inactive-VFO sub-line (dimmed ~16%)  */
 
 #define UI_MODE_AM        0xFFFFU
 #define UI_MODE_FM        0x07E0U
@@ -171,7 +277,7 @@ extern "C" {
 
 #define UI_TX_BG          0xF800U   /* TX = red                    */
 #define UI_TX_FG          0xFFFFU
-#define UI_RX_BG          0x07E0U   /* RX = green (subtle)         */
+#define UI_RX_BG          0x0460U   /* RX = muted green (low visual weight) */
 #define UI_RX_FG          0xFFFFU
 
 #define UI_SPEC_BG        0x0843U
@@ -196,7 +302,7 @@ typedef struct {
   bool      tx_mode;
   bool      si5351_ok;
   uint32_t  bw_hz;
-  float     voltage;
+  int16_t   voltage_x10;  /*!< Supply voltage × 10, e.g. 132 = 13.2 V     */
   uint8_t   att_db;
   int16_t   mic_gain;
   uint16_t  filter_len;
@@ -245,8 +351,8 @@ void SDR_UI_DrawWaterfall(const float *fft_db, uint16_t bins);
 /* Meter fast-update (10 Hz) */
 void SDR_UI_UpdateSMeter(float signal_db);
 void SDR_UI_UpdateSMeter_SetTX(bool tx);
-void SDR_UI_UpdateSMeter_SetVoltage(float v);
-void SDR_UI_UpdateTXMeters(float alc_norm, float swr);
+void SDR_UI_UpdateSMeter_SetVoltage(int16_t v_x10);  /*!< v × 10, e.g. 132 = 13.2 V */
+void SDR_UI_UpdateTXMeters(int32_t alc_pct, int32_t swr_x10); /*!< alc 0-100 %, swr × 10 */
 
 void SDR_UI_DrawFuncBar(const SDR_UI_State_t *ui);
 

@@ -530,7 +530,7 @@ void CSDR_Loop(void)
   if (now - t_analog >= 100U) {
     t_analog = now;
     Analog_Update();
-    SDR_UI_UpdateSMeter_SetVoltage((float)g_analog.voltage_mv * 0.001f);
+    SDR_UI_UpdateSMeter_SetVoltage((int16_t)(g_analog.voltage_mv / 100));
   }
   if (now - t_fan    >= 1000U){ t_fan    = now; Fan_Update(g_analog.temp_c); }
   if (now - t_pwr    >= 100U) { t_pwr    = now; PWR_Poll(); }
@@ -1223,7 +1223,7 @@ static void csdr_refresh_display(void)
     ui.nr_on     = g_sdr.nr_on;         ui.rit_hz    = g_sdr.rit_hz;
     ui.tx_mode   = g_sdr.tx_mode;       ui.si5351_ok = g_sdr.si5351_ok;
     ui.signal_db = g_dsp.signal_power_db;
-    ui.bw_hz     = g_sdr.bw_hz;         ui.voltage   = (float)g_analog.voltage_mv * 0.001f;
+    ui.bw_hz     = g_sdr.bw_hz;         ui.voltage_x10 = (int16_t)(g_analog.voltage_mv / 100);
     ui.att_db    = g_sdr.att_db;        ui.mic_gain  = g_sdr.mic_gain;
     ui.freq_b_hz = g_sdr.vfo_b.freq_hz; /* inactive VFO shown in sub-line */
     ui.active_vfo = g_sdr.active_vfo;
@@ -1268,10 +1268,9 @@ static void csdr_refresh_display(void)
     }
   } else if (!menu_open) {
     if (g_sdr.tx_mode) {
-      float alc_norm = (float)g_analog.alc_percent * (1.0f / 100.0f);
-      float swr      = (float)g_analog.swr_x100    * (1.0f / 100.0f);
       RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
-      SDR_UI_UpdateTXMeters(alc_norm, swr);
+      SDR_UI_UpdateTXMeters((int32_t)g_analog.alc_percent,
+                            (int32_t)(g_analog.swr_x100 / 10));
       RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     } else {
       RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);

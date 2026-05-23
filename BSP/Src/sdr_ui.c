@@ -2,24 +2,27 @@
 /**
   ******************************************************************************
   * @file    sdr_ui.c
-  * @brief   CSDR SDR UI – 9-zone layout, FMC burst pushes (480×320)
+  * @brief   CSDR SDR UI – zone layout, FMC burst pushes (ST7796 480×320 / ST7789 240×320)
   *
-  *  All zone buffers live in DMA_SRAM (RAM_D1, 512KB).  Cache-coherency is
-  *  handled at the FMC MPU region level – Region 1 is Strongly-Ordered,
-  *  so no D-Cache flush is needed before pushing.
+  *  Panel is selected at compile time via LCD_PANEL in lcd_panel_config.h.
   *
-  *  Spectrum and waterfall zones use LCD_PushWindowAsync (DMA2 Stream0 M2M).
-  *  CPU still handles CASET/RASET/RAMWR window setup synchronously, then DMA
-  *  carries the pixel payload to the fixed FMC data address.
+  *  ST7796 480×320: 9-zone layout with sidebars.  All zone buffers live in
+  *  DMA_SRAM (RAM_D1).  Spectrum/waterfall use async DMA2 Stream0 M2M.
+  *  Total RAM_D1 footprint: ~253 KB.
   *
-  *  Async strip sequence: LCD_Wait() → LCD_PushWindowAsync() → MainLoopBeat().
-  *  Audio/USB ISRs preempt freely during the cooperative NOP poll in LCD_Wait.
-  *  Other zones (header, sidebar, VFO, meter) retain synchronous LCD_PushWindow.
+  *  ST7789 240×320: compact layout — no sidebars, status bar replaces them.
+  *  Smaller buffers (SPEC 240×76, WF 240×96 vs. 480×72 each).  Waterfall row
+  *  push is 480 B (~56 µs) vs. 960 B (~112 µs) at the same FMC clock.
+  *  Total RAM_D1 footprint: ~148 KB.
   *
-  *  Single-zone worst-case transfer times (8-bit FMC, 116.7 ns/byte):
-  *    Spectrum  (480×72 = 69,120 px = 138,240 B): ~8.06 ms (9 × 8-row strips)
-  *    Waterfall (480×1  =    480 px =     960 B): ~112 µs  (1-row ring push)
-  *  Waterfall uses a single-row ring-slot push — no chunking needed.
+  *  DrawSidebarLeft renders the compact STATUS zone on ST7789.
+  *  DrawSidebarRight is a no-op on ST7789.
+  *
+  *  Single-zone transfer times (8-bit FMC, 116.7 ns/byte):
+  *    ST7796  Spectrum  (480×72):   ~8.06 ms   (9 × 8-row strips)
+  *    ST7796  WF row   (480×1):     ~112 µs
+  *    ST7789  Spectrum  (240×76):   ~4.26 ms   (10 × 8-row strips)
+  *    ST7789  WF row   (240×1):      ~56 µs
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -70,28 +73,40 @@ static inline uint32_t ui_cyc_to_us(uint32_t cycles)
   return (mhz > 0U) ? (cycles / mhz) : 0U;
 }
 
-/* ── DMA-accessible zone buffers (RAM_D1, 512 KB) ───────────────────────── */
-/* Sizes at 480×320:
- *   s_hdr_buf  : 24 × 480 × 2 =  23,040 B
- *   s_sbl_buf  : 96 × 80  × 2 =  15,360 B
- *   s_sbr_buf  : 96 × 80  × 2 =  15,360 B
- *   s_vfo_buf  : 64 × 320 × 2 =  40,960 B
- *   s_mtr_buf  : 32 × 320 × 2 =  20,480 B
- *   s_spec_buf : 72 × 480 × 2 =  69,120 B
- *   s_wf_buf   : 72 × 480 × 2 =  69,120 B
- *   Total UI                  : ~253 KB  (fits in 512 KB RAM_D1)
+/* ── DMA-accessible zone buffers (RAM_D1, 512 KB) ───────────────────────── *
+ *
+ *  ST7796 480×320:                      ST7789 240×320:
+ *   s_hdr_buf  : 24×480×2 =  23,040 B   16×240×2 =   7,680 B
+ *   s_sbl_buf  : 96×80 ×2 =  15,360 B   — (not on ST7789)
+ *   s_sbr_buf  : 96×80 ×2 =  15,360 B   — (not on ST7789)
+ *   s_sts_buf  :     — (not on ST7796)   28×240×2 =  13,440 B
+ *   s_vfo_buf  : 64×320×2 =  40,960 B   48×240×2 =  23,040 B
+ *   s_mtr_buf  : 32×320×2 =  20,480 B   24×240×2 =  11,520 B
+ *   s_spec_buf : 72×480×2 =  69,120 B   76×240×2 =  36,480 B
+ *   s_wf_buf   : 72×480×2 =  69,120 B   96×240×2 =  46,080 B
+ *   Total UI             : ~253 KB                 ~148 KB
  */
 static uint16_t s_hdr_buf[HDR_H  * LCD_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
+#if LCD_PANEL == LCD_PANEL_ST7796
 static uint16_t s_sbl_buf[SBL_H  * SBL_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 static uint16_t s_sbr_buf[SBR_H  * SBR_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
+#else
+/* On ST7789 the sidebar functions return before touching these buffers.
+ * Declare 1-element dummies so the dead-code function bodies compile. */
+static uint16_t s_sbl_buf[1U] __attribute__((section(".DMA_SRAM")));
+static uint16_t s_sbr_buf[1U] __attribute__((section(".DMA_SRAM")));
+/* Compact status bar — replaces sidebars on ST7789 */
+static uint16_t s_sts_buf[STS_H  * LCD_W]
+    __attribute__((aligned(32), section(".DMA_SRAM")));
+#endif
 static uint16_t s_vfo_buf[VFO_H  * VFO_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 static uint16_t s_mtr_buf[MTR_H  * MTR_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
-/* Strip buffer for dirty-column segment push: SM_SEG_H × SM_RULER_W = 13 × 168 = 2,184 px */
+/* Strip buffer (reserved, DMA_SRAM aligned): SM_SEG_H × SM_RULER_W = 16 × 168 = 2,688 px */
 static uint16_t s_mtr_strip[SM_SEG_H * SM_RULER_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 static uint16_t s_spec_buf[SPEC_H][SPEC_W]
@@ -99,18 +114,18 @@ static uint16_t s_spec_buf[SPEC_H][SPEC_W]
 static uint16_t s_wf_buf[WF_H][WF_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 
-/* Spectrum compute arrays — static (avoid 4.8 KB stack frame per call) */
+/* Spectrum compute arrays — static (avoid large stack frame per call) */
 static float    s_spec_yf     [SPEC_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 static uint16_t s_spec_py     [SPEC_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 /* Strip buffer: one SPEC_CHUNK_ROWS-tall slice for partial-column FMC pushes.
- * Worst case: SPEC_CHUNK_ROWS × SPEC_W = 8 × 480 = 3,840 pixels = 7,680 B. */
+ * Worst case: SPEC_CHUNK_ROWS × SPEC_W = 8 × SPEC_W pixels. */
 static uint16_t s_spec_strip[SPEC_CHUNK_ROWS * SPEC_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 
 /* WF pre-compute: two uint8_t line buffers (double-buffer for DSP/UI split) */
-static uint8_t  s_wf_idx[2][WF_W];   /* 2 × 480 B */
+static uint8_t  s_wf_idx[2][WF_W];   /* 2 × WF_W bytes */
 static volatile uint8_t s_wf_fill = 0;
 
 /* Adaptive waterfall suppression (set by csdr_app under high audio load) */
@@ -120,7 +135,7 @@ static volatile bool s_wf_suppressed = false;
 static float    s_wf_smooth[256];    /* indexed by FFT bin (max 256) */
 static uint16_t s_wf_lut[256];
 static uint8_t  s_wf_head = 0;
-static float    s_smeter_voltage = 0.0f;
+static int16_t  s_smeter_voltage_x10 = 0;
 
 /* Spectrum delta-skip: previous column pixel rows */
 static uint16_t s_spec_py_prev[SPEC_W];
@@ -135,8 +150,8 @@ static uint32_t s_max_spec_partial_us  = 0U;
 static uint32_t s_vfo_glyph_count  = 0U;
 static uint32_t s_vfo_skip_count   = 0U;
 static uint32_t s_max_vfo_us       = 0U;
-/* S-meter label/tick positions: segment indices where markers appear */
-static const uint8_t s_sbar[8] = { 0U, 1U, 3U, 5U, 7U, 9U, 10U, 11U };
+/* S-meter minor tick positions (intermediate, unlabeled — 1-px row only) */
+static const uint8_t sm_min_seg[4] = { 2U, 4U, 6U, 8U };
 
 static int32_t  s_rx_meter_bars = -1;
 static bool     s_tx_meter_active = false;
@@ -330,6 +345,30 @@ static inline void buf_fill(uint16_t *buf, uint32_t n, uint16_t color)
   for (uint32_t i = 0; i < n; i++) buf[i] = c;
 }
 
+/* ── fmt_1dp ─────────────────────────────────────────────────────────────── *
+ * Format a scaled integer (value × 10) as "W.F[unit]" with no floats.
+ * e.g. fmt_1dp(buf, 8, 132, 'V') → "13.2V"
+ *      fmt_1dp(buf, 8,  15,  0 ) → "1.5"
+ * buf must be at least 7 bytes.  Returns pointer to buf for convenience. */
+static char *fmt_1dp(char *buf, uint8_t bufsz, int32_t val_x10, char unit)
+{
+  uint8_t n = 0;
+  if (val_x10 < 0) {
+    if (n < bufsz - 1U) buf[n++] = '-';
+    val_x10 = -val_x10;
+  }
+  int32_t whole = val_x10 / 10;
+  int32_t frac  = val_x10 % 10;
+  if (whole >= 100) { if (n < bufsz-1U) buf[n++] = (char)('0' + whole / 100); }
+  if (whole >=  10) { if (n < bufsz-1U) buf[n++] = (char)('0' + (whole / 10) % 10); }
+  if              (n < bufsz-1U) buf[n++] = (char)('0' + whole % 10);
+  if              (n < bufsz-1U) buf[n++] = '.';
+  if              (n < bufsz-1U) buf[n++] = (char)('0' + frac);
+  if (unit && n < bufsz-1U)      buf[n++] = unit;
+  buf[n < bufsz ? n : bufsz - 1U] = '\0';
+  return buf;
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_Init
  * ════════════════════════════════════════════════════════════════════════════ */
@@ -449,8 +488,8 @@ void SDR_UI_DrawFrame(uint32_t sample_rate, uint16_t fft_bins)
 void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
 {
   char vstr[12];
-  snprintf(vstr, sizeof(vstr), "%.1fV", ui->voltage);
-  uint16_t vcol    = (ui->voltage < 11.5f && ui->voltage > 0.5f)
+  fmt_1dp(vstr, sizeof(vstr), ui->voltage_x10, 'V');
+  uint16_t vcol    = (ui->voltage_x10 < 115 && ui->voltage_x10 > 5)
                      ? UI_STATUS_OFF : UI_STATUS_VAL;
   uint16_t volt_x  = (uint16_t)(LCD_W - (uint16_t)(strlen(vstr) * Font6x8.width) - 4U);
   uint16_t txt_y   = (uint16_t)((HDR_H - Font6x8.height) / 2U);
@@ -473,6 +512,120 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
+ *  draw_compact_status  (ST7789 only)  STS_H=28 × LCD_W=240
+ *
+ *  Two-row status bar that replaces the sidebars on the 240×320 compact layout.
+ *
+ *  Row 0 (y≈5): [Mode]  VOL:xx  SQL:xx
+ *  Row 1 (y≈16): BW:xxx  ST:xxx  [NR] [NB]
+ *
+ *  NR/NB drawn as coloured badges (green=ON, red=OFF) matching sidebar style.
+ * ════════════════════════════════════════════════════════════════════════════ */
+#if LCD_PANEL == LCD_PANEL_ST7789
+static void draw_compact_status(const SDR_UI_State_t *ui)
+{
+  /* Cache guard */
+  if (s_sbl_cache.valid
+      && s_sbl_cache.mode       == ui->mode
+      && s_sbl_cache.volume     == ui->volume
+      && s_sbl_cache.squelch    == ui->squelch
+      && s_sbl_cache.nr_on      == ui->nr_on
+      && s_sbl_cache.nb_on      == ui->nb_on
+      && s_sbr_cache.bw_hz      == ui->bw_hz
+      && s_sbr_cache.step       == ui->step) return;
+
+  s_sbl_cache.mode       = ui->mode;
+  s_sbl_cache.volume     = ui->volume;
+  s_sbl_cache.squelch    = ui->squelch;
+  s_sbl_cache.nr_on      = ui->nr_on;
+  s_sbl_cache.nb_on      = ui->nb_on;
+  s_sbl_cache.active_vfo = ui->active_vfo;
+  s_sbl_cache.valid      = true;
+  s_sbr_cache.bw_hz      = ui->bw_hz;
+  s_sbr_cache.step       = ui->step;
+  s_sbr_cache.valid      = true;
+
+  static const char *const mode_s[] = {"AM","FM","USB","LSB","CW"};
+  const char *mode_str = (ui->mode < 5U) ? mode_s[ui->mode] : "---";
+
+  char vol_str[8]; snprintf(vol_str, sizeof(vol_str), "VOL:%u",  ui->volume);
+  char sql_str[8]; snprintf(sql_str, sizeof(sql_str), "SQL:%u",  ui->squelch);
+
+  char bw_str[10];
+  if (ui->bw_hz >= 10000U)
+    snprintf(bw_str, sizeof(bw_str), "BW:%luk", (unsigned long)(ui->bw_hz / 1000U));
+  else if (ui->bw_hz >= 1000U)
+    snprintf(bw_str, sizeof(bw_str), "BW:%lu.%luk",
+             (unsigned long)(ui->bw_hz / 1000U),
+             (unsigned long)((ui->bw_hz % 1000U) / 100U));
+  else
+    snprintf(bw_str, sizeof(bw_str), "BW:%luHz", (unsigned long)ui->bw_hz);
+
+  char step_str[12];
+  uint32_t st = ui->step;
+  if      (st >= 100000U) snprintf(step_str, sizeof(step_str), "ST:100k");
+  else if (st >=  10000U) snprintf(step_str, sizeof(step_str), "ST:10k");
+  else if (st >=   1000U) snprintf(step_str, sizeof(step_str), "ST:1k");
+  else if (st >=    100U) snprintf(step_str, sizeof(step_str), "ST:100");
+  else if (st >=     10U) snprintf(step_str, sizeof(step_str), "ST:10");
+  else                    snprintf(step_str, sizeof(step_str), "ST:1");
+
+  uint16_t nr_bg = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
+  uint16_t nb_bg = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
+
+  buf_fill(s_sts_buf, (uint32_t)STS_H * LCD_W, UI_BG);
+
+  /* Vertical placement: two Font6x8 rows centred in STS_H=28 px.
+   * Content height: 8 + 3 + 8 = 19 px.  Top margin: (28-19)/2 = 4. */
+  const uint16_t row0_y = 4U;          /* row 0: mode / vol / sql */
+  const uint16_t row1_y = (uint16_t)(row0_y + Font6x8.height + 3U);  /* = 15 */
+
+  /* Thin top border */
+  for (uint16_t x = 0U; x < LCD_W; x++)
+    s_sts_buf[x] = SWAP16(UI_DIVIDER);
+
+  uint16_t fh = Font6x8.height;
+  for (uint16_t fr = 0U; fr < fh; fr++) {
+    /* Row 0: mode  vol_str  sql_str */
+    {
+      uint16_t r = (uint16_t)(row0_y + fr);
+      if (r < STS_H) {
+        uint16_t *ln = s_sts_buf + (uint32_t)r * LCD_W;
+        uint16_t col_mode = (ui->mode < 5U) ? UI_STATUS_VAL : UI_STATUS_LBL;
+        LCD_LineStr(ln, 4U,  fr, mode_str, &Font6x8, col_mode, UI_BG);
+        /* vol and sql right-aligned by simple left placement with spacing */
+        uint16_t vx = (uint16_t)(4U + 6U * Font6x8.width);  /* after "USB " gap */
+        LCD_LineStr(ln, vx,  fr, vol_str, &Font6x8, UI_STATUS_VAL, UI_BG);
+        uint16_t sx = (uint16_t)(vx + (uint16_t)(strlen(vol_str) + 2U) * Font6x8.width);
+        LCD_LineStr(ln, sx,  fr, sql_str, &Font6x8, UI_STATUS_VAL, UI_BG);
+      }
+    }
+    /* Row 1: bw_str  step_str  [NR] [NB] */
+    {
+      uint16_t r = (uint16_t)(row1_y + fr);
+      if (r < STS_H) {
+        uint16_t *ln = s_sts_buf + (uint32_t)r * LCD_W;
+        LCD_LineStr(ln, 4U, fr, bw_str,   &Font6x8, UI_FREQ_KHZ, UI_BG);
+        uint16_t bx = (uint16_t)(4U + (uint16_t)(strlen(bw_str) + 2U) * Font6x8.width);
+        LCD_LineStr(ln, bx, fr, step_str, &Font6x8, UI_FREQ_KHZ, UI_BG);
+        /* NR badge */
+        uint16_t nr_x = (uint16_t)(LCD_W - 50U);
+        uint16_t nb_x = (uint16_t)(LCD_W - 26U);
+        LCD_LineFill(ln, nr_x, 22U, nr_bg);
+        LCD_LineStr(ln, (uint16_t)(nr_x + 4U), fr, "NR", &Font6x8, UI_BG, nr_bg);
+        LCD_LineFill(ln, nb_x, 22U, nb_bg);
+        LCD_LineStr(ln, (uint16_t)(nb_x + 4U), fr, "NB", &Font6x8, UI_BG, nb_bg);
+      }
+    }
+  }
+
+  LCD_PushWindow(0U, STS_Y,
+                 (uint16_t)(LCD_W - 1U), (uint16_t)(STS_Y2 - 1U),
+                 s_sts_buf, (uint32_t)LCD_W * STS_H);
+}
+#endif /* LCD_PANEL_ST7789 */
+
+/* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawSidebarLeft  (SBL_W=80 × SBL_H=96)
  *
  *  5 items × ~19 rows each:
@@ -481,6 +634,12 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
 {
+#if LCD_PANEL == LCD_PANEL_ST7789
+  /* Compact layout: render the status bar instead of a sidebar */
+  draw_compact_status(ui);
+  return;
+#endif /* LCD_PANEL_ST7789 */
+
   /* Cache guard — skip rebuild when nothing changed */
   if (s_sbl_cache.valid
       && s_sbl_cache.mode       == ui->mode
@@ -611,6 +770,11 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
 {
+#if LCD_PANEL == LCD_PANEL_ST7789
+  (void)ui;  /* no sidebar on compact layout */
+  return;
+#endif /* LCD_PANEL_ST7789 */
+
   /* Cache guard — avoid rebuild when nothing changed */
   if (s_sbr_cache.valid
       && s_sbr_cache.bw_hz    == ui->bw_hz
@@ -726,11 +890,11 @@ static void vfo_push_x_band(uint16_t x_lo, uint16_t x_hi,
                              uint16_t row0, uint16_t row1);
 
 /* ════════════════════════════════════════════════════════════════════════════
- *  SDR_UI_DrawVFO  (VFO_W=320 × VFO_H=64)
+ *  SDR_UI_DrawVFO  (VFO_W × VFO_H)
  *
- *  7-segment digits occupy rows 2..25 (BIG_H=24), single color UI_FREQ_FG.
- *  Sub-line (inactive VFO / RIT / RX-TX) at rows 28..43 (MED_H=16).
- *  VFO_SPLIT=28 separates upper (freq) from lower (sub/RIT/TX).
+ *  ST7796 (64 px): 7-segment digits rows 2..25, 9-px gap, thin divider row 30,
+ *  secondary VFO sub-line rows 35..50.  VFO_SPLIT=28.
+ *  ST7789 (48 px): 7-segment digits rows 2..25, 4-px gap, sub-line rows 30..45.
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 {
@@ -767,14 +931,25 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 
   const uint16_t freq_top = 2U;
   const uint16_t vfoi_y   = 1U;
-  const uint16_t sub_y    = (uint16_t)(freq_top + BIG_H + 2U);  /* row 28 */
 
-  /* RX/TX badge: 20px tall (MED_H + 2px pad × 2), 30px wide (2 chars + 3px pad × 2), right-aligned */
+  /* Increased gap between primary and secondary VFO for visual breathing room.
+   * badge_y stays at row 28 so the RX/TX badge position is independent of sub_y
+   * and cannot underflow on the compact ST7789 panel (VFO_H=48). */
+#if LCD_PANEL == LCD_PANEL_ST7789
+  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 6U);   /* row 32: 6-px breathing gap */
+  const uint16_t div_y  = 0xFFFFU;  /* no room for divider on compact panel */
+#else
+  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 9U);   /* row 35: 9-px breathing gap */
+  const uint16_t div_y  = (uint16_t)(freq_top + BIG_H + 4U);   /* row 30, centred in gap */
+#endif
+  const uint16_t badge_y = (uint16_t)(freq_top + BIG_H + 2U);  /* row 28, mode/RX/TX base */
+
+  /* RX/TX text-only badge: no filled background; colour identifies mode */
   const uint16_t rt_bad_w = (uint16_t)(2U * MED_W + 6U);
   const uint16_t rt_bad_h = (uint16_t)(MED_H + 4U);
   const uint16_t rt_bx    = (uint16_t)(VFO_W - 2U - rt_bad_w);
-  const uint16_t rt_by    = (uint16_t)(sub_y + ((uint16_t)(VFO_H - sub_y) - rt_bad_h) / 2U);
-  const uint16_t rt_fg    = ui->tx_mode ? UI_TX_FG : UI_RX_FG;
+  const uint16_t rt_by    = (uint16_t)(badge_y +
+      ((VFO_H > badge_y + rt_bad_h) ? (VFO_H - badge_y - rt_bad_h) / 2U : 0U));
 
   /* Frequency centering: each digit = BIG_W px, each '.' = 6 px */
   uint16_t total_w = 0U;
@@ -813,17 +988,25 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
       }
     }
 
-    /* RX/TX badge: solid rt_color fill, white medium text, right-aligned in sub-line zone */
+    /* RX/TX: colored text only, transparent background */
     if (row >= rt_by && row < rt_by + rt_bad_h) {
       uint16_t br = row - rt_by;
-      uint16_t px = SWAP16(rt_color);
-      for (uint16_t i = 0U; i < rt_bad_w; i++) ln[rt_bx + i] = px;
       if (br >= 2U && br < 2U + MED_H)
-        ln_medstr(ln, (uint16_t)(rt_bx + 3U), br - 2U, rt_str, rt_fg, rt_color);
+        ln_medstr(ln, (uint16_t)(rt_bx + 3U), br - 2U, rt_str, rt_color, UI_VFO_BG);
+    }
+
+    /* Thin centred divider between primary and secondary VFO (only when sub-freq shown) */
+    if (row == div_y && ui->freq_b_hz > 0U) {
+      uint16_t dx0 = (uint16_t)(VFO_W / 5U);
+      uint16_t dx1 = (uint16_t)(4U * VFO_W / 5U);
+      for (uint16_t x = dx0; x < dx1; x++)
+        ln[x] = UI_BORDER;
     }
   }
 
-  /* Section-split push: upper = rows 0..27, lower = rows 28..63. */
+  /* Section-split push: upper = rows 0..27 (main digits + gap/divider),
+   * lower = rows 28..VFO_H-1 (sub-line or mode/badge).  Split kept at 28
+   * so badge at row 28 always lands in the lower section on both panels. */
   const uint16_t VFO_SPLIT = 28U;
 
   bool upper_chg = !s_vfo_cache.valid
@@ -909,66 +1092,119 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   RuntimeDiag_VfoReport(s_vfo_glyph_count, s_vfo_skip_count, s_max_vfo_us);
 }
 
+/* ── RF instrument ruler — calibrated scale + moving marker ──────────────── *
+ *
+ *  Row map within MTR zone:
+ *    row   0       top margin
+ *    rows  1– 8    scale labels (Font6x8) + inline S-value at val_x (SM_LBL_R0)
+ *    row   9       breathing gap (empty)
+ *    row  10       TOP RAIL: 1-px horizontal line, full ruler width (SM_RAIL_TOP_R)
+ *    rows 11–12    TICKS hanging below top rail:
+ *                    major (labeled positions): both rows (2-px tall)
+ *                    minor (intermediate):      row 12 only (1-px)
+ *    rows 13–15    MARKER: inverted-triangle position indicator (SM_MARK_R0)
+ *                    rows 13-14: 3-px wide (ndx±1)
+ *                    row  15:    1-px tip   (ndx only)
+ *    row  16       BOTTOM RAIL: 1-px horizontal line, full ruler width (SM_RAIL_BOT_R)
+ *
+ *  No fill segments.  No horizontal bars.  The ruler carries the scale;
+ *  the marker is a movable pointer at exactly one calibrated position.
+ *  Static content (rails, ticks, labels) written once on full redraw and
+ *  never retransmitted.  Fast path touches only marker rows + S-value label rows.
+ */
+#define SM_LBL_R0       1U   /* label band start (rows 1-8, Font6x8)       */
+#define SM_RAIL_TOP_R  10U   /* top rail row                                */
+#define SM_TICK_R0     11U   /* tick rows: major rows 11-12, minor row 12   */
+#define SM_MARK_R0     13U   /* marker rows 13-15 (inverted triangle)       */
+#define SM_MARK_H       3U   /* marker height                               */
+#define SM_RAIL_BOT_R  16U   /* bottom rail row                             */
+#define SM_VAL_CLR_W   40U   /* columns cleared per row for S-value update  */
+
+/* Returns center column of the marker, clamped so ±1 stays within ruler. */
+static inline uint16_t sm_mark_x(int32_t bars)
+{
+  if (bars <= 0)
+    return (uint16_t)(SM_START_X + 1U);
+  uint16_t x   = (uint16_t)(SM_START_X + (uint32_t)(uint16_t)bars * SM_RULER_W / SM_BARS);
+  uint16_t cap = (uint16_t)(SM_START_X + SM_RULER_W - 1U);
+  return (x < cap) ? x : cap;
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
- *  draw_smeter_rows  – full redraw of the 32-row MTR zone, segment bargraph
- *
- *  Layout (MTR_H=32):
- *    rows  2– 9  scale labels  (SM_LBL_ROW)
- *    row  10     tick marks    (SM_TICK_ROW)
- *    rows 11–23  segment bars  (SM_SEG_ROW, SM_SEG_H=13)
- *    rows 24–31  S-value text  (SM_VAL_ROW)
- *
- *  Each of SM_BARS=12 segments is SM_SEG_W=10 px wide with a 4-px gap.
- *  Green=S1–S6, yellow=S7–S9, red=S9+.
+ *  draw_smeter_rows  – full MTR zone redraw, ruler + marker model
  * ════════════════════════════════════════════════════════════════════════════ */
 static void draw_smeter_rows(int32_t bars)
 {
   char s_str[8];
-  if (bars <= 9) snprintf(s_str, sizeof(s_str), "S%ld",   (long)bars);
-  else           snprintf(s_str, sizeof(s_str), "S9+%ld", (long)((bars - 9) * 3));
+  if (bars <= 9) snprintf(s_str, sizeof(s_str), "S%ld", (long)bars);
+  else           snprintf(s_str, sizeof(s_str), "+%ld",  (long)((bars - 9) * 3));
 
-  static const char *const slbls[] = {"S","1","3","5","7","9","+20","+40"};
+  uint16_t mk_col    = (bars > 9) ? UI_S9P : (bars > 5) ? UI_S7_9 : UI_S1_6;
+  uint16_t ruler_end = (uint16_t)(SM_START_X + SM_RULER_W);
+  uint16_t val_x     = (uint16_t)(ruler_end + 4U);
+  uint16_t ndx       = sm_mark_x(bars);
 
-  for (uint16_t row = 0; row < MTR_H; row++) {
+  static const uint8_t     lbl_seg[8] = { 0U,1U,3U,5U,7U,9U,10U,11U };
+  static const char *const lbl_str[8] = { "S","1","3","5","7","9","20","40" };
+
+  for (uint16_t row = 0U; row < MTR_H; row++) {
     uint16_t *ln = s_mtr_buf + (uint32_t)row * MTR_W;
-    LCD_LineFill(ln, 0, MTR_W, UI_MTR_BG);
+    LCD_LineFill(ln, 0U, MTR_W, UI_MTR_BG);
 
-    /* Scale labels */
-    if (row >= SM_LBL_ROW && row < SM_LBL_ROW + Font6x8.height) {
-      uint16_t fr = row - SM_LBL_ROW;
-      for (uint8_t t = 0; t < 8U; t++) {
-        uint16_t lx = (uint16_t)(SM_START_X + (uint16_t)s_sbar[t] * SM_UNIT_W);
-        if (t == 6U) lx -= 9U;  /* centre "+20" over its tick */
-        uint16_t col = (t < 6U) ? UI_SMETER_TICK : UI_S1_6;
-        LCD_LineStr(ln, lx, fr, slbls[t], &Font6x8, col, UI_MTR_BG);
+    /* Scale labels + inline S-value in same row band */
+    if (row >= SM_LBL_R0 && row < SM_LBL_R0 + (uint16_t)Font6x8.height) {
+      uint16_t fr = row - SM_LBL_R0;
+      for (uint8_t t = 0U; t < 8U; t++) {
+        uint16_t tick_x = (uint16_t)(SM_START_X + (uint16_t)lbl_seg[t] * SM_UNIT_W);
+        uint16_t half_w = (uint16_t)(strlen(lbl_str[t]) * Font6x8.width / 2U);
+        uint16_t lx     = (tick_x >= half_w) ? (tick_x - half_w) : 0U;
+        LCD_LineStr(ln, lx, fr, lbl_str[t], &Font6x8, UI_SMETER_TICK, UI_MTR_BG);
       }
+      if (val_x < MTR_W)
+        LCD_LineStr(ln, val_x, fr, s_str, &Font6x8, mk_col, UI_MTR_BG);
     }
 
-    /* Tick marks: single-pixel dot at each scale position */
-    if (row == SM_TICK_ROW) {
-      for (uint8_t t = 0; t < 8U; t++) {
-        uint16_t tx = (uint16_t)(SM_START_X + (uint16_t)s_sbar[t] * SM_UNIT_W);
+    /* Top rail: 1-px solid horizontal line */
+    if (row == SM_RAIL_TOP_R) {
+      for (uint16_t x = SM_START_X; x < ruler_end && x < MTR_W; x++)
+        ln[x] = SWAP16(UI_SMETER_TICK);
+    }
+
+    /* Tick marks hanging below top rail:
+     *   major (all 8 labeled positions): 2-px tall (rows SM_TICK_R0, SM_TICK_R0+1)
+     *   minor (4 intermediate positions): 1-px (row SM_TICK_R0+1 only) */
+    if (row == SM_TICK_R0 || row == (uint16_t)(SM_TICK_R0 + 1U)) {
+      for (uint8_t t = 0U; t < 8U; t++) {
+        uint16_t tx = (uint16_t)(SM_START_X + (uint16_t)lbl_seg[t] * SM_UNIT_W);
         if (tx < MTR_W) ln[tx] = SWAP16(UI_SMETER_TICK);
       }
-    }
-
-    /* Segment bars */
-    if (row >= SM_SEG_ROW && row < SM_SEG_ROW + SM_SEG_H) {
-      for (uint8_t seg = 0U; seg < SM_BARS; seg++) {
-        if ((int32_t)seg < bars) {
-          uint16_t col = (seg < 6U) ? UI_S1_6 : (seg < 9U) ? UI_S7_9 : UI_S9P;
-          uint16_t x0  = (uint16_t)(SM_START_X + (uint16_t)seg * SM_UNIT_W);
-          for (uint16_t px = x0; px < x0 + SM_SEG_W && px < MTR_W; px++)
-            ln[px] = SWAP16(col);
+      if (row == (uint16_t)(SM_TICK_R0 + 1U)) {
+        for (uint8_t t = 0U; t < 4U; t++) {
+          uint16_t tx = (uint16_t)(SM_START_X + (uint16_t)sm_min_seg[t] * SM_UNIT_W);
+          if (tx < MTR_W) ln[tx] = SWAP16(UI_DIVIDER);
         }
       }
     }
 
-    /* S-value text */
-    if (row >= SM_VAL_ROW && (row - SM_VAL_ROW) < Font6x8.height) {
-      uint16_t fr   = row - SM_VAL_ROW;
-      uint16_t scol = (bars > 9) ? UI_S9P : (bars > 5) ? UI_S7_9 : UI_S1_6;
-      LCD_LineStr(ln, SM_START_X, fr, s_str, &Font6x8, scol, UI_MTR_BG);
+    /* Marker: inverted-triangle position indicator (NOT a fill bar)
+     *   rows 13-14: 3-px wide (ndx-1, ndx, ndx+1)
+     *   row  15:    1-px tip  (ndx only)            */
+    if (row >= SM_MARK_R0 && row < SM_MARK_R0 + SM_MARK_H) {
+      uint16_t pm    = SWAP16(mk_col);
+      uint16_t depth = row - SM_MARK_R0;
+      if (depth < 2U) {
+        if (ndx > 0U && ndx - 1U < MTR_W) ln[ndx - 1U] = pm;
+        if (ndx < MTR_W)                   ln[ndx]       = pm;
+        if (ndx + 1U < MTR_W)              ln[ndx + 1U]  = pm;
+      } else {
+        if (ndx < MTR_W)                   ln[ndx]       = pm;
+      }
+    }
+
+    /* Bottom rail: 1-px solid horizontal line */
+    if (row == SM_RAIL_BOT_R && SM_RAIL_BOT_R < MTR_H) {
+      for (uint16_t x = SM_START_X; x < ruler_end && x < MTR_W; x++)
+        ln[x] = SWAP16(UI_SMETER_TICK);
     }
   }
 }
@@ -989,12 +1225,16 @@ void SDR_UI_DrawMeter(const SDR_UI_State_t *ui)
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_UpdateSMeter  – fast RX meter refresh (10 Hz)
  *
- *  Fast path: pack and push only the dirty segment column range (the set of
- *  segments that changed state between old_bars and new bars) using s_mtr_strip.
- *  Static rows (labels, ticks) are never re-rendered after initial draw.
+ *  Only two regions of s_mtr_buf are dynamic:
+ *    • Marker rows SM_MARK_R0..+SM_MARK_H-1  (3 rows — erase old, draw new)
+ *    • Label rows  SM_LBL_R0..+Font6x8.height-1  (8 rows — S-value text)
  *
- *  Segment push:  dirty_w × SM_SEG_H × 2 B  (min 364 B for 1 seg, max 4,368 B)
- *  Text push:     Font6x8.height × MTR_W × 2 B  = 5,120 B
+ *  All other rows (top rail, ticks, bottom rail) are static in s_mtr_buf
+ *  and never retransmitted during normal operation.
+ *
+ *  Two targeted pushes per tick:
+ *    Push A: 3 × MTR_W × 2 B  (≤ 1,920 B @ ST7796, ~224 µs)
+ *    Push B: 8 × MTR_W × 2 B  (≤ 5,120 B @ ST7796, ~597 µs)
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_UpdateSMeter_SetTX(bool tx)
 {
@@ -1006,17 +1246,17 @@ void SDR_UI_UpdateSMeter_SetTX(bool tx)
   s_rx_meter_bars = -1;
   s_mtr_static_valid = false;
 }
-void SDR_UI_UpdateSMeter_SetVoltage(float v) { s_smeter_voltage = v; }
+void SDR_UI_UpdateSMeter_SetVoltage(int16_t v_x10) { s_smeter_voltage_x10 = v_x10; }
 
 void SDR_UI_UpdateSMeter(float signal_db)
 {
   int32_t bars = (int32_t)((signal_db + 73.0f) / 3.0f);
   if (bars < 0) bars = 0;
   if (bars > (int32_t)SM_BARS) bars = (int32_t)SM_BARS;
-  if (bars == s_rx_meter_bars) return;
-
   int32_t old_bars = s_rx_meter_bars;
-  s_rx_meter_bars  = bars;
+  if (bars == old_bars) return;
+
+  s_rx_meter_bars = bars;
 
   if (!s_mtr_static_valid) {
     draw_smeter_rows(bars);
@@ -1027,52 +1267,73 @@ void SDR_UI_UpdateSMeter(float signal_db)
     return;
   }
 
-  /* Fast path: dirty segment column range.
-   * Only the segments that changed state need updating.
-   * seg_lo = first changed segment, seg_hi = last changed segment. */
-  {
-    int32_t seg_lo   = (bars < old_bars) ? bars     : old_bars;
-    int32_t seg_hi   = (bars > old_bars) ? bars - 1 : old_bars - 1;
-    uint16_t dirty_w = (uint16_t)((seg_hi - seg_lo + 1) * (int32_t)SM_UNIT_W);
-    uint16_t x_lo    = (uint16_t)(SM_START_X + (uint16_t)seg_lo * SM_UNIT_W);
+  uint16_t old_ndx   = sm_mark_x(old_bars);
+  uint16_t new_ndx   = sm_mark_x(bars);
+  uint16_t mk_col    = (bars > 9) ? UI_S9P : (bars > 5) ? UI_S7_9 : UI_S1_6;
+  uint16_t ruler_end = (uint16_t)(SM_START_X + SM_RULER_W);
+  uint16_t val_x     = (uint16_t)(ruler_end + 4U);
 
-    /* Build strip: dirty_w cols × SM_SEG_H rows */
-    for (uint16_t r = 0U; r < SM_SEG_H; r++) {
-      uint16_t *srow = s_mtr_strip + (uint32_t)r * dirty_w;
-      uint16_t  c    = 0U;
-      for (int32_t seg = seg_lo; seg <= seg_hi; seg++) {
-        uint16_t col_lit = ((uint8_t)seg < 6U) ? UI_S1_6
-                         : ((uint8_t)seg < 9U) ? UI_S7_9 : UI_S9P;
-        uint16_t col_on  = ((int32_t)seg < bars) ? col_lit : UI_MTR_BG;
-        for (uint16_t px = 0U; px < SM_UNIT_W; px++, c++) {
-          srow[c] = SWAP16((px < SM_SEG_W) ? col_on : UI_MTR_BG);
-        }
-      }
+  /* 1. Erase old marker pixels, draw new marker pixels.
+   *    No fill: only the 3 (or 1) pixels of the inverted-triangle are touched. */
+  for (uint16_t row = SM_MARK_R0; row < SM_MARK_R0 + SM_MARK_H; row++) {
+    if (row >= MTR_H) break;
+    uint16_t *ln   = s_mtr_buf + (uint32_t)row * MTR_W;
+    uint16_t depth = row - SM_MARK_R0;
+    if (depth < 2U) {
+      /* Wide rows: erase ±1 column, draw ±1 column */
+      if (old_ndx > 0U && old_ndx - 1U < MTR_W) ln[old_ndx - 1U] = SWAP16(UI_MTR_BG);
+      if (old_ndx < MTR_W)                       ln[old_ndx]       = SWAP16(UI_MTR_BG);
+      if (old_ndx + 1U < MTR_W)                  ln[old_ndx + 1U]  = SWAP16(UI_MTR_BG);
+      uint16_t pm = SWAP16(mk_col);
+      if (new_ndx > 0U && new_ndx - 1U < MTR_W) ln[new_ndx - 1U] = pm;
+      if (new_ndx < MTR_W)                       ln[new_ndx]       = pm;
+      if (new_ndx + 1U < MTR_W)                  ln[new_ndx + 1U]  = pm;
+    } else {
+      /* Tip row: centre pixel only */
+      if (old_ndx < MTR_W) ln[old_ndx] = SWAP16(UI_MTR_BG);
+      if (new_ndx < MTR_W) ln[new_ndx] = SWAP16(mk_col);
     }
-    LCD_PushWindow(
-      (uint16_t)(MTR_X + x_lo),
-      (uint16_t)(MTR_Y + SM_SEG_ROW),
-      (uint16_t)(MTR_X + x_lo + dirty_w - 1U),
-      (uint16_t)(MTR_Y + SM_SEG_ROW + SM_SEG_H - 1U),
-      s_mtr_strip,
-      (uint32_t)dirty_w * SM_SEG_H * 2U);
   }
 
-  /* Text rows: re-render and push */
-  char     s_str[8];
-  if (bars <= 9) snprintf(s_str, sizeof(s_str), "S%ld",   (long)bars);
-  else           snprintf(s_str, sizeof(s_str), "S9+%ld", (long)((bars - 9) * 3));
-  uint16_t scol = (bars > 9) ? UI_S9P : (bars > 5) ? UI_S7_9 : UI_S1_6;
-  for (uint16_t row = SM_VAL_ROW; row < SM_VAL_ROW + Font6x8.height; row++) {
-    uint16_t *ln = s_mtr_buf + (uint32_t)row * MTR_W;
-    LCD_LineFill(ln, 0, MTR_W, UI_MTR_BG);
-    LCD_LineStr(ln, SM_START_X, row - SM_VAL_ROW, s_str, &Font6x8, scol, UI_MTR_BG);
+  /* 2. Update S-value text in label row band */
+  {
+    char s_str[8];
+    if (bars <= 9) snprintf(s_str, sizeof(s_str), "S%ld", (long)bars);
+    else           snprintf(s_str, sizeof(s_str), "+%ld",  (long)((bars - 9) * 3));
+    uint16_t row_top = SM_LBL_R0;
+    uint16_t row_end = (uint16_t)(SM_LBL_R0 + (uint16_t)Font6x8.height);
+    if (row_end > MTR_H) row_end = MTR_H;
+    for (uint16_t row = row_top; row < row_end; row++) {
+      uint16_t *ln = s_mtr_buf + (uint32_t)row * MTR_W;
+      uint16_t  fr = row - row_top;
+      for (uint16_t x = val_x; x < val_x + SM_VAL_CLR_W && x < MTR_W; x++)
+        ln[x] = SWAP16(UI_MTR_BG);
+      if (val_x < MTR_W)
+        LCD_LineStr(ln, val_x, fr, s_str, &Font6x8, mk_col, UI_MTR_BG);
+    }
   }
-  LCD_PushWindow(MTR_X, (uint16_t)(MTR_Y + SM_VAL_ROW),
-                 (uint16_t)(MTR_X + MTR_W - 1U),
-                 (uint16_t)(MTR_Y + SM_VAL_ROW + Font6x8.height - 1U),
-                 s_mtr_buf + (uint32_t)SM_VAL_ROW * MTR_W,
-                 (uint32_t)MTR_W * Font6x8.height);
+
+  /* 3. Two targeted pushes — only dynamic rows, static ruler content not re-sent */
+  /* Push A: marker rows (SM_MARK_H rows) */
+  {
+    uint16_t r0 = SM_MARK_R0;
+    uint16_t r1 = (uint16_t)(SM_MARK_R0 + SM_MARK_H - 1U);
+    if (r1 >= MTR_H) r1 = MTR_H - 1U;
+    LCD_PushWindow(MTR_X, (uint16_t)(MTR_Y + r0),
+                   (uint16_t)(MTR_X + MTR_W - 1U), (uint16_t)(MTR_Y + r1),
+                   s_mtr_buf + (uint32_t)r0 * MTR_W,
+                   (uint32_t)MTR_W * (r1 - r0 + 1U));
+  }
+  /* Push B: label rows (Font6x8.height rows, S-value updated) */
+  {
+    uint16_t r0 = SM_LBL_R0;
+    uint16_t r1 = (uint16_t)(SM_LBL_R0 + (uint16_t)Font6x8.height - 1U);
+    if (r1 >= MTR_H) r1 = MTR_H - 1U;
+    LCD_PushWindow(MTR_X, (uint16_t)(MTR_Y + r0),
+                   (uint16_t)(MTR_X + MTR_W - 1U), (uint16_t)(MTR_Y + r1),
+                   s_mtr_buf + (uint32_t)r0 * MTR_W,
+                   (uint32_t)MTR_W * (r1 - r0 + 1U));
+  }
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -1165,17 +1426,15 @@ static void tx_meter_push_rows(uint16_t row0, uint16_t row1)
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_UpdateTXMeters
  * ════════════════════════════════════════════════════════════════════════════ */
-void SDR_UI_UpdateTXMeters(float alc_norm, float swr)
+void SDR_UI_UpdateTXMeters(int32_t alc_pct, int32_t swr_x10)
 {
-  int32_t alc_b = (int32_t)(alc_norm * (float)SM_BARS + 0.5f);
+  int32_t alc_b = (alc_pct * (int32_t)SM_BARS + 50) / 100;
   if (alc_b < 0) alc_b = 0;
   if (alc_b > (int32_t)SM_BARS) alc_b = (int32_t)SM_BARS;
 
-  int32_t alc_pct = (int32_t)(alc_norm * 100.0f + 0.5f);
   if (alc_pct < 0) alc_pct = 0;
   if (alc_pct > 999) alc_pct = 999;
 
-  int32_t swr_x10 = (int32_t)(swr * 10.0f + 0.5f);
   if (swr_x10 < 0) swr_x10 = 0;
   if (swr_x10 > 999) swr_x10 = 999;
 
@@ -1292,14 +1551,9 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
 
   for (uint16_t x = 0; x < SPEC_W; x++) {
     float    fbin = (float)b0 + (float)x * bpp;
-    uint16_t bi0  = (uint16_t)fbin;
-    if (bi0 >= bins) bi0 = (uint16_t)(bins - 1U);
-    float    t    = fbin - (float)bi0;
-    uint16_t bi1  = (bi0 + 1U < bins) ? (uint16_t)(bi0 + 1U) : bi0;
-    /* Bias toward the dominant bin (t < 0.5 → bi0 wins, t ≥ 0.5 → bi1 wins). */
-    float tw = (t < 0.5f) ? (t * 0.4f) : (1.0f - (1.0f - t) * 0.4f);
-    s_spec_yf[x] = pwr_compress(fft_db[bi0]) * (1.0f - tw)
-                 + pwr_compress(fft_db[bi1]) * tw;
+    uint16_t bi   = (uint16_t)(fbin + 0.5f);
+    if (bi >= bins) bi = (uint16_t)(bins - 1U);
+    s_spec_yf[x] = pwr_compress(fft_db[bi]);
   }
 
   const uint16_t NO_SIG = (uint16_t)(SPEC_H - 1U);
@@ -1355,8 +1609,8 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     if (bw_hi >= SPEC_W) bw_hi = SPEC_W - 1U;
   }
 
-  uint16_t spec_sw      = SWAP16(0x041FU);   /* bright: peak edge       */
-  uint16_t spec_fill_sw = SWAP16(0x0107U);   /* darker: fill body       */
+  uint16_t spec_sw      = SWAP16(0xC7FFU);   /* icy white-blue: top     */
+  uint16_t spec_fill_sw = SWAP16(0x3D7FU);   /* muted cold cyan: body   */
   uint16_t bw_sw        = SWAP16(UI_SPEC_BW);
   /* Center marker colours: bright centre, black shadow for dark|white|dark */
   uint16_t cx_sw        = SWAP16(0xFFFFU);   /* bright white centre pixel     */
@@ -1384,7 +1638,7 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     }
   }
 
-  /* Draw filled area spectrum: bright peak edge, dim fill body to baseline. */
+  /* Draw filled cyan/teal spectrum columns — bright top pixel, darker body. */
   const uint16_t fill_bot = (uint16_t)(SPEC_H - 2U);
   for (uint16_t x = 0U; x < SPEC_W; x++) {
     uint16_t peak = s_spec_py[x];

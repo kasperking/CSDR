@@ -51,10 +51,10 @@ extern "C" {
 /* Exported defines ----------------------------------------------------------*/
 
 #define MENU_ITEM_COUNT      16U   /* 12 settings + Span + Diagnostics + Calibration + SWR Scan */
-#define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px → total 120px fits 100→232 */
+#define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px                            */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
-#define MENU_W              300U   /* Width (320-2*10)      */
+#define MENU_W  (LCD_W - 2U * MENU_X)  /* adaptive: 460 on ST7796, 220 on ST7789 */
 #define MENU_Y               ZONE_SPEC_Y   /* Overlay on spectrum  */
 #define MENU_HEADER_BG      0xF800U
 #define MENU_BG_COLOR       0x0843U   /* Dark blue-gray     */

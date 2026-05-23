@@ -159,6 +159,7 @@ void LCD_Clear(uint16_t color)
 
 /* ── ST7796S initialisation sequence ─────────────────────────────────────── */
 
+#if LCD_PANEL == LCD_PANEL_ST7796
 static void lcd_init_sequence(void)
 {
     /* Software reset */
@@ -231,6 +232,101 @@ static void lcd_init_sequence(void)
     LCD_WriteCmd(ST7796_DISPON);
     HAL_Delay(25U);
 }
+#endif /* LCD_PANEL_ST7796 */
+
+/* ── ST7789V initialisation sequence (portrait 240×320) ─────────────────────
+ *
+ *  MADCTL=0x08 (BGR, portrait — no axis swap).  Column 0..239, row 0..319.
+ *  Display inversion (0x21) is required for the ST7789 to show correct colours
+ *  in normal mode; omitting it gives an inverted image.
+ *  All timing delays follow the ST7789V datasheet recommendations.
+ *  The CASET/RASET/RAMWR addressing path is identical to the ST7796 driver so
+ *  LCD_SetWindow, LCD_PushWindow, and the DMA flush layer work unchanged.
+ */
+#if LCD_PANEL == LCD_PANEL_ST7789
+static void lcd_init_sequence(void)
+{
+    /* Software reset */
+    LCD_WriteCmd(ST7789_SWRESET);
+    HAL_Delay(150U);
+
+    /* Sleep out */
+    LCD_WriteCmd(ST7789_SLPOUT);
+    HAL_Delay(120U);
+
+    /* Pixel format: RGB565 (16 bpp) */
+    LCD_WriteCmd(ST7789_COLMOD);
+    LCD_WriteData8(ST7789_COLMOD_16BIT);
+
+    /* Memory access control: portrait, BGR color filter */
+    LCD_WriteCmd(ST7789_MADCTL);
+    LCD_WriteData8(ST7789_MADCTL_PORTRAIT);
+
+    /* Porch setting */
+    LCD_WriteCmd(0xB2U);
+    LCD_WriteData8(0x0CU); LCD_WriteData8(0x0CU); LCD_WriteData8(0x00U);
+    LCD_WriteData8(0x33U); LCD_WriteData8(0x33U);
+
+    /* Gate control */
+    LCD_WriteCmd(0xB7U);
+    LCD_WriteData8(0x35U);
+
+    /* VCOM setting */
+    LCD_WriteCmd(0xBBU);
+    LCD_WriteData8(0x19U);
+
+    /* LCM control */
+    LCD_WriteCmd(0xC0U);
+    LCD_WriteData8(0x2CU);
+
+    /* VDV/VRH command enable */
+    LCD_WriteCmd(0xC2U);
+    LCD_WriteData8(0x01U); LCD_WriteData8(0xFFU);
+
+    /* VRH set */
+    LCD_WriteCmd(0xC3U);
+    LCD_WriteData8(0x12U);
+
+    /* VDV set */
+    LCD_WriteCmd(0xC4U);
+    LCD_WriteData8(0x20U);
+
+    /* Frame rate: 60 Hz */
+    LCD_WriteCmd(0xC6U);
+    LCD_WriteData8(0x0FU);
+
+    /* Power control 1 */
+    LCD_WriteCmd(0xD0U);
+    LCD_WriteData8(0xA4U); LCD_WriteData8(0xA1U);
+
+    /* Positive gamma */
+    LCD_WriteCmd(0xE0U);
+    LCD_WriteData8(0xD0U); LCD_WriteData8(0x04U); LCD_WriteData8(0x0DU);
+    LCD_WriteData8(0x11U); LCD_WriteData8(0x13U); LCD_WriteData8(0x2BU);
+    LCD_WriteData8(0x3FU); LCD_WriteData8(0x54U); LCD_WriteData8(0x4CU);
+    LCD_WriteData8(0x18U); LCD_WriteData8(0x0DU); LCD_WriteData8(0x0BU);
+    LCD_WriteData8(0x1FU); LCD_WriteData8(0x23U);
+
+    /* Negative gamma */
+    LCD_WriteCmd(0xE1U);
+    LCD_WriteData8(0xD0U); LCD_WriteData8(0x04U); LCD_WriteData8(0x0CU);
+    LCD_WriteData8(0x11U); LCD_WriteData8(0x13U); LCD_WriteData8(0x2CU);
+    LCD_WriteData8(0x3FU); LCD_WriteData8(0x44U); LCD_WriteData8(0x51U);
+    LCD_WriteData8(0x2FU); LCD_WriteData8(0x1FU); LCD_WriteData8(0x1FU);
+    LCD_WriteData8(0x20U); LCD_WriteData8(0x23U);
+
+    /* Display inversion on — required for correct ST7789 colours */
+    LCD_WriteCmd(ST7789_INVON);
+
+    /* Normal display mode on */
+    LCD_WriteCmd(0x13U);
+    HAL_Delay(10U);
+
+    /* Display on */
+    LCD_WriteCmd(ST7789_DISPON);
+    HAL_Delay(25U);
+}
+#endif /* LCD_PANEL_ST7789 */
 
 /* ── Public init ─────────────────────────────────────────────────────────── */
 
