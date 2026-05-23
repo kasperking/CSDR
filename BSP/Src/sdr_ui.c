@@ -1296,18 +1296,10 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     if (bi0 >= bins) bi0 = (uint16_t)(bins - 1U);
     float    t    = fbin - (float)bi0;
     uint16_t bi1  = (bi0 + 1U < bins) ? (uint16_t)(bi0 + 1U) : bi0;
-    s_spec_yf[x] = pwr_compress(fft_db[bi0]) * (1.0f - t)
-                 + pwr_compress(fft_db[bi1]) * t;
-  }
-
-  /* Smoothing pass — tight 3-tap kernel, preserves narrow peaks */
-  {
-    float prev = s_spec_yf[0];
-    for (uint16_t x = 1U; x < (uint16_t)(SPEC_W - 1U); x++) {
-      float c      = s_spec_yf[x];
-      s_spec_yf[x] = 0.10f * prev + 0.80f * c + 0.10f * s_spec_yf[x + 1U];
-      prev         = c;
-    }
+    /* Bias toward the dominant bin (t < 0.5 → bi0 wins, t ≥ 0.5 → bi1 wins). */
+    float tw = (t < 0.5f) ? (t * 0.4f) : (1.0f - (1.0f - t) * 0.4f);
+    s_spec_yf[x] = pwr_compress(fft_db[bi0]) * (1.0f - tw)
+                 + pwr_compress(fft_db[bi1]) * tw;
   }
 
   const uint16_t NO_SIG = (uint16_t)(SPEC_H - 1U);
