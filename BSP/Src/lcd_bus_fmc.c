@@ -14,7 +14,7 @@
  *    FMC timing is correct.
  *
  *  Orientation: landscape 480×320, origin top-left, X increases right.
- *  MADCTL=0x60 (MX|MV, RGB).  Switch to 0x68 if R/B appear swapped.
+ *  MADCTL=0xE8 (MY|MX|MV|BGR).  Panel glass requires MY+MX; color filter is BGR.
  */
 /* USER CODE END Header */
 
@@ -173,8 +173,9 @@ static void lcd_init_sequence(void)
     LCD_WriteCmd(0xF0U); LCD_WriteData8(0xC3U);
     LCD_WriteCmd(0xF0U); LCD_WriteData8(0x96U);
 
-    /* Memory access: landscape 480×320, MX|MV, RGB order.
-     * Change to ST7796_MADCTL_LANDSCAPE_BGR (0x68) if red and blue appear swapped. */
+    /* Memory access control: MY|MX|MV|BGR (0xE8).
+     * MY+MX correct the panel glass orientation; MV selects landscape scan;
+     * BGR matches the panel color filter order (bits[15:11]=B, bits[4:0]=R). */
     LCD_WriteCmd(ST7796_MADCTL);
     LCD_WriteData8(ST7796_MADCTL_LANDSCAPE);
 

@@ -33,11 +33,10 @@
 #include <math.h>
 
 /* ── Private defines ─────────────────────────────────────────────────────── */
-/*  3× scaled big digit: Font6x8 → 18×24 px per glyph.
- *  Slightly smaller than 4× (24×32); keeps strong readability while feeling
- *  denser and less demo-like on the 480px VFO zone. */
-#define BIG_W   18U   /* 3× scaled digit width  (6 × 3) */
-#define BIG_H   24U   /* 3× scaled digit height (8 × 3) */
+/* 7-segment VFO digit cell: 18×24 px.  Stroke 2 px, gap 1 px at corners.
+ * Segments: a(top) b(UR) c(LR) d(bot) e(LL) f(UL) g(mid) */
+#define BIG_W   18U   /* digit cell width  */
+#define BIG_H   24U   /* digit cell height */
 
 #define MED_W   12U   /* 2× scaled digit width  (6 × 2) */
 #define MED_H   16U   /* 2× scaled digit height (8 × 2) */
@@ -92,6 +91,9 @@ static uint16_t s_vfo_buf[VFO_H  * VFO_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 static uint16_t s_mtr_buf[MTR_H  * MTR_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
+/* Strip buffer for dirty-column segment push: SM_SEG_H × SM_RULER_W = 13 × 168 = 2,184 px */
+static uint16_t s_mtr_strip[SM_SEG_H * SM_RULER_W]
+    __attribute__((aligned(32), section(".DMA_SRAM")));
 static uint16_t s_spec_buf[SPEC_H][SPEC_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 static uint16_t s_wf_buf[WF_H][WF_W]
@@ -101,10 +103,6 @@ static uint16_t s_wf_buf[WF_H][WF_W]
 static float    s_spec_yf     [SPEC_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 static uint16_t s_spec_py     [SPEC_W]
-    __attribute__((aligned(32), section(".DMA_SRAM")));
-static uint16_t s_spec_seg_top[SPEC_W]
-    __attribute__((aligned(32), section(".DMA_SRAM")));
-static uint16_t s_spec_seg_bot[SPEC_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 /* Strip buffer: one SPEC_CHUNK_ROWS-tall slice for partial-column FMC pushes.
  * Worst case: SPEC_CHUNK_ROWS × SPEC_W = 8 × 480 = 3,840 pixels = 7,680 B. */
@@ -128,11 +126,6 @@ static float    s_smeter_voltage = 0.0f;
 static uint16_t s_spec_py_prev[SPEC_W];
 static bool     s_spec_py_valid = false;
 
-/* Spectrum peak hold: 1-px slow-decay marker per column */
-static uint16_t s_peak_hold[SPEC_W];     /* peak row per column (large = low signal) */
-static bool     s_peak_hold_valid = false;
-static uint8_t  s_peak_prev_zoom  = 0xFFU;  /* detects zoom change → resets hold */
-static uint8_t  s_peak_decay_ctr  = 0U;     /* decay every 4 render calls */
 static uint32_t s_spec_skip_hits    = 0U;
 static uint32_t s_spec_draw_hits    = 0U;
 /* Spectrum partial-push diagnostics */
@@ -142,8 +135,7 @@ static uint32_t s_max_spec_partial_us  = 0U;
 static uint32_t s_vfo_glyph_count  = 0U;
 static uint32_t s_vfo_skip_count   = 0U;
 static uint32_t s_max_vfo_us       = 0U;
-/* S-meter ruler: scale positions in units of SM_UNIT_W from SM_START_X
- * Shared between draw_smeter_rows() and UpdateSMeter fast path. */
+/* S-meter label/tick positions: segment indices where markers appear */
 static const uint8_t s_sbar[8] = { 0U, 1U, 3U, 5U, 7U, 9U, 10U, 11U };
 
 static int32_t  s_rx_meter_bars = -1;
@@ -205,16 +197,13 @@ static inline float pwr_compress(float pwr)
   return n;
 }
 
-/* ── wf_lut_init: Hermite-spline SDR palette ─────────────────────────────── *
- *  11 control points → Hermite spline, gamma=1.7 for log-like compression.
- *  Palette: black → dark-blue → cyan → amber → white peak.
- *  Gamma 1.7 pushes most of the noise floor into the dark-blue/black region so
- *  only real signals get cyan or amber, producing strong signal separation.     */
+/* ── wf_lut_init: Hermite-spline SDR waterfall palette ──────────────────── *
+ *  black → dark-navy → blue → cyan → yellow → white, gamma=1.3             */
 static void wf_lut_init(void)
 {
-  static const float sr[11] = { 0,  0,  0,  0,  0,  4, 12, 24, 31, 31, 31};
-  static const float sg[11] = { 0,  0,  2, 10, 28, 46, 60, 63, 58, 48, 63};
-  static const float sb[11] = { 0,  6, 22, 31, 31, 26, 14,  6,  2,  0, 31};
+  static const float sr[11] = { 0,  0,  0,  0,  0,  0,  0, 14, 31, 31, 31};
+  static const float sg[11] = { 0,  0,  1,  4, 10, 38, 63, 63, 63, 63, 63};
+  static const float sb[11] = { 0,  3, 12, 22, 31, 31, 26,  8,  0, 16, 31};
   float mr[11], mg[11], mb[11];
   mr[0] = sr[1]-sr[0]; mg[0] = sg[1]-sg[0]; mb[0] = sb[1]-sb[0];
   mr[10]= sr[10]-sr[9];mg[10]= sg[10]-sg[9];mb[10]= sb[10]-sb[9];
@@ -225,7 +214,7 @@ static void wf_lut_init(void)
   }
   for (int i = 0; i <= 255; i++) {
     float n = (float)i / 255.0f;
-    float ng = powf(n, 1.7f);   /* steeper gamma → larger near-black zone */
+    float ng = powf(n, 1.3f);
     float pos = ng * 10.0f;
     int lo = (int)pos;
     if (lo >= 10) {
@@ -244,40 +233,57 @@ static void wf_lut_init(void)
   }
 }
 
-/* ── 4× scaled big digit rendering (onto a line-buffer slice) ────────────── */
-static void ln_bigchar(uint16_t *ln, uint16_t x, uint16_t frow,
-                        char c, uint16_t fg, uint16_t bg)
+/* ── 7-segment VFO digit rendering ──────────────────────────────────────────
+ * Segment mask bits: 0=a(top) 1=b(UR) 2=c(LR) 3=d(bot) 4=e(LL) 5=f(UL) 6=g(mid)
+ * Layout in BIG_W×BIG_H cell (18×24):
+ *   rows  0- 1 : horizontal a (cols 2-15)
+ *   rows  2-10 : verticals f (cols 0-1), b (cols 16-17)
+ *   rows 11-12 : horizontal g (cols 2-15)
+ *   rows 13-21 : verticals e (cols 0-1), c (cols 16-17)
+ *   rows 22-23 : horizontal d (cols 2-15)
+ */
+static const uint8_t s_seg7[10] = {
+    0x3F, /* 0 */  0x06, /* 1 */  0x5B, /* 2 */  0x4F, /* 3 */  0x66, /* 4 */
+    0x6D, /* 5 */  0x7D, /* 6 */  0x07, /* 7 */  0x7F, /* 8 */  0x6F, /* 9 */
+};
+
+static void ln_segchar(uint16_t *ln, uint16_t x, uint16_t fr,
+                       char c, uint16_t fg, uint16_t bg)
 {
-  if ((uint8_t)c < 32U || (uint8_t)c > 90U || frow >= BIG_H) return;
-  const uint8_t *bmp = Font6x8.data + ((uint8_t)c - 32U) * 6U;
-  uint16_t orig_row = frow / 3U;           /* 3× vertical scale */
-  uint16_t sbg = SWAP16(bg);
-  for (uint16_t col = 0; col < 6U; col++) {
-    uint8_t  bit = (bmp[col] >> orig_row) & 1U;
-    uint16_t pix = SWAP16(bit ? fg : bg);
-    uint16_t px0 = (uint16_t)(x + col * 3U);      /* 3 px per font column */
-    uint16_t px1 = (uint16_t)(px0 + 3U);
-    if (px1 > x + BIG_W) px1 = x + BIG_W;
-    for (uint16_t px = px0; px < px1; px++) ln[px] = pix;
+  uint16_t pfg = SWAP16(fg), pbg = SWAP16(bg);
+  for (uint16_t i = 0; i < BIG_W; i++) ln[x + i] = pbg;
+  if (c < '0' || c > '9') return;
+  uint8_t seg = s_seg7[(uint8_t)(c - '0')];
+  if (fr < 2U) {
+    if ((seg >> 0) & 1U) for (uint16_t i = 2U; i < 16U; i++) ln[x + i] = pfg;
+  } else if (fr < 11U) {
+    if ((seg >> 5) & 1U) { ln[x + 0U]  = pfg; ln[x + 1U]  = pfg; }
+    if ((seg >> 1) & 1U) { ln[x + 16U] = pfg; ln[x + 17U] = pfg; }
+  } else if (fr < 13U) {
+    if ((seg >> 6) & 1U) for (uint16_t i = 2U; i < 16U; i++) ln[x + i] = pfg;
+  } else if (fr < 22U) {
+    if ((seg >> 4) & 1U) { ln[x + 0U]  = pfg; ln[x + 1U]  = pfg; }
+    if ((seg >> 2) & 1U) { ln[x + 16U] = pfg; ln[x + 17U] = pfg; }
+  } else {
+    if ((seg >> 3) & 1U) for (uint16_t i = 2U; i < 16U; i++) ln[x + i] = pfg;
   }
-  /* BIG_W == 6×3 == 18, so no trailing fill needed */
-  (void)sbg;
 }
 
-static void ln_bigstr(uint16_t *ln, uint16_t x, uint16_t frow,
-                       const char *s, uint16_t fg, uint16_t bg)
+static void ln_segstr(uint16_t *ln, uint16_t x, uint16_t fr,
+                      const char *s, uint16_t fg, uint16_t bg)
 {
+  uint16_t pfg = SWAP16(fg), pbg = SWAP16(bg);
   while (*s) {
     if (*s == '.') {
-      /* Decimal point: 3-pixel wide dot near bottom of glyph (3× scale) */
-      if (frow >= BIG_H - 4U && frow < BIG_H - 2U) {
-        ln[x + 2U] = SWAP16(fg);
-        ln[x + 3U] = SWAP16(fg);
-        ln[x + 4U] = SWAP16(fg);
+      /* Decimal separator: 4×4 px dot in bottom of 6px-wide cell */
+      for (uint16_t i = 0; i < 6U; i++) ln[x + i] = pbg;
+      if (fr >= BIG_H - 4U) {
+        ln[x + 1U] = pfg; ln[x + 2U] = pfg;
+        ln[x + 3U] = pfg; ln[x + 4U] = pfg;
       }
-      x += 6U;  /* dot takes 6 px horizontal space (3× scale) */
+      x += 6U;
     } else {
-      ln_bigchar(ln, x, frow, *s, fg, bg);
+      ln_segchar(ln, x, fr, *s, fg, bg);
       x += BIG_W;
     }
     s++;
@@ -334,9 +340,6 @@ void SDR_UI_Init(void)
   memset(s_wf_smooth, 0, sizeof(s_wf_smooth));
   s_wf_head = (uint8_t)(WF_H - 1U); s_wf_fill = 0; /* wraps to 0 on first push → top row */
   s_spec_py_valid      = false;
-  s_peak_hold_valid    = false;
-  s_peak_prev_zoom     = 0xFFU;
-  s_peak_decay_ctr     = 0U;
   s_spec_skip_hits     = 0U;
   s_spec_draw_hits     = 0U;
   s_spec_partial_count = 0U;
@@ -725,10 +728,9 @@ static void vfo_push_x_band(uint16_t x_lo, uint16_t x_hi,
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawVFO  (VFO_W=320 × VFO_H=64)
  *
- *  Big 4× digits occupy rows 2..33 (BIG_H=32).
+ *  7-segment digits occupy rows 2..25 (BIG_H=24), single color UI_FREQ_FG.
  *  Sub-line (inactive VFO / RIT / RX-TX) at rows 28..43 (MED_H=16).
  *  VFO_SPLIT=28 separates upper (freq) from lower (sub/RIT/TX).
- *  BW and STEP moved to the right sidebar; not rendered here.
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 {
@@ -739,6 +741,9 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   snprintf(mhz_s, sizeof(mhz_s), "%lu",   (unsigned long)mhz);
   snprintf(khz_s, sizeof(khz_s), "%03lu", (unsigned long)khz);
   snprintf(hz_s,  sizeof(hz_s),  "%03lu", (unsigned long)hz_r);
+
+  char full_freq[20];
+  snprintf(full_freq, sizeof(full_freq), "%s.%s.%s", mhz_s, khz_s, hz_s);
 
   char sub_str[22] = "";
   if (ui->freq_b_hz > 0U) {
@@ -758,40 +763,31 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   const char *rt_str       = ui->tx_mode ? "TX" : "RX";
   uint16_t    rt_color     = ui->tx_mode ? UI_TX_BG : UI_RX_BG;
 
-  uint16_t sub_med_w = 0U;
-  if (ui->freq_b_hz > 0U) {
-    const char *p = sub_str;
-    while (*p) { sub_med_w += (*p == '.') ? 6U : MED_W; p++; }
-  }
-
   buf_fill(s_vfo_buf, (uint32_t)VFO_H * VFO_W, UI_VFO_BG);
 
-  /* Layout within VFO_W=320, VFO_H=64:
-   *   freq_top = 2: big 3× digits start at row 2 (rows 2..25 = BIG_H=24)
-   *   vfoi_y   = 1: active VFO indicator (A/B) top-left at row 1
-   *   sub_y    = 28: sub-line at row 28 (rows 28..43 = MED_H=16)
-   */
   const uint16_t freq_top = 2U;
   const uint16_t vfoi_y   = 1U;
   const uint16_t sub_y    = (uint16_t)(freq_top + BIG_H + 2U);  /* row 28 */
 
-  /* Frequency centering — 3 dots × 6 px each */
-  uint16_t total_w = (uint16_t)((strlen(mhz_s) + 6U) * BIG_W + 3U * 6U);
+  /* RX/TX badge: 20px tall (MED_H + 2px pad × 2), 30px wide (2 chars + 3px pad × 2), right-aligned */
+  const uint16_t rt_bad_w = (uint16_t)(2U * MED_W + 6U);
+  const uint16_t rt_bad_h = (uint16_t)(MED_H + 4U);
+  const uint16_t rt_bx    = (uint16_t)(VFO_W - 2U - rt_bad_w);
+  const uint16_t rt_by    = (uint16_t)(sub_y + ((uint16_t)(VFO_H - sub_y) - rt_bad_h) / 2U);
+  const uint16_t rt_fg    = ui->tx_mode ? UI_TX_FG : UI_RX_FG;
+
+  /* Frequency centering: each digit = BIG_W px, each '.' = 6 px */
+  uint16_t total_w = 0U;
+  for (const char *p = full_freq; *p; p++)
+    total_w += (*p == '.') ? 6U : BIG_W;
   uint16_t fx_base = (VFO_W > total_w) ? (uint16_t)((VFO_W - total_w) / 2U) : 2U;
 
   for (uint16_t row = 0; row < VFO_H; row++) {
     uint16_t *ln = s_vfo_buf + (uint32_t)row * VFO_W;
 
-    /* 3× big frequency */
+    /* 7-segment frequency — single color */
     if (row >= freq_top && (row - freq_top) < BIG_H) {
-      uint16_t fr = row - freq_top;
-      uint16_t fx = fx_base;
-      ln_bigstr(ln, fx, fr, mhz_s, UI_FREQ_MHZ, UI_VFO_BG);
-      fx += (uint16_t)(strlen(mhz_s) * BIG_W);
-      ln_bigstr(ln, fx, fr, ".", UI_FREQ_DOT, UI_VFO_BG); fx += 8U;
-      ln_bigstr(ln, fx, fr, khz_s, UI_FREQ_KHZ, UI_VFO_BG); fx += 3U * BIG_W;
-      ln_bigstr(ln, fx, fr, ".", UI_FREQ_DOT, UI_VFO_BG); fx += 8U;
-      ln_bigstr(ln, fx, fr, hz_s, UI_FREQ_HZ, UI_VFO_BG);
+      ln_segstr(ln, fx_base, row - freq_top, full_freq, UI_FREQ_FG, UI_VFO_BG);
     }
 
     /* Active VFO indicator (2× medium, top-left) */
@@ -801,38 +797,29 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
       ln_medchar(ln, 2U, row - vfoi_y, *vl, vc, UI_VFO_BG);
     }
 
-    /* Sub-line: inactive VFO freq | RIT offset | RX/TX indicator */
+    /* Sub-line: secondary VFO freq | RIT offset | mode label */
     if (ui->freq_b_hz > 0U) {
-      /* Secondary VFO freq in 2× medium scale; RX/TX appended in Font6x8 */
-      if (row >= sub_y && (row - sub_y) < MED_H) {
-        uint16_t fr = row - sub_y;
-        ln_medstr(ln, 4U, fr, sub_str, UI_FREQ_SUB, UI_VFO_BG);
-        /* RX/TX: use Font6x8 (compact, not medium badge) in bottom half of MED rows */
-        if (fr >= (uint16_t)(MED_H / 2U) - (uint16_t)(Font6x8.height / 2U)
-            && fr < (uint16_t)(MED_H / 2U) + (uint16_t)(Font6x8.height / 2U)) {
-          uint16_t rt_x = (uint16_t)(4U + sub_med_w + 8U);
-          uint16_t sfr  = (uint16_t)(fr - ((uint16_t)(MED_H / 2U) - (uint16_t)(Font6x8.height / 2U)));
-          if (rt_x + (uint16_t)(strlen(rt_str) * Font6x8.width) <= VFO_W)
-            LCD_LineStr(ln, rt_x, sfr, rt_str, &Font6x8, rt_color, UI_VFO_BG);
-        }
-      }
+      if (row >= sub_y && (row - sub_y) < MED_H)
+        ln_medstr(ln, 4U, row - sub_y, sub_str, UI_FREQ_SUB, UI_VFO_BG);
     } else if (ui->rit_hz != 0) {
-      if (row >= sub_y && (row - sub_y) < Font6x8.height) {
-        uint16_t fr    = row - sub_y;
-        LCD_LineStr(ln, 4U, fr, sub_str, &Font6x8, UI_FREQ_SUB, UI_VFO_BG);
-        uint16_t sub_w = (uint16_t)(strlen(sub_str) * Font6x8.width);
-        uint16_t rt_x  = (uint16_t)(4U + sub_w + 4U);
-        if (rt_x + 2U * Font6x8.width <= VFO_W)
-          LCD_LineStr(ln, rt_x, fr, rt_str, &Font6x8, rt_color, UI_VFO_BG);
-      }
+      if (row >= sub_y && (row - sub_y) < Font6x8.height)
+        LCD_LineStr(ln, 4U, row - sub_y, sub_str, &Font6x8, UI_FREQ_SUB, UI_VFO_BG);
     } else {
-      /* No sub-VFO, no RIT: compact "MODE  RX/TX" in Font6x8 — no badge */
-      if (row >= sub_y && (row - sub_y) < Font6x8.height) {
-        uint16_t fr = row - sub_y;
-        LCD_LineStr(ln, 4U, fr, vfo_mode_str, &Font6x8, UI_STATUS_LBL, UI_VFO_BG);
-        uint16_t mx = (uint16_t)(4U + (uint16_t)(strlen(vfo_mode_str) * Font6x8.width) + 8U);
-        LCD_LineStr(ln, mx, fr, rt_str, &Font6x8, rt_color, UI_VFO_BG);
+      /* Mode label vertically aligned with badge */
+      if (row >= rt_by && (row - rt_by) < rt_bad_h) {
+        uint16_t br = row - rt_by;
+        if (br >= 2U && br < 2U + MED_H)
+          ln_medstr(ln, 4U, br - 2U, vfo_mode_str, UI_STATUS_LBL, UI_VFO_BG);
       }
+    }
+
+    /* RX/TX badge: solid rt_color fill, white medium text, right-aligned in sub-line zone */
+    if (row >= rt_by && row < rt_by + rt_bad_h) {
+      uint16_t br = row - rt_by;
+      uint16_t px = SWAP16(rt_color);
+      for (uint16_t i = 0U; i < rt_bad_w; i++) ln[rt_bx + i] = px;
+      if (br >= 2U && br < 2U + MED_H)
+        ln_medstr(ln, (uint16_t)(rt_bx + 3U), br - 2U, rt_str, rt_fg, rt_color);
     }
   }
 
@@ -923,56 +910,22 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
- *  draw_smeter_ruler_row  – render one row of the 2-px active bar into *ln
+ *  draw_smeter_rows  – full redraw of the 32-row MTR zone, segment bargraph
  *
- *  second_row=false (SM_RULER_ROW):   full-width thin line: active in colour,
- *                                     inactive in UI_SMETER_BG; tick marks cut
- *                                     through this row.
- *  second_row=true  (SM_RULER_ROW2):  active portion only (no background line);
- *                                     background pixels remain UI_MTR_BG.
- *                                     This thickens the active bar to 2 px
- *                                     while keeping the inactive region 1 px.
- *  Called from both full redraw and the fast update path.
- * ════════════════════════════════════════════════════════════════════════════ */
-static void draw_smeter_ruler_row(uint16_t *ln, uint16_t fill_x, bool second_row)
-{
-  uint16_t x_end = (uint16_t)(SM_START_X + SM_RULER_W);
-  for (uint16_t px = SM_START_X; px < x_end && px < MTR_W; px++) {
-    if (px < fill_x) {
-      uint16_t seg = (uint16_t)(px - SM_START_X) / SM_UNIT_W;
-      uint16_t col = (seg < 6U) ? UI_S1_6 : (seg < 9U) ? UI_S7_9 : UI_S9P;
-      ln[px] = SWAP16(col);
-    } else if (!second_row) {
-      /* First row: dim line extends across the full inactive span */
-      ln[px] = SWAP16(UI_SMETER_BG);
-    }
-    /* Second row: inactive pixels left as UI_MTR_BG (caller filled line) */
-  }
-  if (!second_row) {
-    /* Tick marks cut through the first ruler row only (1-px ticks stay thin) */
-    for (uint8_t t = 0; t < 8U; t++) {
-      uint16_t tx = (uint16_t)(SM_START_X + (uint16_t)s_sbar[t] * SM_UNIT_W);
-      if (tx < MTR_W) ln[tx] = SWAP16(UI_SMETER_TICK);
-    }
-  }
-}
-
-/* ════════════════════════════════════════════════════════════════════════════
- *  draw_smeter_rows  – full redraw, RX S-meter ruler style, 32-row MTR zone
+ *  Layout (MTR_H=32):
+ *    rows  2– 9  scale labels  (SM_LBL_ROW)
+ *    row  10     tick marks    (SM_TICK_ROW)
+ *    rows 11–23  segment bars  (SM_SEG_ROW, SM_SEG_H=13)
+ *    rows 24–31  S-value text  (SM_VAL_ROW)
  *
- *  Row offsets (MTR_H=32):
- *    SM_LBL_ROW  (2) : scale labels    rows  2–9
- *    SM_TICK_ROW(10) : tick marks       row 10
- *    SM_RULER_ROW(11): level line       row 11  ← 1 px, replaces 3-row bar
- *    SM_VAL_ROW (13) : "S7"/"S9+3"     rows 13–20
+ *  Each of SM_BARS=12 segments is SM_SEG_W=10 px wide with a 4-px gap.
+ *  Green=S1–S6, yellow=S7–S9, red=S9+.
  * ════════════════════════════════════════════════════════════════════════════ */
 static void draw_smeter_rows(int32_t bars)
 {
   char s_str[8];
   if (bars <= 9) snprintf(s_str, sizeof(s_str), "S%ld",   (long)bars);
   else           snprintf(s_str, sizeof(s_str), "S9+%ld", (long)((bars - 9) * 3));
-
-  uint16_t fill_x = (uint16_t)(SM_START_X + (uint16_t)bars * SM_UNIT_W);
 
   static const char *const slbls[] = {"S","1","3","5","7","9","+20","+40"};
 
@@ -991,7 +944,7 @@ static void draw_smeter_rows(int32_t bars)
       }
     }
 
-    /* Tick marks row: single-pixel dots at each scale position */
+    /* Tick marks: single-pixel dot at each scale position */
     if (row == SM_TICK_ROW) {
       for (uint8_t t = 0; t < 8U; t++) {
         uint16_t tx = (uint16_t)(SM_START_X + (uint16_t)s_sbar[t] * SM_UNIT_W);
@@ -999,9 +952,17 @@ static void draw_smeter_rows(int32_t bars)
       }
     }
 
-    /* Level ruler: 2-px active bar — row 11 full ruler+ticks, row 12 active-only */
-    if (row == SM_RULER_ROW)  draw_smeter_ruler_row(ln, fill_x, false);
-    if (row == SM_RULER_ROW2) draw_smeter_ruler_row(ln, fill_x, true);
+    /* Segment bars */
+    if (row >= SM_SEG_ROW && row < SM_SEG_ROW + SM_SEG_H) {
+      for (uint8_t seg = 0U; seg < SM_BARS; seg++) {
+        if ((int32_t)seg < bars) {
+          uint16_t col = (seg < 6U) ? UI_S1_6 : (seg < 9U) ? UI_S7_9 : UI_S9P;
+          uint16_t x0  = (uint16_t)(SM_START_X + (uint16_t)seg * SM_UNIT_W);
+          for (uint16_t px = x0; px < x0 + SM_SEG_W && px < MTR_W; px++)
+            ln[px] = SWAP16(col);
+        }
+      }
+    }
 
     /* S-value text */
     if (row >= SM_VAL_ROW && (row - SM_VAL_ROW) < Font6x8.height) {
@@ -1028,9 +989,12 @@ void SDR_UI_DrawMeter(const SDR_UI_State_t *ui)
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_UpdateSMeter  – fast RX meter refresh (10 Hz)
  *
- *  Fast path: re-render only bar rows (12–14) and text rows (15–22).
- *  Static rows (3–11: labels + tick) remain valid in buffer.
- *  Total pushed: 3 rows + 8 rows = 11 rows × 320px = 7,040 B (vs 20,480 full)
+ *  Fast path: pack and push only the dirty segment column range (the set of
+ *  segments that changed state between old_bars and new bars) using s_mtr_strip.
+ *  Static rows (labels, ticks) are never re-rendered after initial draw.
+ *
+ *  Segment push:  dirty_w × SM_SEG_H × 2 B  (min 364 B for 1 seg, max 4,368 B)
+ *  Text push:     Font6x8.height × MTR_W × 2 B  = 5,120 B
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_UpdateSMeter_SetTX(bool tx)
 {
@@ -1050,7 +1014,9 @@ void SDR_UI_UpdateSMeter(float signal_db)
   if (bars < 0) bars = 0;
   if (bars > (int32_t)SM_BARS) bars = (int32_t)SM_BARS;
   if (bars == s_rx_meter_bars) return;
-  s_rx_meter_bars = bars;
+
+  int32_t old_bars = s_rx_meter_bars;
+  s_rx_meter_bars  = bars;
 
   if (!s_mtr_static_valid) {
     draw_smeter_rows(bars);
@@ -1061,19 +1027,39 @@ void SDR_UI_UpdateSMeter(float signal_db)
     return;
   }
 
-  /* Fast path: re-render both ruler rows (rows 11–12 = 2-px active bar) */
-  uint16_t fill_x = (uint16_t)(SM_START_X + (uint16_t)bars * SM_UNIT_W);
+  /* Fast path: dirty segment column range.
+   * Only the segments that changed state need updating.
+   * seg_lo = first changed segment, seg_hi = last changed segment. */
   {
-    uint16_t *ln1 = s_mtr_buf + (uint32_t)SM_RULER_ROW  * MTR_W;
-    uint16_t *ln2 = s_mtr_buf + (uint32_t)SM_RULER_ROW2 * MTR_W;
-    LCD_LineFill(ln1, 0, MTR_W, UI_MTR_BG);
-    LCD_LineFill(ln2, 0, MTR_W, UI_MTR_BG);
-    draw_smeter_ruler_row(ln1, fill_x, false);
-    draw_smeter_ruler_row(ln2, fill_x, true);
+    int32_t seg_lo   = (bars < old_bars) ? bars     : old_bars;
+    int32_t seg_hi   = (bars > old_bars) ? bars - 1 : old_bars - 1;
+    uint16_t dirty_w = (uint16_t)((seg_hi - seg_lo + 1) * (int32_t)SM_UNIT_W);
+    uint16_t x_lo    = (uint16_t)(SM_START_X + (uint16_t)seg_lo * SM_UNIT_W);
+
+    /* Build strip: dirty_w cols × SM_SEG_H rows */
+    for (uint16_t r = 0U; r < SM_SEG_H; r++) {
+      uint16_t *srow = s_mtr_strip + (uint32_t)r * dirty_w;
+      uint16_t  c    = 0U;
+      for (int32_t seg = seg_lo; seg <= seg_hi; seg++) {
+        uint16_t col_lit = ((uint8_t)seg < 6U) ? UI_S1_6
+                         : ((uint8_t)seg < 9U) ? UI_S7_9 : UI_S9P;
+        uint16_t col_on  = ((int32_t)seg < bars) ? col_lit : UI_MTR_BG;
+        for (uint16_t px = 0U; px < SM_UNIT_W; px++, c++) {
+          srow[c] = SWAP16((px < SM_SEG_W) ? col_on : UI_MTR_BG);
+        }
+      }
+    }
+    LCD_PushWindow(
+      (uint16_t)(MTR_X + x_lo),
+      (uint16_t)(MTR_Y + SM_SEG_ROW),
+      (uint16_t)(MTR_X + x_lo + dirty_w - 1U),
+      (uint16_t)(MTR_Y + SM_SEG_ROW + SM_SEG_H - 1U),
+      s_mtr_strip,
+      (uint32_t)dirty_w * SM_SEG_H * 2U);
   }
 
-  /* Fast path: S-value text rows SM_VAL_ROW..SM_VAL_ROW+7 */
-  char s_str[8];
+  /* Text rows: re-render and push */
+  char     s_str[8];
   if (bars <= 9) snprintf(s_str, sizeof(s_str), "S%ld",   (long)bars);
   else           snprintf(s_str, sizeof(s_str), "S9+%ld", (long)((bars - 9) * 3));
   uint16_t scol = (bars > 9) ? UI_S9P : (bars > 5) ? UI_S7_9 : UI_S1_6;
@@ -1082,14 +1068,6 @@ void SDR_UI_UpdateSMeter(float signal_db)
     LCD_LineFill(ln, 0, MTR_W, UI_MTR_BG);
     LCD_LineStr(ln, SM_START_X, row - SM_VAL_ROW, s_str, &Font6x8, scol, UI_MTR_BG);
   }
-
-  /* Push ruler rows (2 rows × 320px = 1,280 B) */
-  LCD_PushWindow(MTR_X, (uint16_t)(MTR_Y + SM_RULER_ROW),
-                 (uint16_t)(MTR_X + MTR_W - 1U),
-                 (uint16_t)(MTR_Y + SM_RULER_ROW2),
-                 s_mtr_buf + (uint32_t)SM_RULER_ROW * MTR_W,
-                 (uint32_t)MTR_W * 2U);
-  /* Push text rows (8 rows × 320px = 5,120 B) */
   LCD_PushWindow(MTR_X, (uint16_t)(MTR_Y + SM_VAL_ROW),
                  (uint16_t)(MTR_X + MTR_W - 1U),
                  (uint16_t)(MTR_Y + SM_VAL_ROW + Font6x8.height - 1U),
@@ -1322,12 +1300,12 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
                  + pwr_compress(fft_db[bi1]) * t;
   }
 
-  /* Smoothing pass — moderate kernel for natural peak texture (not over-smoothed) */
+  /* Smoothing pass — tight 3-tap kernel, preserves narrow peaks */
   {
     float prev = s_spec_yf[0];
     for (uint16_t x = 1U; x < (uint16_t)(SPEC_W - 1U); x++) {
       float c      = s_spec_yf[x];
-      s_spec_yf[x] = 0.20f * prev + 0.60f * c + 0.20f * s_spec_yf[x + 1U];
+      s_spec_yf[x] = 0.10f * prev + 0.80f * c + 0.10f * s_spec_yf[x + 1U];
       prev         = c;
     }
   }
@@ -1337,25 +1315,6 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     uint16_t h = (uint16_t)(s_spec_yf[x] * (float)(SPEC_H - 2U) + 0.5f);
     if (h > (uint16_t)(SPEC_H - 2U)) h = (uint16_t)(SPEC_H - 2U);
     s_spec_py[x] = (h > 0U) ? (uint16_t)(SPEC_H - 1U - h) : NO_SIG;
-  }
-
-  /* Peak hold: reset on zoom change or first draw */
-  if (s_spec_zoom != s_peak_prev_zoom || !s_peak_hold_valid) {
-    memcpy(s_peak_hold, s_spec_py, sizeof(s_spec_py));
-    s_peak_prev_zoom  = s_spec_zoom;
-    s_peak_hold_valid = true;
-    s_peak_decay_ctr  = 0U;
-  } else {
-    /* Decay once every 4 render calls (~264 ms at 15 fps → slow visible fall) */
-    s_peak_decay_ctr++;
-    bool do_decay = (s_peak_decay_ctr >= 4U);
-    if (do_decay) s_peak_decay_ctr = 0U;
-    for (uint16_t x = 0U; x < SPEC_W; x++) {
-      if (s_spec_py[x] < s_peak_hold[x])
-        s_peak_hold[x] = s_spec_py[x];          /* new peak: latch immediately  */
-      else if (do_decay && s_peak_hold[x] < NO_SIG)
-        s_peak_hold[x]++;                        /* decay: sink 1 px toward floor */
-    }
   }
 
   /* One-pass delta scan: find max delta and dirty column bounding box.
@@ -1384,21 +1343,6 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
   memcpy(s_spec_py_prev, s_spec_py, sizeof(s_spec_py));
   s_spec_py_valid = true;
 
-  /* Build seg_top / seg_bot for vertical stroke connecting adjacent columns */
-  s_spec_seg_top[0] = s_spec_seg_bot[0] = s_spec_py[0];
-  for (uint16_t x = 1U; x < SPEC_W; x++) {
-    uint16_t cur  = s_spec_py[x];
-    uint16_t prev = s_spec_py[x - 1U];
-    if (cur >= NO_SIG) {
-      s_spec_seg_top[x] = s_spec_seg_bot[x] = NO_SIG;
-    } else if (prev >= NO_SIG) {
-      s_spec_seg_top[x] = s_spec_seg_bot[x] = cur;
-    } else {
-      s_spec_seg_top[x] = (cur < prev) ? cur : prev;
-      s_spec_seg_bot[x] = (cur > prev) ? cur : prev;
-    }
-  }
-
   /* Grid lines at 75%, 50%, 25% of height */
   uint16_t g1 = (uint16_t)(SPEC_H - (uint16_t)(0.75f * (float)SPEC_H));
   uint16_t g2 = (uint16_t)(SPEC_H - (uint16_t)(0.50f * (float)SPEC_H));
@@ -1419,12 +1363,8 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     if (bw_hi >= SPEC_W) bw_hi = SPEC_W - 1U;
   }
 
-  /* spec_sw:      bright warm amber for peak pixels.
-   * spec_fill_sw: mid-brightness amber for connector pixels (~58% of peak).
-   *               Brightened from 0x7960 for better trace continuity on
-   *               low-signal paths without over-brightening peaks. */
-  uint16_t spec_sw      = SWAP16(0xFCC0U);   /* bright warm amber: peak      */
-  uint16_t spec_fill_sw = SWAP16(0x9280U);   /* mid amber: vertical connectors */
+  uint16_t spec_sw      = SWAP16(0x041FU);   /* bright: peak edge       */
+  uint16_t spec_fill_sw = SWAP16(0x0107U);   /* darker: fill body       */
   uint16_t bw_sw        = SWAP16(UI_SPEC_BW);
   /* Center marker colours: bright centre, black shadow for dark|white|dark */
   uint16_t cx_sw        = SWAP16(0xFFFFU);   /* bright white centre pixel     */
@@ -1442,9 +1382,7 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     }
     if (bw_lo_ok && bw_lo < SPEC_W) row[bw_lo] = bw_sw;
     if (bw_hi_ok && bw_hi < SPEC_W) row[bw_hi] = bw_sw;
-    /* Center marker: dark|white|dark — sharp 1-px centre, shadow neighbours.
-     * Drawn in background loop so signal trace overlays it at the peak,
-     * making the marker visible only on empty/weak-signal background. */
+    /* Center marker: dark|white|dark — signal trace overlays it when present. */
     if (cx > 0U && cx < SPEC_W - 1U) {
       row[cx - 1U] = cx_shadow;
       row[cx]      = cx_sw;
@@ -1454,28 +1392,14 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     }
   }
 
-  /* Draw spectrum trace: 2-tier colour.
-   * s_spec_py[x] is the actual peak row.  Pixels at or above it (top of
-   * vertical segment) get the bright colour; connector pixels below get dim. */
+  /* Draw filled area spectrum: bright peak edge, dim fill body to baseline. */
+  const uint16_t fill_bot = (uint16_t)(SPEC_H - 2U);
   for (uint16_t x = 0U; x < SPEC_W; x++) {
-    uint16_t top = s_spec_seg_top[x];
-    uint16_t bot = s_spec_seg_bot[x];
-    if (top >= NO_SIG) continue;
-    uint16_t peak_row = s_spec_py[x];
-    for (uint16_t yr = top; yr <= bot; yr++) {
-      s_spec_buf[yr][x] = (yr <= peak_row) ? spec_sw : spec_fill_sw;
-    }
-  }
-
-  /* Peak hold: 1-px dim amber dot above the current trace when signal has dropped.
-   * Marker is only written where the current trace is absent (signal < peak),
-   * so the bright trace always takes visual priority.                            */
-  {
-    uint16_t ph_sw = SWAP16(0x9480U);   /* dim warm amber: ~60% brightness of trace */
-    for (uint16_t x = 0U; x < SPEC_W; x++) {
-      uint16_t ph = s_peak_hold[x];
-      if (ph < NO_SIG && ph < s_spec_seg_top[x])
-        s_spec_buf[ph][x] = ph_sw;
+    uint16_t peak = s_spec_py[x];
+    if (peak >= NO_SIG) continue;
+    s_spec_buf[peak][x] = spec_sw;
+    for (uint16_t yr = (uint16_t)(peak + 1U); yr <= fill_bot; yr++) {
+      s_spec_buf[yr][x] = spec_fill_sw;
     }
   }
 

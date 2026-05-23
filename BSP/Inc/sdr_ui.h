@@ -97,22 +97,28 @@ extern "C" {
 #define FTR_H   32U
 #define FTR_Y2 320U
 
-/* ── S-meter ruler geometry (inside MTR) ─────────────
- *  Ruler style: thin 1-px level line with tick marks.
- *  SM_UNIT_W  : pixels per segment (same total span as before)
- *  SM_RULER_W : total ruler span (12 × 14 = 168 px)
+/* ── S-meter segment bargraph geometry (inside MTR) ──
+ *  SM_UNIT_W  : pixel pitch per segment (14 px)
+ *  SM_SEG_W   : lit pixel width per segment (10 px); gap = 4 px
+ *  SM_RULER_W : total bar span (12 × 14 = 168 px)
  * ─────────────────────────────────────────────────── */
 #define SM_BARS      12U
 #define SM_UNIT_W    14U
+#define SM_SEG_W     10U
 #define SM_START_X    4U
 #define SM_RULER_W   (SM_BARS * SM_UNIT_W)  /* 168 px */
 
-/* Row offsets within the 32-row MTR zone (RX S-meter) */
-#define SM_LBL_ROW    2U   /* scale labels (rows 2–9)                    */
-#define SM_TICK_ROW  10U   /* tick-mark pixels (row 10), 1 px            */
-#define SM_RULER_ROW 11U   /* level indicator top row (active+bg) 1 px   */
-#define SM_RULER_ROW2 12U  /* level indicator bottom row (active only)   */
-#define SM_VAL_ROW   13U   /* S-value text (rows 13–20)                  */
+/* Row offsets within the 32-row MTR zone (RX S-meter)
+ *   rows  0– 1: top margin
+ *   rows  2– 9: scale labels (SM_LBL_ROW,  Font6x8)
+ *   row  10:    tick marks   (SM_TICK_ROW)
+ *   rows 11–23: segment bars (SM_SEG_ROW,  SM_SEG_H=13)
+ *   rows 24–31: S-value text (SM_VAL_ROW,  Font6x8)    */
+#define SM_LBL_ROW    2U   /* scale labels                               */
+#define SM_TICK_ROW  10U   /* tick-mark row                              */
+#define SM_SEG_ROW   11U   /* segment bars top row                       */
+#define SM_SEG_H     13U   /* segment bar height (rows)                  */
+#define SM_VAL_ROW   24U   /* S-value text                               */
 
 /* ── Dirty-zone bitmask ─────────────────────────────── */
 #define DIRTY_HDR   0x01U
@@ -140,11 +146,10 @@ extern "C" {
 #define UI_BORDER         0x18C6U
 #define UI_DIVIDER        0x10A2U
 
-#define UI_FREQ_MHZ       0x07FFU
-#define UI_FREQ_KHZ       0x3FE0U
-#define UI_FREQ_HZ        0x2D65U
-#define UI_FREQ_DOT       0x07FFU
-#define UI_FREQ_SUB       0x528AU
+#define UI_FREQ_MHZ       0x07FFU  /* menu edit-mode highlight */
+#define UI_FREQ_KHZ       0x3FE0U  /* BW/step sidebar values  */
+#define UI_FREQ_FG        0xFFFFU  /* main VFO frequency       */
+#define UI_FREQ_SUB       0x528AU  /* inactive-VFO sub-line    */
 
 #define UI_MODE_AM        0xFFFFU
 #define UI_MODE_FM        0x07E0U

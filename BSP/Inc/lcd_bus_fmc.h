@@ -66,19 +66,21 @@ extern "C" {
 #define ST7796_MADCTL     0x36U   /* Memory data access control              */
 #define ST7796_COLMOD     0x3AU   /* Interface pixel format                  */
 
-/* ── MADCTL landscape options ────────────────────────────────────────────────
- * ST7796S native: 320 columns × 480 rows (portrait).
- * Landscape 480×320: MV=1 swaps row/column addressing.
- * MX=1 mirrors columns so origin is top-left with X increasing right.
+/* ── MADCTL landscape configuration ─────────────────────────────────────────
+ * ST7796S native resolution: 320 columns × 480 rows (portrait).
  *
- * Bit layout: MY|MX|MV|ML|BGR|MH|0|0
- *   0x60 = 0110 0000 → MX=1, MV=1, RGB order  (try first)
- *   0x68 = 0110 1000 → MX=1, MV=1, BGR order  (if R and B are swapped)
- *   0xA0 = 1010 0000 → MY=1, MV=1, RGB order  (if image is mirrored horizontally)
- *   0xA8 = 1010 1000 → MY=1, MV=1, BGR order
+ * MADCTL bit layout:  MY | MX | MV | ML | BGR | MH | 0 | 0
+ *
+ * This panel requires MY|MX|MV|BGR = 0xE8:
+ *   MY + MX  correct glass orientation for this module; 0x60/0x68 (MX|MV only)
+ *            produces a mirrored/flipped image on the physical panel
+ *   MV       landscape scan (swap X↔Y addressing, 480×320)
+ *   BGR      panel color filter is BGR order — bits[15:11] drive the B sub-pixel,
+ *            bits[4:0] drive R.  Software colors must encode R and B swapped
+ *            relative to their visual intent, or use the SWAP16 framebuffer
+ *            convention (see LCD_PushWindow / DMA header comments).
  */
-#define ST7796_MADCTL_LANDSCAPE      0x60U   /* MX|MV, RGB — default */
-#define ST7796_MADCTL_LANDSCAPE_BGR  0x68U   /* MX|MV|BGR — if R/B swapped */
+#define ST7796_MADCTL_LANDSCAPE  0xE8U   /* MY|MX|MV|BGR — confirmed for this panel */
 
 /* COLMOD: 16-bit/pixel (RGB565) for both DPI and DBI */
 #define ST7796_COLMOD_16BIT          0x55U

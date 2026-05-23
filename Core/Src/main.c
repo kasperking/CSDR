@@ -25,7 +25,6 @@
 #include "csdr_app.h"
 #include "lcd_bus_fmc.h"
 #include "lcd_dma.h"
-#include "lcd_test_fmc.h"
 #include "boot_dfu.h"
 /* USER CODE END Includes */
 
@@ -248,14 +247,6 @@ int main(void)
    * programs MPU Region 1 as Strongly-Ordered over 0x60000000. This must be
    * active before any USB bus activity, or the D-Cache can corrupt FMC writes.
    */
-
-  /* ── FMC LCD bring-up test ───────────────────────────────────────────────
-   * LCD_Bus_Init() is called inside MX_FMC_Init() (USER CODE FMC_Init 2)
-   * to ensure MPU Region 1 is active before USB starts.
-   * Remove LCD_FMC_RunTest() once timing and throughput are confirmed.
-   * g_lcd_fmc_bench holds results; inspect via debugger Live Expressions.
-   */
-  LCD_FMC_RunTest();
 
   CSDR_Init();
   /* USER CODE END 2 */

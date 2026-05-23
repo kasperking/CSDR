@@ -648,7 +648,7 @@ void DSP_Process(DSP_State_t *dsp,
           RuntimeDiag_FftReport((uint32_t)(DWT->CYCCNT - fft_t0)); }
         FFT_ComputeMag_dB(dsp->fft_buf, dsp->fft_mag_db, DSP_FFT_SIZE, &peak);
         dsp->fft_ready = true;
-        if (dsp->wf_lines < 8U) dsp->wf_lines++;
+        if (dsp->wf_lines < 255U) dsp->wf_lines++;
         dsp->fft_fill  = 0U;
       }
     }

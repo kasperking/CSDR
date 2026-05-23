@@ -149,7 +149,7 @@ static void csdr_apply_tx(void);
 
 #define CSDR_UI_SPEC_RX_PERIOD_MS    75U    /* ~13 fps spectrum in RX — decoupled from waterfall */
 #define CSDR_UI_WF_RX_PERIOD_MS      75U    /* ~13 fps waterfall in RX */
-#define UI_OVERLOAD_DECAY_MS         500U   /* suppress waterfall for 500ms after load clears */
+#define UI_OVERLOAD_DECAY_MS         150U   /* suppress waterfall; 2 ticks to enter, 2 to recover */
 #define CSDR_UI_DISPLAY_RX_PERIOD_MS 100U   /* 10 fps dirty-zone + meter refresh */
 #define CSDR_UI_DISPLAY_TX_PERIOD_MS 1000U  /* 1 Hz compact TX meter refresh */
 #define CSDR_UI_TX_DIRTY_MIN_MS      1000U  /* defer knob/menu redraws while TX audio is time-critical */
@@ -237,7 +237,7 @@ void CSDR_Init(void)
   HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_4);
   __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, 800U);
 
-  /* Flash: load settings (logo display skipped during FMC bring-up) */
+  /* Flash: load settings */
   if (W25Q_Init(&g_flash, &hspi3, FLASH_CS_GPIO_Port, FLASH_CS_Pin) == HAL_OK) {
     Flash_Settings_t fs;
     if (Flash_LoadSettings(&g_flash, &fs) == HAL_OK) {
@@ -251,7 +251,8 @@ void CSDR_Init(void)
       g_sdr.step     = (FreqStep_t)fs.step;
     }
   }
-  /* SDR_UI_DrawFrame disabled: FMC UI not yet wired */
+  SDR_UI_Init();
+  SDR_UI_DrawFrame(CSDR_AUDIO_SAMPLE_RATE, DSP_FFT_SIZE);
 
   /* Delay nhỏ trước I2C để bus settle sau power-on */
   HAL_Delay(10);
@@ -360,8 +361,6 @@ void CSDR_Init(void)
 
   /* Menu */
   Menu_Init(&g_menu);
-
-  /* SDR_UI_DrawTopBar / DrawStatusPanel deferred until FMC UI is wired */
 
   /* Start SAI DMA (provides BCLK/LRCK to WM8731) */
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
@@ -576,42 +575,51 @@ void CSDR_Loop(void)
    * (8.06ms) competing with SAI TX DMA fill at WSJT-X audio deadlines. */
   if (!g_sdr.tx_mode && (now - t_wf >= CSDR_UI_WF_RX_PERIOD_MS)) {
     t_wf = now;
-    /* Adaptive waterfall skip: suppress FMC push when audio load or UI stall is elevated.
-     * Hysteresis: once triggered, suppression holds for UI_OVERLOAD_DECAY_MS (500ms).
+    /* Adaptive waterfall skip: suppress FMC push only under sustained load.
      *
-     * Trigger conditions (any one is sufficient):
-     *  a) rx_overrun_pending — USB IRQ flagged a ring overflow THIS tick (immediate)
-     *  b) rx ring occupancy  > 75% — main-loop audio processing is falling behind
-     *  c) slow-path overrun/underrun rate from RuntimeDiag (1-second lag, kept for
-     *     longer-horizon load awareness)
-     *  d) UI or loop stall timing peaks from RuntimeDiag
+     * Entry requires 2 consecutive high-pressure ticks (≥150 ms) to avoid
+     * suppressing on isolated overruns that are harmless on FMC 480×72.
+     * Recovery is fast: 150 ms (2 ticks) after pressure clears.
      *
-     * The pending flag is consumed here (cleared after check) so it does not
-     * permanently lock out the waterfall if the overrun was transient. */
+     * Trigger conditions:
+     *  a) rx ring occupancy > 75% — main-loop audio falling behind (sustained)
+     *  b) UI render time consistently excessive (>15 ms)
+     *  c) loop stall >20 ms
+     *  d) sustained overrun/underrun rate ≥3/s (isolated events are ignored)
+     *
+     * rx_overrun_pending is consumed here to prevent stale flag accumulation
+     * but is NOT used as a direct suppression trigger (isolated overruns are
+     * harmless on FMC hardware and were falsely killing the waterfall). */
     {
-      static uint32_t s_wf_overload_ms = 0U;
+      static uint32_t s_wf_overload_ms   = 0U;
+      static uint8_t  s_wf_overload_hits = 0U;  /* consecutive high-pressure ticks */
 
-      /* a+b: direct ring checks — react within one waterfall period (75 ms) */
-      bool ring_pressure = g_usb_audio.rx_overrun_pending ||
-                           (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
+      /* a: ring occupancy — sustained audio pressure */
+      bool ring_pressure = (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
       if (g_usb_audio.rx_overrun_pending) g_usb_audio.rx_overrun_pending = false;
 
-      /* c+d: slow-path diagnostics (1-second window) */
+      /* b+c+d: slow-path diagnostics; isolated overruns not sufficient */
       RuntimeDiag_Snapshot_t snap;
       RuntimeDiag_GetSnapshot(&snap);
       bool diag_pressure = (snap.max_ui_us > 15000U ||
                             snap.max_loop_stall_us > 20000U ||
-                            snap.rx_overrun_per_sec > 0U ||
-                            snap.tx_underrun_per_sec > 0U);
+                            snap.rx_overrun_per_sec >= 3U ||
+                            snap.tx_underrun_per_sec >= 3U);
 
       if (ring_pressure || diag_pressure) {
-        s_wf_overload_ms = UI_OVERLOAD_DECAY_MS;
-        dbg_ui_load_high = 1U;
-      } else if (s_wf_overload_ms > CSDR_UI_WF_RX_PERIOD_MS) {
-        s_wf_overload_ms -= CSDR_UI_WF_RX_PERIOD_MS;
+        if (s_wf_overload_hits < 2U) s_wf_overload_hits++;
+        if (s_wf_overload_hits >= 2U) {
+          s_wf_overload_ms = UI_OVERLOAD_DECAY_MS;
+          dbg_ui_load_high = 1U;
+        }
       } else {
-        s_wf_overload_ms = 0U;
-        dbg_ui_load_high = 0U;
+        s_wf_overload_hits = 0U;
+        if (s_wf_overload_ms > CSDR_UI_WF_RX_PERIOD_MS) {
+          s_wf_overload_ms -= CSDR_UI_WF_RX_PERIOD_MS;
+        } else {
+          s_wf_overload_ms = 0U;
+          dbg_ui_load_high = 0U;
+        }
       }
       bool wf_suppressed = (s_wf_overload_ms > 0U);
       if (wf_suppressed) dbg_wf_skip_count++;
@@ -1193,9 +1201,9 @@ static void csdr_update_spectrum(void)
 
 static void csdr_update_waterfall(void)
 {
-  if (g_sdr.tx_mode || g_dsp.wf_lines == 0U || Menu_IsOpen(&g_menu)) return;
+  if (g_sdr.tx_mode || Menu_IsOpen(&g_menu)) return;
   RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_WATERFALL);
-  g_dsp.wf_lines = 0U;                   /* drop extras accumulated since last tick */
+  g_dsp.wf_lines = 0U;                   /* consume pending lines; render latest FFT frame */
   SDR_UI_DrawWaterfall(g_dsp.fft_mag_db, DSP_FFT_SIZE);
   RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_WATERFALL);
 }
