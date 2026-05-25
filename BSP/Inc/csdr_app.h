@@ -72,6 +72,7 @@ typedef struct {
   bool        mute;
   bool        agc_fast;
   bool        nb_on;
+  uint8_t     nb_level;  /*!< NB intensity 0-100, default 50; not currently in menu */
   bool        nr_on;
   int16_t     rit_hz;
   bool        tx_mode;

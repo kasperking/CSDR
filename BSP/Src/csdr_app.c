@@ -59,6 +59,8 @@ SDR_State_t g_sdr = {
   .squelch       = 0U,
   .step          = STEP_100,
   .agc_fast      = true,
+  .nb_on         = false,   /* NB disabled by default */
+  .nb_level      = 50U,     /* moderate intensity; raise for more aggressive blanking */
   .display_dirty = DIRTY_ALL,
   .lo_offset_hz  = LO_OFFSET_DEFAULT,
   .mic_gain      = 50,
@@ -296,6 +298,7 @@ void CSDR_Init(void)
   DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
   DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
   AGC_SetSpeed(&g_dsp.agc, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_NB_Set(&g_dsp, g_sdr.nb_on, g_sdr.nb_level);
 
   /* Encoder – TIM3 quadrature (PB4/PB5), initialised as encoder in MX_TIM3_Init */
   Encoder_Init(&g_encoder, &htim3);
@@ -1300,6 +1303,7 @@ static void menu_apply_cb(void)
                   &vol, &sq, &step, &att, &band, &mode, &usb, &zoom);
   g_sdr.agc_fast = agc; g_sdr.nb_on = nb; g_sdr.nr_on = nr;
   AGC_SetSpeed(&g_dsp.agc, agc, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_NB_Set(&g_dsp, nb, g_sdr.nb_level);
   g_sdr.rit_hz = rit;
   g_sdr.cat_rit_dirty = true;  /* apply new RIT offset to nco_if via CSDR_Loop */
   csdr_apply_volume(vol); g_sdr.squelch = sq;
@@ -1502,7 +1506,7 @@ static void cat_set_volume(uint8_t vol)
   g_sdr.display_dirty |= DIRTY_SBL;
 }
 static void     cat_set_nr(bool on)       { g_sdr.nr_on = on; g_sdr.display_dirty |= DIRTY_SBL; }
-static void     cat_set_nb(bool on)       { g_sdr.nb_on = on; g_sdr.display_dirty |= DIRTY_SBL; }
+static void     cat_set_nb(bool on)       { g_sdr.nb_on = on; DSP_NB_Set(&g_dsp, on, g_sdr.nb_level); g_sdr.display_dirty |= DIRTY_SBL; }
 static void cat_set_bw(uint32_t hz)
 {
     if (hz < 100U)   hz = 100U;

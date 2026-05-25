@@ -1066,12 +1066,27 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* AG — stub: volume control not in minimal CAT set */
+    /* AG — volume control: GET returns AG0nnn; (0-255), SET applies via callback.
+     * TS-2000 format: AG0P2; where P2 = 000-255 (channel 0 = main receiver).
+     * Internal volume is 0-100; scale on both sides.
+     * SET is ACK-only — flrig TS-2000 uses sendCommand() with no readback. */
     else if (cmd[0] == 'A' && cmd[1] == 'G') {
         if (cmd[2] == '\0' || (cmd[2] == '0' && cmd[3] == '\0')) {
-            cat_copy(resp, "AG0127;");   /* fixed 50% — GET only */
+            /* GET: AG; or AG0; */
+            uint8_t  vol = cat->cb.get_volume ? cat->cb.get_volume() : 100U;
+            uint32_t ag  = (uint32_t)vol * 255U / 100U;
+            if (ag > 255U) ag = 255U;
+            char *p = resp;
+            *p++ = 'A'; *p++ = 'G'; *p++ = '0';
+            p = cat_put_u32(p, ag, 3U);
+            *p++ = ';'; *p = '\0';
+        } else if (cmd[2] == '0') {
+            /* SET: AG0nnn; — scale 0-255 → 0-100 and apply */
+            uint32_t ag  = cat_parse_u(&cmd[3], 3U);
+            uint8_t  vol = (uint8_t)(ag * 100U / 255U);
+            if (cat->cb.set_volume) cat->cb.set_volume(vol);
+            /* ACK-only: AG is in suppress list below */
         }
-        /* SET AG0nnn; — ACK-only stub */
     }
 
     /* NR — stub: no DSP NR wired through CAT path */
@@ -1080,13 +1095,21 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         /* SET NRn; — ACK-only stub */
     }
 
-    /* NB — stub: no DSP NB wired through CAT path */
+    /* NB — noise blanker: GET returns real state; SET wires to DSP via callback */
     else if (cmd[0] == 'N' && cmd[1] == 'B') {
-        if (cmd[2] == '\0') { cat_copy(resp, "NB0;"); }
-        /* SET NBn; — ACK-only stub */
+        if (cmd[2] == '\0') {
+            char tmp[5] = { 'N', 'B', '0', ';', '\0' };
+            if (cat->cb.get_nb && cat->cb.get_nb()) { tmp[2] = '1'; }
+            cat_copy(resp, tmp);
+        } else {
+            if (cat->cb.set_nb) { cat->cb.set_nb(cmd[2] != '0'); }
+        }
     }
 
-    /* FW — filter width: GET/SET routed to active VFO BW callbacks */
+    /* FW — filter width: GET/SET routed to active VFO BW callbacks.
+     * SET is ACK-only — flrig TS-2000 uses sendCommand() with no readback.
+     * Returning FWnnnn; after SET leaves a stale frame in the host serial buffer
+     * that desynchronises the next command's response read. */
     else if (cmd[0] == 'F' && cmd[1] == 'W') {
         if (cmd[2] == '\0') {
             cat_build_FW(cat, resp);
@@ -1100,7 +1123,7 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
             } else if (cat->cb.set_bw) {
                 cat->cb.set_bw(bw);
             }
-            cat_build_FW(cat, resp);
+            /* ACK-only: FW is in suppress list below — no echo */
         }
     }
 
@@ -1524,7 +1547,13 @@ void CAT_Process(CAT_Handle_t *cat)
                     (_c[0]=='S' && _c[1]=='L') ||  /* SL SET: flrig sendCommand() for lo-cut — no readback            */
                     (_c[0]=='S' && _c[1]=='H') ||  /* SH SET: flrig sendCommand() for hi-cut — no readback            */
                     (_c[0]=='F' && _c[1]=='R') ||  /* FR SET: flrig sendCommand(), no readback — echo desynchs buffer  */
-                    (_c[0]=='F' && _c[1]=='T');    /* FT SET: flrig sendCommand(), no readback — echo desynchs buffer  */
+                    (_c[0]=='F' && _c[1]=='T') ||  /* FT SET: flrig sendCommand(), no readback — echo desynchs buffer  */
+                    (_c[0]=='F' && _c[1]=='W') ||  /* FW SET: flrig sendCommand(), no readback — stale FWnnnn; desynchs */
+                    (_c[0]=='A' && _c[1]=='G') ||  /* AG SET: flrig sendCommand(), no readback — stale AG0nnn; desynchs */
+                    (_c[0]=='V' && _c[1]=='S') ||  /* VS SET: flrig init/VFO switch, sendCommand(), no readback        */
+                    (_c[0]=='S' && _c[1]=='P') ||  /* SP SET: flrig split, sendCommand(), no readback                  */
+                    (_c[0]=='R' && _c[1]=='T') ||  /* RT SET: flrig RIT toggle, sendCommand(), no readback             */
+                    (_c[0]=='D' && _c[1]=='C');    /* DC SET: flrig VFO routing, sendCommand(), no readback            */
                 if (!_suppress) {
                     uint8_t clen = (uint8_t)strlen(cat->parser_cmd);
                     if (clen < (uint8_t)(CAT_TX_BUF_SIZE - 1U)) {

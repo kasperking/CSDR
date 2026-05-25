@@ -174,11 +174,11 @@ static void lcd_init_sequence(void)
     LCD_WriteCmd(0xF0U); LCD_WriteData8(0xC3U);
     LCD_WriteCmd(0xF0U); LCD_WriteData8(0x96U);
 
-    /* Memory access control: MY|MX|MV|BGR (0xE8).
-     * MY+MX correct the panel glass orientation; MV selects landscape scan;
-     * BGR matches the panel color filter order (bits[15:11]=B, bits[4:0]=R). */
+    /* Memory access control — value from hardware profile (HW_LCD_MADCTL).
+     * Default 0xE8 = MY|MX|MV|BGR: landscape scan, BGR filter.
+     * Change orientation by updating the active hardware profile. */
     LCD_WriteCmd(ST7796_MADCTL);
-    LCD_WriteData8(ST7796_MADCTL_LANDSCAPE);
+    LCD_WriteData8(HW_LCD_MADCTL);
 
     /* Pixel format: RGB565 (16 bpp) */
     LCD_WriteCmd(ST7796_COLMOD);
@@ -258,9 +258,10 @@ static void lcd_init_sequence(void)
     LCD_WriteCmd(ST7789_COLMOD);
     LCD_WriteData8(ST7789_COLMOD_16BIT);
 
-    /* Memory access control: portrait, BGR color filter */
+    /* Memory access control — value from hardware profile (HW_LCD_MADCTL).
+     * Default 0x08 = BGR portrait (no axis swap) for ST7789. */
     LCD_WriteCmd(ST7789_MADCTL);
-    LCD_WriteData8(ST7789_MADCTL_PORTRAIT);
+    LCD_WriteData8(HW_LCD_MADCTL);
 
     /* Porch setting */
     LCD_WriteCmd(0xB2U);

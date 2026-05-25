@@ -20,7 +20,7 @@ extern "C" {
 #include <stdbool.h>
 
 /* Exported defines ----------------------------------------------------------*/
-#define DSP_FFT_SIZE    256U
+#define DSP_FFT_SIZE    512U
 #define DSP_FFT_HALF    (DSP_FFT_SIZE / 2U)
 #define FIR_MAX_TAPS    64U
 
@@ -65,6 +65,20 @@ typedef struct {
   uint32_t hang_time;   /*!< Hang duration (samples)        */
 } AGC_t;
 
+/** Noise Blanker – time-domain impulse suppressor for HF (PSU spikes, ignition) */
+typedef struct {
+  bool     enabled;               /*!< Runtime on/off toggle (disabled by default) */
+  uint8_t  level;                 /*!< Intensity 0-100; higher = lower threshold   */
+  float    floor_sq;              /*!< IIR-tracked background power (I²+Q²), τ≈208ms */
+  uint8_t  blank_ctr;            /*!< Samples remaining in current blank window   */
+  uint8_t  blank_width;          /*!< Precomputed blanking window width (samples)  */
+  float    threshold_ratio_sq;   /*!< Precomputed ratio²; trigger when mag²>floor²×this */
+  /* Debug counters – read in debugger, no UI needed */
+  uint32_t trig_count;           /*!< Total blanking events since last init/enable */
+  float    peak_mag_sq;          /*!< Largest I²+Q² seen (max impulse power)      */
+  float    current_threshold_sq; /*!< floor_sq × threshold_ratio_sq, last sample  */
+} NoiseBlanker_t;
+
 /** FM Demodulator (phân biệt pha tức thời) */
 typedef struct {
   float        prev_re;
@@ -74,6 +88,8 @@ typedef struct {
 
 /* Hilbert FIR cho SSB modulate/demodulate - 31 taps odd-symmetric */
 #define HILBERT_TAPS    63U
+/* Group delay of the Hilbert FIR = (HILBERT_TAPS-1)/2 samples */
+#define HILBERT_DELAY   ((HILBERT_TAPS - 1U) / 2U)   /* 31 samples */
 
 typedef struct {
   float    coeff[HILBERT_TAPS];
@@ -114,6 +130,7 @@ typedef struct {
   float        iq_p;           /*!< phase_err (rad): Q -= iq_p * I     */
   FM_Demod_t   fm;
   AGC_t        agc;
+  NoiseBlanker_t nb;  /*!< HF impulse noise blanker (disabled by default) */
 
   /* Current bandwidth (Hz) và sample rate - dùng cho UI hiển thị BW marker */
   float     bw_hz;
@@ -121,7 +138,7 @@ typedef struct {
 
   /* FFT */
   Complex_f fft_buf[DSP_FFT_SIZE];
-  float     fft_mag_db[DSP_FFT_SIZE];   /* full 256 bins: [-Fs/2 .. +Fs/2] sau fftshift */
+  float     fft_mag_db[DSP_FFT_SIZE];   /* full 512 bins: [-Fs/2 .. +Fs/2] sau fftshift */
   float     fft_window[DSP_FFT_SIZE];
   uint16_t  fft_fill;
   bool      fft_ready;
@@ -135,6 +152,14 @@ typedef struct {
   /* CW BFO – RX demodulator */
   uint32_t   cw_phase_acc;   /*!< RX CW BFO phase accumulator */
   uint32_t   cw_bfo_inc;     /*!< RX CW BFO phase increment (sample-rate-derived) */
+
+  /* RX phasing SSB demodulator – Hilbert FIR on Q + matched I delay.
+   * Hilbert FIR shifts Q by 90° so that (I ± H{Q})*0.5 gives perfect
+   * single-sideband extraction.  I is delayed by HILBERT_DELAY = 31 samples
+   * to compensate the FIR group delay.  Only active in USB/LSB modes. */
+  Hilbert_t  rx_hilbert;
+  float      rx_i_delay[HILBERT_DELAY + 1U];  /* ring buffer, size 32 */
+  uint16_t   rx_delay_idx;
 
   /* TX state */
   TX_State_t tx;
@@ -182,6 +207,9 @@ float IIR_DCBlock_Process(IIR_Biquad_t *f, float x);
 void  AGC_Init(AGC_t *agc, uint32_t sample_rate);
 void  AGC_SetSpeed(AGC_t *agc, bool fast, uint32_t sample_rate);
 float AGC_Process(AGC_t *agc, float x);
+
+/* Noise Blanker */
+void  DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level);
 
 /* IQ correction */
 void  DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad);

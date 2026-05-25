@@ -96,14 +96,18 @@ SPEC_W = G('SPEC_W',   W)
 WF_Y   = G('WF_Y',  216);  WF_H   = G('WF_H',   72)
 FTR_Y  = G('FTR_Y', 288);  FTR_H  = G('FTR_H',  32)
 
-SM_BARS     = G('SM_BARS',      12)
-SM_UNIT_W   = G('SM_UNIT_W',    14)   # px per segment (replaces SM_BAR_W+SM_BAR_GAP)
-SM_START_X  = G('SM_START_X',    4)
-SM_LBL_ROW  = G('SM_LBL_ROW',    2)
-SM_TICK_ROW = G('SM_TICK_ROW',  10)
-SM_RULER_ROW= G('SM_RULER_ROW', 11)
-SM_RULER_ROW2=G('SM_RULER_ROW2',12)
-SM_VAL_ROW  = G('SM_VAL_ROW',   13)
+SM_BARS       = G('SM_BARS',        12)
+SM_UNIT_W     = G('SM_UNIT_W',      18)   # segment pitch (18 × 12 = 216 px)
+SM_START_X    = G('SM_START_X',      2)
+SM_LBL_R0     = 1                         # label band start row (Font5x8 = 8 rows)
+SM_TICK_R0    = 10                        # first tick row
+SM_TICK_H_MAJ = 4                         # major tick height (ST7796)
+SM_TICK_H_MIN = 2                         # minor tick height
+SM_RAIL_TOP_R = 14                        # top rail row
+SM_RAIL_BOT_R = 22                        # bottom rail row
+SM_RULER_W    = SM_BARS * SM_UNIT_W       # 216 px
+SM_LINE_H     = 2                         # signal line height in rows
+SM_LINE_R0    = (SM_RAIL_TOP_R + SM_RAIL_BOT_R + 1 - SM_LINE_H) // 2  # centred between rails
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  4.  Colour palette — all from parsed headers
@@ -122,9 +126,10 @@ S1_6        = c(G('UI_S1_6',        0x07E0))
 S7_9        = c(G('UI_S7_9',        0xFFE0))
 S9P         = c(G('UI_S9P',         0xF800))
 SMETER_BG   = c(G('UI_SMETER_BG',   0x1082))
-SMETER_TICK = c(G('UI_SMETER_TICK', 0x5AEB))
-TX_COL      = c(G('UI_TX_BG',       0x001F))
-RX_COL      = c(G('UI_RX_BG',       0xF800))
+SMETER_TICK = c(G('UI_SMETER_TICK', 0xC618))   # bright gray: scale, ticks, rails
+SMETER_ACT  = c(G('UI_SMETER_ACT',  0x06C0))   # RF green: active signal line
+TX_COL      = c(G('UI_TX_BG',       0xF800))
+RX_COL      = c(G('UI_RX_BG',       0x07E0))
 SPEC_BG     = c(G('UI_SPEC_BG',     0x0843))
 SPEC_GRID   = c(G('UI_SPEC_GRID',   0x18C6))
 SPEC_CTR    = c(G('UI_SPEC_CENTER', 0xF81F))
@@ -326,51 +331,67 @@ else:
     tmd(VFO_X + 4, by + 2, ui["mode"], STATUS_LBL)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  12. S-meter  (inside MTR zone)
+#  12. S-meter  — UHSDR-style calibrated ruler + continuous signal line
 # ══════════════════════════════════════════════════════════════════════════════
-rect(MTR_X, MTR_Y, MTR_W, MTR_H, fill=SMETER_BG)
+rect(MTR_X, MTR_Y, MTR_W, MTR_H, fill=BG)
 
-# bars formula mirrors SDR_UI_DrawMeter: (signal_db + 73) / 3
 sig_db  = ui["signal_db"]
 bars    = max(0, min(SM_BARS, int((sig_db + 73.0) / 3.0)))
-fill_x  = SM_START_X + bars * SM_UNIT_W   # relative to MTR_X
+mk_col  = S9P if bars > 9 else S7_9 if bars > 5 else S1_6
 
-# Ruler-scale tick positions (segment indices, matches s_sbar[] in sdr_ui.c)
-s_sbar  = [0, 1, 3, 5, 7, 9, 10, 11]
-slbls   = ["S","1","3","5","7","9","+20","+40"]
+# Major/minor tick segment indices
+s_sbar  = [0, 1, 3, 5, 7, 9, 10, 11]   # major (labeled)
+s_min   = [2, 4, 6, 8]                  # minor (unlabeled)
+slbls   = ["S","1","3","5","7","9","20","40"]
 
-# Scale labels (SM_LBL_ROW)
+ruler_end = MTR_X + SM_START_X + SM_RULER_W
+val_x     = ruler_end + 4
+
+# Calibrated signal column (mirrors sm_mark_x)
+if bars <= 0:
+    sig_end_x = MTR_X + SM_START_X
+elif bars >= SM_BARS:
+    sig_end_x = MTR_X + SM_START_X + SM_RULER_W - 1
+else:
+    sig_end_x = min(MTR_X + SM_START_X + bars * SM_RULER_W // SM_BARS,
+                    MTR_X + SM_START_X + SM_RULER_W - 1)
+
+# ── Scale labels in label band (rows SM_LBL_R0 .. +8) ──
 for t, (idx, lbl) in enumerate(zip(s_sbar, slbls)):
-    lx = MTR_X + SM_START_X + idx * SM_UNIT_W
-    if t == 6: lx -= 9          # centre "+20" over its tick (matches C code)
-    lc = SMETER_TICK if t < 6 else S1_6
-    tsm(lx, MTR_Y + SM_LBL_ROW, lbl, lc)
+    tx_px = MTR_X + SM_START_X + idx * SM_UNIT_W
+    half_w = len(lbl) * 6 // 2
+    lx = max(MTR_X, tx_px - half_w)
+    tsm(lx, MTR_Y + SM_LBL_R0, lbl, SMETER_TICK)
 
-# Tick-mark row (SM_TICK_ROW) — single pixel per position
-for idx in s_sbar:
-    tx = MTR_X + SM_START_X + idx * SM_UNIT_W
-    d.point((tx, MTR_Y + SM_TICK_ROW), fill=SMETER_TICK)
+# Inline S-value right of ruler
+sv_str = f"S{bars}" if bars <= 9 else f"+{(bars-9)*3}"
+tsm(val_x, MTR_Y + SM_LBL_R0, sv_str, mk_col)
 
-# Ruler rows (SM_RULER_ROW and SM_RULER_ROW2) — 2 px active bar
-ruler_end = MTR_X + SM_START_X + SM_BARS * SM_UNIT_W
-for row_off, second in [(SM_RULER_ROW, False), (SM_RULER_ROW2, True)]:
-    ry = MTR_Y + row_off
-    for px in range(MTR_X + SM_START_X, min(ruler_end, MTR_X + MTR_W)):
-        rel = px - (MTR_X + SM_START_X)
-        if rel < fill_x - SM_START_X:
-            seg = rel // SM_UNIT_W
-            col = S1_6 if seg < 6 else S7_9 if seg < 9 else S9P
-            d.point((px, ry), fill=col)
-        elif not second:
-            d.point((px, ry), fill=SMETER_TICK)   # dim inactive line (row 1 only)
-    if not second:                                  # tick cuts through ruler row 1
-        for idx in s_sbar:
-            tx = MTR_X + SM_START_X + idx * SM_UNIT_W
-            d.point((tx, ry), fill=SMETER_TICK)
+# ── Major ticks (SM_TICK_H_MAJ rows) ──
+for row_off in range(SM_TICK_R0, SM_TICK_R0 + SM_TICK_H_MAJ):
+    for idx in s_sbar:
+        tx = MTR_X + SM_START_X + idx * SM_UNIT_W
+        d.point((tx, MTR_Y + row_off), fill=SMETER_TICK)
 
-# S-value text (SM_VAL_ROW)
-sv_str = f"S{bars}" if bars <= 9 else f"S9+{(bars-9)*3}"
-tsm(MTR_X + SM_START_X, MTR_Y + SM_VAL_ROW, sv_str, STATUS_VAL)
+# ── Minor ticks (SM_TICK_H_MIN rows, bottom of tick band) ──
+for row_off in range(SM_TICK_R0 + SM_TICK_H_MAJ - SM_TICK_H_MIN,
+                     SM_TICK_R0 + SM_TICK_H_MAJ):
+    for idx in s_min:
+        tx = MTR_X + SM_START_X + idx * SM_UNIT_W
+        d.point((tx, MTR_Y + row_off), fill=DIVIDER)
+
+# ── Top rail (1-px horizontal) ──
+for px in range(MTR_X + SM_START_X, min(ruler_end, MTR_X + MTR_W)):
+    d.point((px, MTR_Y + SM_RAIL_TOP_R), fill=SMETER_TICK)
+
+# ── Bottom rail (1-px horizontal) ──
+for px in range(MTR_X + SM_START_X, min(ruler_end, MTR_X + MTR_W)):
+    d.point((px, MTR_Y + SM_RAIL_BOT_R), fill=SMETER_TICK)
+
+# ── Signal line: continuous 2-px horizontal fill from ruler left to calibrated column ──
+for row_off in range(SM_LINE_R0, SM_LINE_R0 + SM_LINE_H):
+    for px in range(MTR_X + SM_START_X, min(sig_end_x + 1, MTR_X + MTR_W)):
+        d.point((px, MTR_Y + row_off), fill=SMETER_ACT)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  13. Info strip

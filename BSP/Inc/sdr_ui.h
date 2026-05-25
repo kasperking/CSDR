@@ -114,18 +114,12 @@ extern "C" {
 #define FTR_H   32U
 #define FTR_Y2 320U
 
-/* S-meter row offsets within 32-row MTR zone (UHSDR compact ruler style):
- *   row   0:    top margin
- *   rows  1– 8: scale labels   (SM_LBL_ROW=1, Font6x8)
- *   rows  9–10: tick marks     (SM_TICK_ROW, major 2-px / minor 1-px)
- *   row  11:    thin 1-px horizontal baseline rail (SM_SEG_ROW)
- *   rows 12–13: 2-px thin fill bar (active level indicator)
- *   rows 14+:   unused / TX meter area                           */
-#define SM_LBL_ROW    1U
-#define SM_TICK_ROW  11U   /* ticks below top rail (rows 11-12) */
-#define SM_SEG_ROW   10U   /* top rail row */
-#define SM_SEG_H     16U   /* active area height rows 0-16 */
-#define SM_VAL_ROW    1U   /* inline S-value shares label row band */
+/* S-meter ruler (ST7796 32-row MTR zone):
+ *   rows  1– 8: scale labels + inline S-value (Font5x8)
+ *   rows 10–13: major ticks (4 px), rows 12–13: minor ticks (2 px)
+ *   row  14:    top rail (1-px horizontal line)
+ *   rows 17–18: 2-px continuous signal line (SM_LINE_R0, SM_LINE_H)
+ *   row  22:    bottom rail; rows 23+: TX meter / unused           */
 
 /* No compact STATUS zone on ST7796 */
 #define STS_Y   FTR_Y
@@ -195,18 +189,12 @@ extern "C" {
 #define FTR_H   32U
 #define FTR_Y2  LCD_H    /* = 320 */
 
-/* S-meter row offsets within 24-row MTR zone (UHSDR compact ruler style):
- *   row   0:    top margin
- *   rows  1– 8: scale labels   (SM_LBL_ROW=1, Font6x8)
- *   rows  9–10: tick marks     (SM_TICK_ROW, major 2-px / minor 1-px)
- *   row  11:    thin 1-px horizontal baseline rail (SM_SEG_ROW)
- *   rows 12–13: 2-px thin fill bar (active level indicator)
- *   rows 14+:   unused                                          */
-#define SM_LBL_ROW    1U
-#define SM_TICK_ROW   9U
-#define SM_SEG_ROW   11U
-#define SM_SEG_H     13U
-#define SM_VAL_ROW    1U   /* inline S-value shares label row band */
+/* S-meter ruler (ST7789 24-row MTR zone):
+ *   rows  1– 8: scale labels + inline S-value (Font5x8)
+ *   rows 10–11: major ticks (2 px), row 11: minor ticks (1 px)
+ *   row  12:    top rail (1-px horizontal line)
+ *   rows 14–15: 2-px continuous signal line (SM_LINE_R0, SM_LINE_H)
+ *   row  18:    bottom rail; rows 19+: TX meter / unused          */
 
 #else
 #  error "Unknown LCD_PANEL in sdr_ui.h — check lcd_panel_config.h"
@@ -215,16 +203,20 @@ extern "C" {
 /* ── Zoom levels: 0=±24k  1=±18k  2=±12k  3=±6k  4=±3k ─────────────────── */
 #define SPEC_ZOOM_COUNT  5U
 
-/* ── S-meter bargraph geometry (shared, fits both MTR widths) ────────────── *
- *  SM_UNIT_W  : pixel pitch per segment (14 px)
- *  SM_SEG_W   : lit pixel width per segment (10 px); gap = 4 px
- *  SM_RULER_W : total bar span (12 × 14 = 168 px) — fits in MTR_W for both panels
+/* ── S-meter ruler geometry (shared, fits both MTR widths) ──────────────── *
+ *  SM_UNIT_W  : tick pitch (18 px); 12 × 18 = 216 px ruler
+ *  SM_RULER_W : derived — total ruler span in pixels
+ *  SM_START_X : left margin before first tick
+ *
+ *  Fit check (tightest panel: ST7789 MTR_W=240):
+ *    ruler_end = SM_START_X + SM_RULER_W = 218
+ *    val_x     = ruler_end + 4 = 222
+ *    max label "+40" = 3 × 6 px = 18 px → ends at 240 = MTR_W  ✓
  * ─────────────────────────────────────────────────────────────────────────── */
 #define SM_BARS      12U
-#define SM_UNIT_W    14U
-#define SM_SEG_W     10U
-#define SM_START_X    4U
-#define SM_RULER_W   (SM_BARS * SM_UNIT_W)  /* 168 px */
+#define SM_UNIT_W    18U
+#define SM_START_X    2U
+#define SM_RULER_W   (SM_BARS * SM_UNIT_W)   /* 216 px */
 
 /* ── Legacy aliases (used by menu.c / sdr_scan.c) ──── */
 #define ZONE_SPEC_Y   SPEC_Y
@@ -250,7 +242,7 @@ extern "C" {
 #define UI_VFO_BG         0x0000U
 #define UI_MTR_BG         0x0000U
 #define UI_BORDER         0x18C6U
-#define UI_DIVIDER        0x10A2U
+#define UI_DIVIDER        0x4208U   /* zone dividers & minor ticks — dark gray  */
 
 #define UI_FREQ_MHZ       0x07FFU  /* menu edit-mode highlight */
 #define UI_FREQ_KHZ       0x3FE0U  /* BW/step sidebar values  */
@@ -268,16 +260,17 @@ extern "C" {
 #define UI_S7_9           0xFFE0U
 #define UI_S9P            0xF800U
 #define UI_SMETER_BG      0x1082U
-#define UI_SMETER_TICK    0x5AEBU
+#define UI_SMETER_TICK    0xC618U   /* scale labels, ticks, rails — bright gray  */
+#define UI_SMETER_ACT     0x06C0U   /* active signal line — RF green (≈219/255 G) */
 
 #define UI_STATUS_LBL     0x3433U   /* dimmed: subdues sidebar labels vs. values */
 #define UI_STATUS_VAL     0xFFFFU
 #define UI_STATUS_ON      0x07E0U
 #define UI_STATUS_OFF     0xF800U
 
-#define UI_TX_BG          0xF800U   /* TX = red                    */
+#define UI_TX_BG          0xF800U   /* TX = red                      */
 #define UI_TX_FG          0xFFFFU
-#define UI_RX_BG          0x0460U   /* RX = muted green (low visual weight) */
+#define UI_RX_BG          0x07E0U   /* RX = pure green (matches TX visual weight) */
 #define UI_RX_FG          0xFFFFU
 
 #define UI_SPEC_BG        0x0843U

@@ -1020,6 +1020,22 @@ static void MX_FMC_Init(void)
   }
 
   /* USER CODE BEGIN FMC_Init 2 */
+  /* Apply hardware-profile FMC timing (HW_FMC_* from hw_config_active.h).
+   * CubeMX regenerates the literal values above; this second HAL_SRAM_Init
+   * call overrides them with the profile values before the LCD bus is used.
+   * Survives CubeMX regeneration. */
+  {
+    FMC_NORSRAM_TimingTypeDef hw_tim = {0};
+    hw_tim.AddressSetupTime      = HW_FMC_ADDR_SETUP;
+    hw_tim.AddressHoldTime       = HW_FMC_ADDR_HOLD;
+    hw_tim.DataSetupTime         = HW_FMC_DATA_SETUP;
+    hw_tim.BusTurnAroundDuration = HW_FMC_BUS_TURN;
+    hw_tim.CLKDivision           = HW_FMC_CLK_DIV;
+    hw_tim.DataLatency           = HW_FMC_DATA_LATENCY;
+    hw_tim.AccessMode            = FMC_ACCESS_MODE_A;
+    HAL_SRAM_Init(&hsram1, &hw_tim, NULL);
+  }
+
   /* Install MPU Region 1 (FMC LCD space, Strongly-Ordered) immediately after
    * the FMC peripheral is configured. Without this region the D-Cache can
    * corrupt 8080-mode writes even when FMC timing is correct.

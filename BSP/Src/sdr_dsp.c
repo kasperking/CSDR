@@ -9,7 +9,7 @@
   *   - FIR   : Lowpass filter, Hann-windowed sinc, circular buffer, 64 taps
   *   - IIR   : DC blocker  H(z)=(1-z^-1)/(1-0.995*z^-1)
   *   - AGC   : Peak-hold + hang AGC, 1ms attack; slow=500ms hang/1.5s decay, fast=100ms hang/300ms decay
-  *   - FFT   : Radix-2 DIT, N=256, Hann window
+  *   - FFT   : Radix-2 DIT, N=512, Hann window
   *   - DEMOD : AM, FM (atan2 differentiator), USB, LSB, CW (BFO 700Hz)
   *
   *  RX pipeline per sample:
@@ -74,12 +74,13 @@ static const arm_cfft_instance_f32 *s_cfft_inst;
 static float   s_nco_sin_lut[NCO_LUT_SIZE];
 static uint8_t s_nco_lut_init = 0U;
 
-/* Precomputed FFT twiddle factors for N=DSP_FFT_SIZE=256.
- * W_N^k = exp(-j2πk/N): cos(-2πk/256) and sin(-2πk/256) for k=0..127.
+/* Precomputed FFT twiddle factors for N=DSP_FFT_SIZE.
+ * W_N^k = exp(-j2πk/N): cos(-2πk/N) and sin(-2πk/N) for k=0..N/2-1.
  * Built once in DSP_Init; eliminates repeated cosf/sinf inside the FFT loop. */
 static float   s_fft_tw_cos[DSP_FFT_SIZE / 2U];
 static float   s_fft_tw_sin[DSP_FFT_SIZE / 2U];
 static uint8_t s_fft_tw_init = 0U;
+
 /* USER CODE END PV */
 
 /* USER CODE BEGIN PFP */
@@ -112,9 +113,13 @@ static void bit_reverse(Complex_f *buf, uint16_t n)
 static void FFT_Precomp(Complex_f *buf, uint16_t n)
 {
 #ifdef SDR_USE_CMSIS_FFT
-  (void)n;
-  /* Forward FFT, in-place, with internal bit-reversal.
-   * s_cfft_inst points to arm_cfft_sR_f32_len256 (N=256, set in DSP_Init). */
+  /* twiddleCoef_N[] stores e^{+j2πk/N} (positive exponent, verified: k=1 Im > 0).
+   * arm_cfft_f32 forward (ifftFlag=0) therefore computes X[k]=Σx[n]·e^{+j2πkn/N}
+   * (IDFT convention), which places a +f₀ tone at bin N−f₀ → mirrored spectrum.
+   * Pre-conjugating the input (negate all Im) makes the butterfly compute the
+   * standard DFT X[k]=Σx[n]·e^{−j2πkn/N}.  Power |X[k]|² is unchanged by
+   * conjugation, so mag_db[] is unaffected except the mirror is corrected. */
+  for (uint16_t i = 0U; i < (uint16_t)n; i++) buf[i].im = -buf[i].im;
   arm_cfft_f32(s_cfft_inst, (float32_t *)buf, 0U /*forward*/, 1U /*bitReverse*/);
 #else
   bit_reverse(buf, n);
@@ -261,6 +266,54 @@ void AGC_Init(AGC_t *agc, uint32_t sample_rate)
   /* USER CODE END AGC_Init_0 */
 }
 
+/* ============================================================
+ *  Noise Blanker
+ *
+ *  Configure the HF impulse noise blanker.  Safe to call from the main loop
+ *  while DSP_Process() is not running (both share the same CSDR_Loop context).
+ *
+ *  level 0-100 controls threshold aggressiveness:
+ *    0  → ratio=32 amplitude (~30 dB above noise floor), only ADC-saturating spikes
+ *    50 → ratio=18           (~25 dB), typical PSU / ignition noise   [default]
+ *   100 → ratio=4            (~12 dB), aggressive – may false-trigger on strong SSB
+ *
+ *  blank_width: 2 samples at low levels, 6 at max (~42-125 µs at 48 kHz).
+ *  FIR LPF after the blank point smooths the zeroing transient to audio BW.
+ *
+ *  On first enable, floor_sq is seeded from agc.level² so the threshold
+ *  starts conservatively high and descends to the real noise floor over ~200 ms.
+ * ============================================================ */
+void DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level)
+{
+  if (level > 100U) { level = 100U; }
+
+  /* Amplitude ratio: trigger when instantaneous IQ magnitude exceeds
+   * ratio × estimated noise floor.  Precomputed as ratio² to avoid sqrtf
+   * in the per-sample hot path.  Linear interpolation in R gives a
+   * perceptually even response across the level knob. */
+  float r = 32.0f - (float)level * 0.28f;  /* 32.0 at 0, 4.0 at 100 */
+  if (r < 2.0f) { r = 2.0f; }
+  dsp->nb.threshold_ratio_sq = r * r;
+
+  /* Blanking window width in samples (precomputed, not per-sample) */
+  uint8_t w = (uint8_t)(2U + (uint32_t)level * 4U / 100U);
+  dsp->nb.blank_width = (w > 6U) ? 6U : w;
+
+  if (enabled && !dsp->nb.enabled) {
+    /* Seed floor_sq from agc.level (demodulated signal envelope proxy) so the
+     * initial threshold is well above the current signal.  This prevents false
+     * blanking during the ~200 ms IIR settling period after enable. */
+    float a = dsp->agc.level;
+    dsp->nb.floor_sq  = (a > 0.0f) ? (a * a) : 1e-6f;
+    dsp->nb.blank_ctr = 0U;
+  } else if (!enabled) {
+    dsp->nb.blank_ctr = 0U;
+  }
+
+  dsp->nb.level   = level;
+  dsp->nb.enabled = enabled;
+}
+
 /* Set AGC time constants.  Call once after AGC_Init and whenever agc_fast changes. */
 void AGC_SetSpeed(AGC_t *agc, bool fast, uint32_t sample_rate)
 {
@@ -391,8 +444,11 @@ float Demod_FM(FM_Demod_t *fm, float i, float q)
   /* USER CODE END Demod_FM_0 */
 }
 
-float Demod_USB(float i, float q) { return (i + q) * 0.5f; }
-float Demod_LSB(float i, float q) { return (i - q) * 0.5f; }
+/* Both functions receive hq = Hilbert{Q} (NOT raw Q).
+ * For a USB signal  (+f): H{Q} = H{+sin} = −cos = −I → (I − (−I))×0.5 = I  ✓, LSB = 0 ✓
+ * For an LSB signal (−f): H{Q} = H{−sin} = +cos = +I → (I − (+I))×0.5 = 0  ✓, LSB = I ✓ */
+float Demod_USB(float i, float hq) { return (i - hq) * 0.5f; }
+float Demod_LSB(float i, float hq) { return (i + hq) * 0.5f; }
 
 float Demod_CW(float i, float q, uint32_t *phase_acc, uint32_t phase_inc)
 {
@@ -435,10 +491,10 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   }
 
 #ifdef SDR_USE_CMSIS_FFT
-  /* Point to the CMSIS pre-computed instance for N=256.
-   * arm_cfft_sR_f32_len256 is a const struct in arm_const_structs.c
+  /* Point to the CMSIS pre-computed instance for N=512.
+   * arm_cfft_sR_f32_len512 is a const struct in arm_const_structs.c
    * (part of CMSIS-DSP).  No dynamic initialisation needed. */
-  s_cfft_inst = &arm_cfft_sR_f32_len256;
+  s_cfft_inst = &arm_cfft_sR_f32_len512;
 #endif
 
   NCO_SetFrequency(&dsp->nco,    0, sample_rate);
@@ -470,6 +526,10 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
     dsp->fm.prev_re      = 0.0f;
     dsp->fm.prev_im      = 0.0f;
   }
+
+  Hilbert_Init(&dsp->rx_hilbert);
+  memset(dsp->rx_i_delay, 0, sizeof(dsp->rx_i_delay));
+  dsp->rx_delay_idx = 0U;
 
   Hilbert_Init(&dsp->tx.hilbert);
   memset(dsp->tx.audio_delay, 0, sizeof(dsp->tx.audio_delay));
@@ -549,6 +609,13 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   memset(dsp->fir_audio.buf, 0, sizeof(dsp->fir_audio.buf));
   dsp->fir_audio.idx = 0U;
 
+  /* Reset RX Hilbert FIR and I delay line: 31-sample startup transient is
+   * inaudible (~0.65 ms) and prevents stale data leaking across modes. */
+  memset(dsp->rx_hilbert.buf, 0, sizeof(dsp->rx_hilbert.buf));
+  dsp->rx_hilbert.idx = 0U;
+  memset(dsp->rx_i_delay, 0, sizeof(dsp->rx_i_delay));
+  dsp->rx_delay_idx   = 0U;
+
   /* Reset AGC runtime: inherited level/gain from previous mode can cause
    * an initial burst (if previous mode was loud) or silence (if quiet) */
   dsp->agc.level      = 0.0f;
@@ -607,9 +674,10 @@ void DSP_Process(DSP_State_t *dsp,
   for (uint32_t n = 0U; n < len; n++)
   {
     /* ── 1. Read: SAI RX stores 16-bit data right-justified in bits[15:0].
-     *           (STM32H7 SAI: DataSize < SlotSize → RX right-justified, TX left-justified) */
+     *           (STM32H7 SAI: DataSize < SlotSize → RX right-justified, TX left-justified)
+     *           Standard IQ convention: Q = +sin(2πft) for a signal at +f (USB side). */
     float raw_i = (float)((int16_t)(uint16_t)iq_in[n * 2U + 0U]) * DSP_INV_32767;
-    float raw_q = (float)((int16_t)(uint16_t)iq_in[n * 2U + 1U]) * DSP_INV_32767;
+    float raw_q =  (float)((int16_t)(uint16_t)iq_in[n * 2U + 1U]) * DSP_INV_32767;
 
     /* ── 2. Pre-mix DC block (ADC DC offset) */
     raw_i = IIR_DCBlock_Process(&dsp->dc_block_i, raw_i);
@@ -632,6 +700,52 @@ void DSP_Process(DSP_State_t *dsp,
      *        Identity when iq_g_inv=1.0 and iq_p=0.0 (uncalibrated default).
      *        Cost: 2 multiplies + 1 subtract per sample. */
     mix_q = (mix_q - dsp->iq_p * mix_i) * dsp->iq_g_inv;
+
+    /* ── 3d. HF Noise Blanker — impulse detection and zeroing.
+     *
+     *  Placement rationale:
+     *    • Full ±Fs/2 = ±24 kHz bandwidth here maximises impulse detectability.
+     *    • FIR LPF that follows smooths the zeroing transient to audio bandwidth.
+     *    • AGC after the blank avoids hang-time pumping from blanked samples.
+     *    • FFT receives potentially-zeroed samples; a 4/512-sample blank is ~0.8%
+     *      duty and produces negligible spectral artefact at display refresh rates.
+     *
+     *  Algorithm:
+     *    floor_sq : IIR power estimate (α=0.9999 → τ≈208 ms at 48 kHz).
+     *               Frozen during active blanking so spikes do not bias the floor.
+     *    Trigger  : I²+Q² > floor_sq × threshold_ratio_sq → start blank window.
+     *    Blank    : zero mix_i/mix_q for blank_width consecutive samples.
+     *
+     *  CPU cost: 4 FPU mul + 2 FPU add + 2 compare ≈ 0.07% at 48 kHz / 400 MHz.
+     *  Disabled by default; enable via DSP_NB_Set() + g_sdr.nb_on flag. */
+    if (dsp->nb.enabled) {
+      float nb_mag_sq = mix_i * mix_i + mix_q * mix_q;
+
+      /* Update background floor only outside blanking window */
+      if (dsp->nb.blank_ctr == 0U) {
+        dsp->nb.floor_sq = 0.9999f * dsp->nb.floor_sq
+                         + 0.0001f * nb_mag_sq;
+      }
+
+      float nb_thr = dsp->nb.floor_sq * dsp->nb.threshold_ratio_sq;
+      dsp->nb.current_threshold_sq = nb_thr;
+
+      /* Trigger: start a new blank window on the rising edge of an impulse */
+      if (dsp->nb.blank_ctr == 0U && nb_mag_sq > nb_thr) {
+        dsp->nb.blank_ctr = dsp->nb.blank_width;
+        dsp->nb.trig_count++;
+        if (nb_mag_sq > dsp->nb.peak_mag_sq) {
+          dsp->nb.peak_mag_sq = nb_mag_sq;
+        }
+      }
+
+      /* Attenuate: zero the IQ sample while the blank window is active */
+      if (dsp->nb.blank_ctr > 0U) {
+        mix_i = 0.0f;
+        mix_q = 0.0f;
+        dsp->nb.blank_ctr--;
+      }
+    }
 
     /* ── 4. FFT feed BEFORE FIR – full ±Fs/2 = ±24kHz bandscope */
     if (dsp->fft_fill < DSP_FFT_SIZE)
@@ -670,16 +784,38 @@ void DSP_Process(DSP_State_t *dsp,
      *        constant value (~AGC target²) regardless of signal strength. */
     power_acc += filt_i * filt_i + filt_q * filt_q;
 
+    /* ── 5c. Hilbert FIR on Q + matched I delay for USB/LSB phasing demod.
+     *
+     *  Demod_USB/LSB expect H{Q} (Hilbert-transformed Q) as second argument,
+     *  not raw Q.  The Hilbert FIR has group delay = HILBERT_DELAY = 31 samples;
+     *  I is delayed through a ring buffer of size (HILBERT_DELAY+1) = 32 to
+     *  keep I and H{Q} time-aligned.
+     *
+     *  Only active in USB/LSB modes to save computation.  The Hilbert FIR and
+     *  delay buffer are reset in DSP_SetMode so the first 31 startup samples
+     *  output zero (inaudible at 48 kHz). */
+    float filt_i_d = filt_i;   /* aligned I: delayed for USB/LSB, direct for others */
+    float filt_q_h = filt_q;   /* hq arg:    H{Q} for USB/LSB, raw Q for others    */
+    if (dsp->mode == MODE_USB || dsp->mode == MODE_LSB)
+    {
+      filt_q_h = Hilbert_Process(&dsp->rx_hilbert, filt_q);
+      /* Ring-buffer I delay: write current, read oldest (31 samples ago) */
+      dsp->rx_i_delay[dsp->rx_delay_idx] = filt_i;
+      uint16_t rd = (uint16_t)((dsp->rx_delay_idx + 1U) % (HILBERT_DELAY + 1U));
+      filt_i_d     = dsp->rx_i_delay[rd];
+      dsp->rx_delay_idx = rd;
+    }
+
     /* ── 6. Demodulate */
     float audio;
     switch (dsp->mode)
     {
-      case MODE_AM:  audio = Demod_AM(filt_i, filt_q);             break;
-      case MODE_FM:  audio = Demod_FM(&dsp->fm, filt_i, filt_q);   break;
-      case MODE_USB: audio = Demod_USB(filt_i, filt_q);            break;
-      case MODE_LSB: audio = Demod_LSB(filt_i, filt_q);            break;
-      case MODE_CW:  audio = Demod_CW(filt_i, filt_q, &dsp->cw_phase_acc, dsp->cw_bfo_inc);  break;
-      default:       audio = filt_i;                                 break;
+      case MODE_AM:  audio = Demod_AM(filt_i, filt_q);                          break;
+      case MODE_FM:  audio = Demod_FM(&dsp->fm, filt_i, filt_q);                break;
+      case MODE_USB: audio = Demod_USB(filt_i_d, filt_q_h);                     break;
+      case MODE_LSB: audio = Demod_LSB(filt_i_d, filt_q_h);                     break;
+      case MODE_CW:  audio = Demod_CW(filt_i, filt_q, &dsp->cw_phase_acc, dsp->cw_bfo_inc); break;
+      default:       audio = filt_i;                                              break;
     }
 
     /* ── 7. Audio LPF */

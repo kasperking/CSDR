@@ -20,7 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 /* USER CODE BEGIN Includes */
-
+#include "lcd_bus_fmc.h"   /* pulls in hw_config_active.h → HW_FMC_GPIO_SPEED */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -704,7 +704,23 @@ static void HAL_FMC_MspInit(void){
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /* USER CODE BEGIN FMC_MspInit 1 */
-
+  /* Re-apply hardware-profile GPIO drive strength (HW_FMC_GPIO_SPEED).
+   * CubeMX regenerates GPIO_SPEED_FREQ_MEDIUM above; this block overrides
+   * all three FMC pin groups with the profile value. Survives regen. */
+  {
+    GPIO_InitTypeDef gs = {0};
+    gs.Mode      = GPIO_MODE_AF_PP;
+    gs.Pull      = GPIO_NOPULL;
+    gs.Speed     = HW_FMC_GPIO_SPEED;
+    gs.Alternate = GPIO_AF12_FMC;
+    gs.Pin = GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10;
+    HAL_GPIO_Init(GPIOE, &gs);
+    gs.Pin = GPIO_PIN_11|GPIO_PIN_14|GPIO_PIN_15|GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_4|GPIO_PIN_5;
+    HAL_GPIO_Init(GPIOD, &gs);
+    gs.Alternate = GPIO_AF9_FMC;
+    gs.Pin = GPIO_PIN_7;
+    HAL_GPIO_Init(GPIOC, &gs);
+  }
   /* USER CODE END FMC_MspInit 1 */
 }
 

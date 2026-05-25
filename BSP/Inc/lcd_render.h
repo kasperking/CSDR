@@ -37,6 +37,7 @@ typedef struct {
 } Font_t;
 
 extern const Font_t Font6x8;
+extern const Font_t Font5x8;  /* compact 5×8 RF-panel label font — condensed width, full height */
 
 /* ── Line-buffer render helpers ─────────────────────── */
 void LCD_LineFill(uint16_t *ln, uint16_t x0, uint16_t w, uint16_t color);
