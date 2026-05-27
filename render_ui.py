@@ -106,7 +106,7 @@ SM_TICK_H_MIN = 2                         # minor tick height
 SM_RAIL_TOP_R = 14                        # top rail row
 SM_RAIL_BOT_R = 22                        # bottom rail row
 SM_RULER_W    = SM_BARS * SM_UNIT_W       # 216 px
-SM_LINE_H     = 2                         # signal line height in rows
+SM_LINE_H     = 4                         # signal line height in rows
 SM_LINE_R0    = (SM_RAIL_TOP_R + SM_RAIL_BOT_R + 1 - SM_LINE_H) // 2  # centred between rails
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -331,7 +331,7 @@ else:
     tmd(VFO_X + 4, by + 2, ui["mode"], STATUS_LBL)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  12. S-meter  — UHSDR-style calibrated ruler + continuous signal line
+#  12. S-meter  — UHSDR-style calibrated ruler + signal line
 # ══════════════════════════════════════════════════════════════════════════════
 rect(MTR_X, MTR_Y, MTR_W, MTR_H, fill=BG)
 
@@ -347,7 +347,7 @@ slbls   = ["S","1","3","5","7","9","20","40"]
 ruler_end = MTR_X + SM_START_X + SM_RULER_W
 val_x     = ruler_end + 4
 
-# Calibrated signal column (mirrors sm_mark_x)
+# Calibrated right edge (mirrors sm_mark_x)
 if bars <= 0:
     sig_end_x = MTR_X + SM_START_X
 elif bars >= SM_BARS:
@@ -388,7 +388,7 @@ for px in range(MTR_X + SM_START_X, min(ruler_end, MTR_X + MTR_W)):
 for px in range(MTR_X + SM_START_X, min(ruler_end, MTR_X + MTR_W)):
     d.point((px, MTR_Y + SM_RAIL_BOT_R), fill=SMETER_TICK)
 
-# ── Signal line: continuous 2-px horizontal fill from ruler left to calibrated column ──
+# ── Signal line: SM_LINE_H-px fill from ruler left to calibrated right edge ──
 for row_off in range(SM_LINE_R0, SM_LINE_R0 + SM_LINE_H):
     for px in range(MTR_X + SM_START_X, min(sig_end_x + 1, MTR_X + MTR_W)):
         d.point((px, MTR_Y + row_off), fill=SMETER_ACT)

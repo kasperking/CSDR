@@ -155,6 +155,7 @@ static void csdr_apply_tx(void);
 #define CSDR_UI_DISPLAY_RX_PERIOD_MS 100U   /* 10 fps dirty-zone + meter refresh */
 #define CSDR_UI_DISPLAY_TX_PERIOD_MS 1000U  /* 1 Hz compact TX meter refresh */
 #define CSDR_UI_TX_DIRTY_MIN_MS      1000U  /* defer knob/menu redraws while TX audio is time-critical */
+#define CSDR_UI_TX_SPEC_PERIOD_MS     200U  /* TX mic spectrum ~5 fps */
 
 
 /* ── Function key state machines ── */
@@ -193,6 +194,7 @@ static void csdr_apply_band(uint8_t band);
 static void csdr_handle_encoder(void);
 static void csdr_handle_keys(void);
 static void csdr_process_audio_pending(void);
+static void csdr_update_tx_spectrum(void);
 static void csdr_update_spectrum(void);
 static void csdr_update_waterfall(void);
 static void csdr_refresh_display(void);
@@ -527,7 +529,7 @@ void CSDR_Loop(void)
   csdr_handle_keys();
 
   /* Timed tasks */
-  static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0, t_spec=0;
+  static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0, t_spec=0, t_tx_spec=0;
   uint32_t now = HAL_GetTick();
 
   if (now - t_analog >= 100U) {
@@ -571,7 +573,16 @@ void CSDR_Loop(void)
       }
     }
   } else if (g_sdr.tx_mode) {
-    t_spec = now;
+    t_spec = now;  /* keep RX timer from firing immediately on TX→RX */
+    if (now - t_tx_spec >= CSDR_UI_TX_SPEC_PERIOD_MS) {
+      t_tx_spec = now;
+      if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
+        csdr_process_audio_pending();
+        RuntimeDiag_UiRenderBegin();
+        csdr_update_tx_spectrum();
+        RuntimeDiag_UiRenderEnd();
+      }
+    }
   }
 
   /* Waterfall: ~13 fps in RX.  Frozen in TX to avoid the 480×72 FMC push
@@ -1181,6 +1192,16 @@ static void csdr_handle_keys(void)
   }
 }
 
+static void csdr_update_tx_spectrum(void)
+{
+  if (!g_sdr.tx_mode || !g_dsp.fft_ready) return;
+  g_dsp.fft_ready = false;
+  RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_SPECTRUM);
+  SDR_UI_DrawTXSpectrum(g_dsp.fft_mag_db, DSP_FFT_SIZE,
+                        (uint8_t)g_sdr.mode, g_dsp.sample_rate);
+  RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_SPECTRUM);
+}
+
 static void csdr_update_spectrum(void)
 {
   if (g_sdr.tx_mode || !g_dsp.fft_ready || Menu_IsOpen(&g_menu)) return;
@@ -1495,6 +1516,7 @@ static void csdr_apply_tx(void)
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
   }
   SDR_UI_UpdateSMeter_SetTX(g_sdr.tx_mode);
+  SDR_UI_SetTXMode(g_sdr.tx_mode);
 }
 
 /* CAT callback — deferred: sets dirty flag, WM8731 applied by CSDR_Loop. */

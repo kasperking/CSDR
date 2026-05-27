@@ -444,9 +444,10 @@ float Demod_FM(FM_Demod_t *fm, float i, float q)
   /* USER CODE END Demod_FM_0 */
 }
 
-/* Both functions receive hq = Hilbert{Q} (NOT raw Q).
- * For a USB signal  (+f): H{Q} = H{+sin} = −cos = −I → (I − (−I))×0.5 = I  ✓, LSB = 0 ✓
- * For an LSB signal (−f): H{Q} = H{−sin} = +cos = +I → (I − (+I))×0.5 = 0  ✓, LSB = I ✓ */
+/* Both functions receive hq = Hilbert{-Q} (Q negated before Hilbert call).
+ * Hardware QSD outputs Q=-sin for +f; negation restores +sin convention.
+ * For a USB signal  (+f): H{-Q}=H{+sin}=−cos=−I → (I−(−I))×0.5 = I  ✓, LSB = 0 ✓
+ * For an LSB signal (−f): H{-Q}=H{−sin}=+cos=+I → (I−(+I))×0.5 = 0  ✓, LSB = I ✓ */
 float Demod_USB(float i, float hq) { return (i - hq) * 0.5f; }
 float Demod_LSB(float i, float hq) { return (i + hq) * 0.5f; }
 
@@ -798,7 +799,12 @@ void DSP_Process(DSP_State_t *dsp,
     float filt_q_h = filt_q;   /* hq arg:    H{Q} for USB/LSB, raw Q for others    */
     if (dsp->mode == MODE_USB || dsp->mode == MODE_LSB)
     {
-      filt_q_h = Hilbert_Process(&dsp->rx_hilbert, filt_q);
+      /* Hardware QSD produces Q = -sin for a signal at +f (USB side), i.e. the
+       * complex baseband is exp(-jωt).  FFT_Precomp negates Im to fix the
+       * mirrored spectrum display, but the demodulator works on raw filt_q.
+       * Negate Q here so the Hilbert sees +sin convention that Demod_USB/LSB
+       * expect: H{+sin}=-cos for USB, H{-sin}=+cos for LSB. */
+      filt_q_h = Hilbert_Process(&dsp->rx_hilbert, -filt_q);
       /* Ring-buffer I delay: write current, read oldest (31 samples ago) */
       dsp->rx_i_delay[dsp->rx_delay_idx] = filt_i;
       uint16_t rd = (uint16_t)((dsp->rx_delay_idx + 1U) % (HILBERT_DELAY + 1U));

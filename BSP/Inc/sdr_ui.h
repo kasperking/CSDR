@@ -261,7 +261,7 @@ extern "C" {
 #define UI_S9P            0xF800U
 #define UI_SMETER_BG      0x1082U
 #define UI_SMETER_TICK    0xC618U   /* scale labels, ticks, rails — bright gray  */
-#define UI_SMETER_ACT     0x06C0U   /* active signal line — RF green (≈219/255 G) */
+#define UI_SMETER_ACT     0x0720U   /* active signal line — RF green (≈231/255 G, classic meter) */
 
 #define UI_STATUS_LBL     0x3433U   /* dimmed: subdues sidebar labels vs. values */
 #define UI_STATUS_VAL     0xFFFFU
@@ -358,6 +358,17 @@ void SDR_UI_GetSpecSkipStats(uint32_t *skip_hits, uint32_t *draw_hits);
 /* Waterfall adaptive-skip control (called by csdr_app) */
 void SDR_UI_SetWaterfallSuppressed(bool suppressed);
 bool SDR_UI_GetWaterfallSuppressed(void);
+
+/* TX mode UI policy.
+ *   SetTXMode(true)  — no-op; SPEC+WF blanking deferred to first DrawTXSpectrum call.
+ *   SetTXMode(false) — resets blanking flag and invalidates RX spec cache on TX→RX.
+ *   DrawTXSpectrum   — compact audio-band mic spectrum in the SPEC zone (~5 fps in TX).
+ *                      fft_db : linear power after fftshift (fft_db[bins/2]=DC).
+ *                      mode   : UI mode byte (0=AM,1=FM,2=USB,3=LSB,4=CW).
+ *                      sr     : audio sample rate (e.g. 48000). */
+void SDR_UI_SetTXMode(bool tx_active);
+void SDR_UI_DrawTXSpectrum(const float *fft_db, uint16_t bins,
+                            uint8_t mode, uint32_t sr);
 
 #ifdef __cplusplus
 }

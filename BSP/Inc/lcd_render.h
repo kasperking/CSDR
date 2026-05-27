@@ -36,8 +36,16 @@ typedef struct {
   uint8_t        height;
 } Font_t;
 
-extern const Font_t Font6x8;
-extern const Font_t Font5x8;  /* compact 5×8 RF-panel label font — condensed width, full height */
+/* Wide font: uint16_t per column — supports up to 16 rows (used for Font8x10) */
+typedef struct {
+  const uint16_t *data;
+  uint8_t         width;
+  uint8_t         height;
+} Font16_t;
+
+extern const Font_t   Font6x8;
+extern const Font_t   Font5x8;   /* compact 5×8 RF-panel label font */
+extern const Font16_t Font8x10;  /* 8×10 RF label font — padded from Font6x8 glyphs */
 
 /* ── Line-buffer render helpers ─────────────────────── */
 void LCD_LineFill(uint16_t *ln, uint16_t x0, uint16_t w, uint16_t color);
@@ -45,6 +53,10 @@ void LCD_LineChar(uint16_t *ln, uint16_t x, uint16_t frow,
                   char c, const Font_t *f, uint16_t fg, uint16_t bg);
 void LCD_LineStr(uint16_t *ln, uint16_t x, uint16_t frow,
                  const char *s, const Font_t *f, uint16_t fg, uint16_t bg);
+void LCD_LineCharW(uint16_t *ln, uint16_t x, uint16_t frow,
+                   char c, const Font16_t *f, uint16_t fg, uint16_t bg);
+void LCD_LineStrW(uint16_t *ln, uint16_t x, uint16_t frow,
+                  const char *s, const Font16_t *f, uint16_t fg, uint16_t bg);
 void LCD_LineRect(uint16_t *ln, uint16_t x0, uint16_t w,
                   uint16_t row, uint16_t total_h, uint16_t border,
                   uint16_t fill, uint16_t border_color);

@@ -1,0 +1,10 @@
+{
+  "lcd_controller": "ST7796",
+  "lcd_orientation": "LANDSCAPE_BGR",
+  "fmc_bus_width": "8BIT",
+  "gpio_speed": "MEDIUM",
+  "board_type": "TEST",
+  "dma_chunk_rows": "8",
+  "hse_source": "CRYSTAL",
+  "hse_freq_hz": "25000000"
+}

@@ -1,161 +1,311 @@
-# Hardware Profiles
+# Hardware Configuration
 
-Firmware hardware configuration is selected via **hardware profiles** — small C
-headers that define all board-specific values in one place.  Switch profiles
-before building; no source files need manual editing.
+Firmware hardware options are selected before building via a configuration tool.
+No source files need manual editing when switching boards or panels.
 
 ---
 
-## Quick start
+## Quick start — interactive (recommended)
+
+```
+python tools/hw_config.py
+```
+
+A numbered menu lets you choose every hardware option.  When you confirm,
+the tool writes `BSP/Inc/hw_config_active.h` and saves your selections to
+`config/hw_config_state.json`.  Then rebuild.
+
+---
+
+## Quick start — non-interactive rebuild
+
+After running the interactive menu at least once:
+
+```
+python tools/hw_config.py --apply
+```
+
+Reads the saved state and regenerates the header without showing any menus.
+Use this after a CubeMX regeneration or clean build.
+
+---
+
+## Quick start — profile by name (scripting / CI)
 
 ```
 python tools/select_hw_profile.py hw_test_fmc
-# then rebuild in CubeIDE (Project → Build All) or via make
 ```
 
-List available profiles:
+Applies a named preset directly.  Available presets:
 
-```
-python tools/select_hw_profile.py
-```
+| Name | Description |
+|---|---|
+| `hw_test_fmc` | ST7796 landscape BGR, MEDIUM GPIO, test-board timing |
+| `hw_prod_v1` | ST7796 landscape BGR, VERY_HIGH GPIO, production timing |
+| `hw_long_fpc_debug` | ST7796 landscape BGR, MEDIUM GPIO, relaxed FMC timing |
 
 ---
 
-## What a profile controls
+## Interactive menu overview
 
-| Macro | Description | Typical range |
+```
+========================================================
+  CSDR Firmware -- Hardware Configuration
+========================================================
+  1.  LCD Controller      : ST7796
+  2.  LCD Orientation     : Landscape BGR
+  3.  FMC Bus Width       : 8-bit
+  4.  GPIO Speed          : MEDIUM
+  5.  Board Type          : Test board
+  6.  DMA Chunk Rows      : 8
+
+  Resolved:
+    LCD    : 480 x 320  (HW_LCD_PANEL = 1)
+    MADCTL : 0xE8  [MY|MX|MV|BGR  landscape, BGR filter]
+    FMC    : ADDR_SETUP=2  DATA_SETUP=10  BUS_TURN=15
+    GPIO   : GPIO_SPEED_FREQ_MEDIUM
+--------------------------------------------------------
+  7.  Load preset
+  8.  Generate config and exit
+   0.  Exit without generating
+```
+
+Select a number to change a setting, choose **Load preset** to apply a
+named hardware profile, or choose **Generate** to write the header.
+
+---
+
+## What each setting controls
+
+| Setting | Options | Effect |
 |---|---|---|
-| `HW_PROFILE_NAME` | String identifier (must match filename) | – |
-| `HW_LCD_PANEL` | Panel chip: `1` = ST7796, `2` = ST7789 | 1 or 2 |
-| `HW_LCD_MADCTL` | MADCTL byte sent to register 0x36 | `0x00`–`0xFF` |
-| `HW_FMC_ADDR_SETUP` | FMC address setup time (AHB cycles) | 0–15 |
-| `HW_FMC_ADDR_HOLD` | FMC address hold time | 1–15 |
-| `HW_FMC_DATA_SETUP` | FMC data setup time | 1–255 |
-| `HW_FMC_BUS_TURN` | FMC bus turn-around duration | 0–15 |
-| `HW_FMC_CLK_DIV` | FMC clock division | 2–16 |
-| `HW_FMC_DATA_LATENCY` | FMC data latency | 2–17 |
-| `HW_FMC_GPIO_SPEED` | FMC GPIO drive strength | `GPIO_SPEED_FREQ_LOW/MEDIUM/HIGH/VERY_HIGH` |
-| `HW_DMA_CHUNK_ROWS` | Spectrum DMA strip height (rows) | 1–64 |
+| LCD Controller | ST7796, ST7789 | Selects init sequence and MADCTL base |
+| LCD Orientation | Landscape BGR/RGB, Portrait | Sets MADCTL byte and LCD_W/LCD_H |
+| FMC Bus Width | 8-bit | Bus width (16-bit not yet supported) |
+| GPIO Speed | LOW / MEDIUM / HIGH / VERY_HIGH | FMC GPIO drive strength |
+| Board Type | Test / Production / Long FPC | FMC timing preset (AHB cycles) |
+| DMA Chunk Rows | 4 / 8 / 16 | Spectrum strip height for async DMA |
+| HSE Source | Crystal / TCXO / Bypass | Sets RCC_HSE_ON or RCC_HSE_BYPASS |
+| HSE Frequency | 24 / 25 / 26 MHz or custom | PLL input; determines SYSCLK and SAI1 |
 
-**MADCTL bit layout** (ST7796/ST7789 compatible):
-```
-  bit 7: MY   bit 6: MX   bit 5: MV   bit 4: ML
-  bit 3: BGR  bit 2: MH   bit 1: 0    bit 0: 0
+### MADCTL resolution table
 
-  0xE8 = MY|MX|MV|BGR → ST7796 landscape, BGR filter  (test/prod board)
-  0x08 =          BGR → ST7789 portrait,  BGR filter  (compact panel)
-```
+| Controller | Orientation | MADCTL | Description |
+|---|---|---|---|
+| ST7796 | Landscape BGR | `0xE8` | MY\|MX\|MV\|BGR |
+| ST7796 | Landscape RGB | `0xE0` | MY\|MX\|MV |
+| ST7796 | Portrait | `0x08` | BGR only |
+| ST7789 | Landscape BGR | `0x68` | MX\|MV\|BGR |
+| ST7789 | Landscape RGB | `0x60` | MX\|MV |
+| ST7789 | Portrait | `0x08` | BGR only |
+
+### FMC timing presets (AHB cycles at 200 MHz HCLK)
+
+| Board Type | ADDR_SETUP | DATA_SETUP | Use case |
+|---|---|---|---|
+| Test board | 2 | 10 | Development, short FPC on bench |
+| Production board | 1 | 8 | Controlled-impedance PCB traces |
+| Long FPC debug | 4 | 14 | >100 mm FPC extension cable |
+
+### HSE source and PLL resolution
+
+The tool computes integer PLL1/PLL2 dividers from the chosen HSE frequency.
+
+**Target frequencies (STM32H750, RM0433):**
+
+| Clock | Target | Constraint |
+|---|---|---|
+| SYSCLK (PLL1P) | 480 MHz exact | Must be exact integer — error = build failure |
+| SAI1 (PLL2P) | 12.288 MHz | Minimised error; typical result < 200 Hz at common HSE values |
+
+**PLL results for common HSE frequencies:**
+
+| HSE | PLL1 M/N/P | SYSCLK | PLL2 M/N/P | SAI1 | SAI error |
+|---|---|---|---|---|---|
+| 24 MHz (crystal) | 2/80/2 | 480 MHz | 5/64/25 | 12.2880 MHz | 0 Hz (exact) |
+| 25 MHz (default) | 5/192/2 | 480 MHz | 2/58/59 | 12.2881 MHz | 136 Hz |
+| 26 MHz (TCXO) | 13/480/2 | 480 MHz | 17/233/29 | 12.2880 MHz | 32 Hz |
+
+The algorithm keeps VCO_out = 960 MHz for all cases (PLLP = 2), so PLL1Q and
+PLL1R outputs are unchanged from their CubeMX defaults.
+
+**HSE source modes:**
+
+| Source | RCC mode | Notes |
+|---|---|---|
+| Crystal | `RCC_HSE_ON` | Passive oscillator, startup time ~2 ms |
+| TCXO | `RCC_HSE_BYPASS` | Active clock input on OSC_IN pin only |
+| Bypass | `RCC_HSE_BYPASS` | External square-wave signal |
+
+**What the tool patches (in addition to `hw_config_active.h`):**
+
+| File | What changes |
+|---|---|
+| `Core/Src/main.c` | `HSEState`, PLL1 M/N/P/RGE, PLL2 M/N/P/RGE |
+| `Core/Inc/stm32h7xx_hal_conf.h` | `HSE_VALUE` literal |
+| `Core/Src/system_stm32h7xx.c` | `HSE_VALUE` literal |
 
 ---
 
-## Provided profiles
+## Generated header
 
-| Profile | Panel | FMC addr/data | GPIO speed | Use case |
-|---|---|---|---|---|
-| `hw_test_fmc` | ST7796 480×320 | 2 / 10 | MEDIUM | Development, test bench |
-| `hw_prod_v1` | ST7796 480×320 | 1 / 8 | VERY_HIGH | Production PCB, short matched FPC |
-| `hw_long_fpc_debug` | ST7796 480×320 | 4 / 14 | MEDIUM | Scope probing with >100 mm FPC extension |
+`tools/hw_config.py` writes `BSP/Inc/hw_config_active.h`:
 
----
+```c
+/* hw_config_active.h -- CSDR Hardware Configuration (auto-generated)
+ * ...
+ * HSE        : 25.000 MHz  CRYSTAL
+ * SYSCLK     : 480 MHz  (PLL1 M=5 N=192 P=2)
+ * SAI1       : 12.2881 MHz  (PLL2 M=2 N=58 P=59)
+ */
 
-## How switching works
+#ifndef HW_CONFIG_ACTIVE_H
+#define HW_CONFIG_ACTIVE_H
 
-1. `select_hw_profile.py` reads the chosen profile from `config/hw_profiles/`.
-2. It validates all required macros and their value ranges.
-3. It writes `BSP/Inc/hw_config_active.h` — a thin wrapper with the active
-   `#define` values and the standard `HW_CONFIG_ACTIVE_H` include guard.
-4. The include chain picks it up automatically:
+#define HW_LCD_PANEL        1   /* ST7796 */
+#define LCD_W               480U
+#define LCD_H               320U
+
+#define HW_LCD_MADCTL       0xE8U
+
+#define HW_FMC_ADDR_SETUP   2U
+/* ... FMC timing ... */
+#define HW_FMC_GPIO_SPEED   GPIO_SPEED_FREQ_MEDIUM
+#define HW_DMA_CHUNK_ROWS   8U
+
+#define HW_HSE_FREQ_HZ      25000000UL
+#define HW_HSE_RCC_MODE     RCC_HSE_ON
+
+#define HW_PLL1_M           5U
+#define HW_PLL1_N           192U
+#define HW_PLL1_P           2U
+#define HW_PLL1_VCIRANGE    RCC_PLL1VCIRANGE_2
+
+#define HW_PLL2_M           2U
+#define HW_PLL2_N           58U
+#define HW_PLL2_P           59U
+#define HW_PLL2_VCIRANGE    RCC_PLL2VCIRANGE_3
+
+#endif /* HW_CONFIG_ACTIVE_H */
+```
+
+### How the firmware picks it up
 
 ```
 lcd_panel_config.h
-  └─ #include "hw_config_active.h"     ← generated active profile
-       defines: HW_LCD_PANEL, HW_FMC_*, HW_DMA_CHUNK_ROWS
+  └── #include "hw_config_active.h"     ← generated active config
+        defines: HW_LCD_PANEL, LCD_W, LCD_H, HW_LCD_MADCTL, HW_FMC_*, ...
 
-lcd_bus_fmc.h → lcd_panel_config.h     ← HW_LCD_MADCTL used for MADCTL write
-sdr_ui.h      → lcd_bus_fmc.h          ← HW_DMA_CHUNK_ROWS → SPEC_CHUNK_ROWS
-main.c        → lcd_bus_fmc.h          ← HW_FMC_* used in FMC timing re-init
-stm32h7xx_hal_msp.c → lcd_bus_fmc.h   ← HW_FMC_GPIO_SPEED used in GPIO re-init
+lcd_bus_fmc.h   → lcd_panel_config.h   ← HW_LCD_MADCTL used for MADCTL write
+sdr_ui.h        → lcd_bus_fmc.h        ← HW_DMA_CHUNK_ROWS → SPEC_CHUNK_ROWS
+main.c          → lcd_bus_fmc.h        ← HW_FMC_* used in FMC timing re-init
+stm32h7xx_hal_msp.c  (user-code block) ← HW_FMC_GPIO_SPEED for GPIO speed
 ```
+
+`LCD_W` and `LCD_H` are defined directly in the generated header so that
+portrait and all orientation combinations resolve correctly without any
+conditional logic in `lcd_panel_config.h`.
 
 ### CubeMX regeneration
 
-`main.c` and `stm32h7xx_hal_msp.c` contain CubeMX-generated timing/GPIO literal
-values.  The firmware applies the profile values on top via `USER CODE` blocks
-that survive regeneration:
+CubeMX regenerates literal values in `main.c` and `stm32h7xx_hal_msp.c`.
+The tool handles two categories differently:
 
-- **`USER CODE BEGIN FMC_Init 2`** (`main.c`) — calls `HAL_SRAM_Init` a second
-  time with `HW_FMC_*` macro values, overriding the CubeMX literals.
-- **`USER CODE BEGIN FMC_MspInit 1`** (`stm32h7xx_hal_msp.c`) — re-calls
-  `HAL_GPIO_Init` for all FMC pins with `HW_FMC_GPIO_SPEED`.
+**FMC timing and GPIO speed** — applied via `USER CODE` blocks that survive
+regeneration:
+- `USER CODE BEGIN FMC_Init 2` — second `HAL_SRAM_Init` with `HW_FMC_*`.
+- `USER CODE BEGIN FMC_MspInit 1` — re-initialises FMC GPIO with `HW_FMC_GPIO_SPEED`.
 
-After CubeMX regeneration, re-run `select_hw_profile.py` to confirm the active
-profile is still correct (it rewrites `hw_config_active.h` from the source
-profile), then rebuild.
+**HSE and PLL values** — CubeMX regenerates these as literals outside USER CODE
+blocks.  The tool patches them with regex directly after generation:
+- `SystemClock_Config` — `HSEState`, `PLLM/N/P/PLLRGE`.
+- `PeriphCommonClock_Config` — `PLL2M/N/P/RGE`.
+- `stm32h7xx_hal_conf.h` and `system_stm32h7xx.c` — `HSE_VALUE`.
+
+**After every CubeMX regeneration:**
+```
+python tools/hw_config.py --apply
+```
+This re-patches all files and regenerates the header in one step.
 
 ---
 
-## Creating a new profile
+## Validation
 
-1. Copy the closest existing profile:
-   ```
-   cp config/hw_profiles/hw_test_fmc.h config/hw_profiles/hw_my_board.h
-   ```
+The interactive tool rejects or warns on:
 
-2. Edit all `HW_*` values to match the new hardware.
-
-3. Set `HW_PROFILE_NAME` to match the filename stem exactly:
-   ```c
-   #define HW_PROFILE_NAME  "hw_my_board"
-   ```
-
-4. Activate and validate:
-   ```
-   python tools/select_hw_profile.py hw_my_board
-   ```
-
-5. Rebuild the firmware.
-
-### New ST7789 compact-panel profile
-
-Copy `hw_test_fmc.h`, set:
-```c
-#define HW_LCD_PANEL   2
-#define HW_LCD_MADCTL  0x08U   /* BGR portrait */
-```
-Everything else (FMC timing, DMA rows) can remain the same.
+| Condition | Severity |
+|---|---|
+| 16-bit FMC bus selected | Error — not implemented |
+| HSE outside 1–50 MHz | Error — out of STM32H7 PLL input range |
+| No integer PLL1 solution for SYSCLK = 480 MHz | Error — try 24/25/26 MHz |
+| ST7789 + landscape orientation | Warning — non-native, verify MADCTL |
+| ST7796 + portrait | Warning — UI zones designed for landscape |
+| Production board + MEDIUM/LOW GPIO | Warning — VERY_HIGH recommended |
+| Test board + VERY_HIGH GPIO | Warning — ringing risk on unmatched wiring |
+| ST7789 + production timing | Warning — untested combination |
+| SAI1 error > 1% (>122 kHz) | Warning — USB/audio drift will be significant |
 
 ---
 
-## Intended workflow
+## Standard workflow
 
 ```
- checkout / CubeMX regen
-        │
-        ▼
-python tools/select_hw_profile.py <profile>
-        │  writes BSP/Inc/hw_config_active.h
-        ▼
-Build All (CubeIDE or make)
-        │
-        ▼
-Flash & test
+  git checkout / CubeMX regen
+          │
+          ▼
+  python tools/hw_config.py       ← interactive, or
+  python tools/hw_config.py --apply   ← reuse saved state
+          │  writes BSP/Inc/hw_config_active.h
+          │  writes config/hw_config_state.json
+          ▼
+  Build All (CubeIDE  or  make)
+          │
+          ▼
+  Flash and test
 ```
 
-`BSP/Inc/hw_config_active.h` is tracked in git (default = `hw_test_fmc`).
-Commit it when you intentionally change the default profile for a branch.
+`BSP/Inc/hw_config_active.h` is tracked in git (default = hw_test_fmc values).
+`config/hw_config_state.json` is also tracked.  Commit both when you
+intentionally change the default configuration for a branch.
 
 ---
 
-## Validation rules
+## Adding a new hardware option
 
-The script rejects a profile if:
+### New option value (e.g. a new board type)
 
-- Any required macro is missing
-- `HW_PROFILE_NAME` does not match the `.h` filename stem
-- `HW_LCD_PANEL` is not `1` or `2`
-- `HW_LCD_MADCTL` is outside `0x00`–`0xFF`
-- Any FMC timing value is outside the STM32H7 RM0433 register limits
-- `HW_FMC_GPIO_SPEED` is not one of the four HAL `GPIO_SPEED_FREQ_*` constants
-- `HW_DMA_CHUNK_ROWS` is outside `1`–`64`
-- Two profile filenames differ only in case (would be ambiguous on
-  case-insensitive file systems)
+1. Add an entry to `FMC_TIMING` in `tools/hw_config.py`.
+2. Add the corresponding choice tuple to `SETTINGS["board_type"]["choices"]`.
+3. Run the tool and select the new option.
+
+### New setting category (e.g. codec type)
+
+1. Add a new key to `SETTINGS` in `tools/hw_config.py`.
+2. If it affects header output, add a `#define HW_CODEC_*` line to
+   `generate_header()`.
+3. Add validation rules to `validate()` if needed.
+4. The firmware includes `hw_config_active.h` through the existing chain —
+   no include-path changes required.
+
+### New named preset
+
+Add an entry to `PRESETS` in `tools/hw_config.py`:
+
+```python
+("hw_my_board", {
+    "label": "My custom board -- ST7789 portrait",
+    "config": {
+        "lcd_controller":  "ST7789",
+        "lcd_orientation": "PORTRAIT",
+        "fmc_bus_width":   "8BIT",
+        "gpio_speed":      "MEDIUM",
+        "board_type":      "TEST",
+        "dma_chunk_rows":  "8",
+    },
+}),
+```
+
+The preset is immediately available via **Load preset** in the interactive menu
+and via `select_hw_profile.py` if you also create a matching `.h` file in
+`config/hw_profiles/`.
