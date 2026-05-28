@@ -56,8 +56,7 @@
  * Value comes from HW_DMA_CHUNK_ROWS in the active hardware profile.
  * At 8-bit FMC (116.7 ns/byte): 8 rows × 480 px × 2 B = 7,680 B → ~896 µs.
  *
- * WF_CHUNK_ROWS is no longer used: the waterfall uses a single-row ring-slot
- * push (~112 µs total), so chunking is unnecessary for the waterfall path. */
+ * WF uses the same SPEC_CHUNK_ROWS value for its full-frame memmove push. */
 #define SPEC_CHUNK_ROWS  HW_DMA_CHUNK_ROWS
 
 /* TX compact panel geometry — centred inside the SPEC and WF zones.
@@ -2030,20 +2029,13 @@ uint8_t SDR_UI_WaterfallPrecompute(const float *fft_db, uint16_t bins)
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_WaterfallPush  (call from UI task)
  *
- *  Single-row ring push — Option B from the embedded scroll spec.
+ *  memmove scroll: shift all rows down by one, write newest at s_wf_buf[0],
+ *  then push the full WF zone in SPEC_CHUNK_ROWS strips.  Newest data always
+ *  appears at WF_Y (top); history scrolls toward WF_Y2 (bottom).
  *
- *  The ring head advances forward (0 → WF_H-1 → 0).  Each tick, exactly
- *  one new row is written into the ring slot and pushed to its fixed LCD Y
- *  coordinate.  All other rows are already resident in LCD RAM from previous
- *  pushes; the controller retains them without any CPU action.
- *
- *  LCD traffic per tick: 480 px × 1 row × 2 B = 960 B ≈ 112 µs.
- *  Previous full-frame 2-split push: 480 × 72 × 2 = 69,120 B ≈ 8.06 ms.
- *
- *  Visual result: rolling sweep waterfall — the write cursor descends one
- *  row per tick.  Rows above the cursor are the most recent history; rows
- *  below are from the previous sweep cycle.  No memmove, no full-frame copy,
- *  no multi-chunk loops, no overload-abort needed for a 112 µs push.
+ *  CPU: memmove (WF_H-1) × WF_W × 2 B ≈ 230 µs on D1 AXI.
+ *  DMA: WF_W × WF_H × 2 B = 69,120 B ≈ 8.1 ms over 8-bit FMC.
+ *  At 75 ms frame period (13 fps): ~8.3 ms / 75 ms = 11 % FMC time.
  *
  *  Skipped when s_wf_suppressed is set by adaptive load control.
  * ════════════════════════════════════════════════════════════════════════════ */
@@ -2053,23 +2045,28 @@ void SDR_UI_WaterfallPush(uint8_t buf_idx)
 
   RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_WF_SCROLL);
 
-  /* Advance ring head to next slot (wraps 71 → 0) */
-  s_wf_head = (s_wf_head >= (uint8_t)(WF_H - 1U)) ? 0U : (uint8_t)(s_wf_head + 1U);
+  /* Wait for any in-flight DMA before modifying s_wf_buf */
+  LCD_Wait();
 
-  /* Apply colour LUT and write new row into ring slot */
+  /* Shift history down; write newest row at index 0 (top of display) */
+  memmove(&s_wf_buf[1][0], &s_wf_buf[0][0],
+          (WF_H - 1U) * WF_W * sizeof(uint16_t));
   const uint8_t *src = s_wf_idx[buf_idx];
-  uint16_t      *row = s_wf_buf[s_wf_head];
+  uint16_t      *row = s_wf_buf[0];
   for (uint16_t x = 0U; x < WF_W; x++) row[x] = s_wf_lut[src[x]];
 
-  /* Async DMA push: wait for any previous waterfall row DMA, then launch new.
-   * row_us measures only the wait + DMA-start latency, not transfer time.
-   * Actual pixel transfer time is tracked in LCD_DMA_GetMaxLatencyUs(). */
-  uint16_t lcd_y = (uint16_t)(WF_Y + s_wf_head);
-  uint32_t cyc0  = DWT->CYCCNT;
-  LCD_Wait();
-  LCD_PushWindowAsync(WF_X, lcd_y,
-                      (uint16_t)(WF_X + WF_W - 1U), lcd_y,
-                      row, (uint32_t)WF_W * 2U);
+  /* Push full WF zone in SPEC_CHUNK_ROWS strips */
+  uint32_t cyc0 = DWT->CYCCNT;
+  for (uint16_t strip = 0U; strip < WF_H; strip += SPEC_CHUNK_ROWS) {
+    uint16_t rows = (uint16_t)(WF_H - strip);
+    if (rows > SPEC_CHUNK_ROWS) rows = SPEC_CHUNK_ROWS;
+    LCD_Wait();
+    LCD_PushWindowAsync(WF_X, (uint16_t)(WF_Y + strip),
+                        (uint16_t)(WF_X + WF_W - 1U),
+                        (uint16_t)(WF_Y + strip + rows - 1U),
+                        &s_wf_buf[strip][0],
+                        (uint32_t)WF_W * rows * 2U);
+  }
   uint32_t row_us = ui_cyc_to_us(DWT->CYCCNT - cyc0);
 
   s_lcd_chunk_count++;
