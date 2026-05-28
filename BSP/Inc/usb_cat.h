@@ -2,10 +2,10 @@
 /**
   ******************************************************************************
   * @file    usb_cat.h
-  * @brief   USB CAT — Kenwood TS-480 (ID020) minimal stable profile
+  * @brief   USB CAT — Kenwood TS-2000 (ID019) minimal stable profile
   *
   *  Transport : USB CDC VCP (EP1 IN/OUT, 64-byte FS bulk packets)
-  *  Protocol  : Kenwood TS-480 CAT, ASCII semicolon-terminated frames
+  *  Protocol  : Kenwood TS-2000 CAT, ASCII semicolon-terminated frames
   *  Target    : flrig / WSJT-X / Hamlib — stable polling, no unsolicited push
   *
   *  ┌─────────────────────────────────────────────────────────────────────────┐
@@ -18,7 +18,7 @@
   *  ├──────┼──────────────────────────────┼────────┼───────────────────────┤
   *  │ FA   │ VFO-A frequency              │ REAL   │ FA00007100000;        │
   *  │ FB   │ VFO-B frequency              │ REAL   │ FB00014200000;        │
-  *  │ IF   │ Status frame (38 chars)      │ REAL*  │ *P1/P5/P8/P9/P10/P12 │
+  *  │ IF   │ Status frame (37 chars)      │ REAL*  │ *P1/P5/P8/P9/P10/P12 │
   *  │ MD   │ Mode (LSB/USB/CW/FM/AM)      │ REAL   │ MD2;                  │
   *  │ TX   │ PTT on (TX1/TX0 variants)    │ REAL   │ ACK-only              │
   *  │ RX   │ PTT off                      │ REAL   │ ACK-only              │
@@ -35,14 +35,14 @@
   *  │ RU   │ RIT increment (Hz)           │ REAL   │ ACK-only              │
   *  │ RD   │ RIT decrement (Hz)           │ REAL   │ ACK-only              │
   *  │ AI   │ Auto-info level              │ REAL   │ push disabled (=0)    │
-  *  │ ID   │ Device identity              │ STUB   │ ID020;                │
+  *  │ ID   │ Device identity              │ STUB   │ ID019;                │
   *  │ PS   │ Power status                 │ STUB   │ PS1;                  │
   *  │ AG   │ Audio gain                   │ REAL   │ AG0nnn; live 0-255    │
   *  │ NR   │ Noise reduction              │ STUB   │ NR0; (fixed off)      │
   *  │ NB   │ Noise blanker                │ REAL   │ NB0;/NB1; + DSP live  │
   *  │ FW   │ Filter width                 │ REAL   │ FWnnnn; live BW       │
   *  │ SH   │ IF high-cut                  │ REAL   │ SHnn; live BW→index   │
-  *  │ SL   │ IF low-cut                   │ STUB   │ SL00; (no low-cut HW) │
+  *  │ SL   │ IF low-cut                   │ REAL   │ SLnn; live sl_hz→idx  │
   *  │ SQ   │ Squelch                      │ STUB   │ SQ0000; (fixed off)   │
   *  │ GT   │ AGC speed                    │ STUB   │ GT00; (fixed fast)    │
   *  │ PC   │ TX power                     │ STUB   │ PC050; (no HW)        │
@@ -51,7 +51,7 @@
   *  │ RL   │ NR level                     │ STUB   │ RL00; (fixed)         │
   *  │ BC   │ Beat canceller               │ STUB   │ BC0; (no HW)          │
   *  │ TS   │ Tuning step                  │ STUB   │ TS006; (fixed)        │
-  *  │ IS   │ IF shift                     │ STUB   │ IS0+0000; (fixed)     │
+  *  │ IS   │ IF shift                     │ REAL   │ IS0±nnnn; live        │
   *  │ XT   │ XIT on/off                   │ STUB   │ XT0; (fixed off)      │
   *  │ MN   │ Menu item select             │ STUB   │ MN000; (fixed)        │
   *  │ MP   │ Menu parameter               │ STUB   │ MP0000; (fixed)       │
@@ -72,10 +72,10 @@
   *  │ *    │ All other opcodes            │ ?;     │ dbg_cat_unknown_cmds++│
   *  └──────┴──────────────────────────────┴────────┴───────────────────────┘
   *
-  *  IF frame fields (* = frozen):
+  *  IF frame fields (* = frozen):  TS-2000 = 37 chars (no P15 IF-shift byte)
   *   P1 freq REAL  P2 step* P3 RIT-sign REAL  P4 RIT-Hz REAL  P5 RIT-on REAL
   *   P6 XIT*  P7 mem*  P8 TX REAL  P9 mode REAL  P10 VFO REAL
-  *   P11 scan*  P12 split REAL  P13 tone*  P14 CTCSS*  P15 shift*
+  *   P11 scan*  P12 split REAL  P13 tone*  P14 CTCSS*
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -106,6 +106,9 @@ extern "C" {
 #define CAT_MODE_FSK    6U
 #define CAT_MODE_CWR    7U
 #define CAT_MODE_FSKR   9U
+/* DATA-USB / DATA-LSB (DIGU/DIGL) — Icom-style extension codes */
+#define CAT_MODE_DIGU   0x0CU   /*!< Digital USB (WSJT-X/FT8/DATA-USB) */
+#define CAT_MODE_DIGL   0x0DU   /*!< Digital LSB (DATA-LSB)             */
 
 /* Exported types ------------------------------------------------------------*/
 
@@ -119,7 +122,8 @@ typedef struct {
   void (*set_volume)(uint8_t vol);         /*!< AG: 0-100       */
   void (*set_nr)(bool on);                 /*!< NR on/off       */
   void (*set_nb)(bool on);                 /*!< NB on/off       */
-  void (*set_bw)(uint32_t hz);             /*!< FW: Hz          */
+  void (*set_bw)(uint32_t hz);             /*!< SH: high-cut Hz */
+  void (*set_lo_cut)(uint32_t hz);         /*!< SL: low-cut Hz  */
   void (*set_agc_fast)(bool fast);         /*!< GT: fast/slow   */
   void (*set_squelch)(uint8_t sq);         /*!< SQ: 0-255       */
   void (*set_rit_hz)(int32_t hz);          /*!< RIT offset Hz   */
@@ -135,6 +139,7 @@ typedef struct {
   bool     (*get_nr)(void);
   bool     (*get_nb)(void);
   uint32_t (*get_bw)(void);
+  uint32_t (*get_lo_cut)(void);
   bool     (*get_agc_fast)(void);
   uint8_t  (*get_squelch)(void);
   int32_t  (*get_rit_hz)(void);            /*!< RIT offset Hz   */
@@ -144,9 +149,11 @@ typedef struct {
   void     (*set_vfo_b_freq)(uint32_t hz);
   void     (*set_vfo_b_mode)(uint8_t sdr_mode);
   void     (*set_vfo_b_bw)(uint32_t hz);
+  void     (*set_vfo_b_lo_cut)(uint32_t hz);
   uint32_t (*get_vfo_b_freq)(void);
   uint8_t  (*get_vfo_b_mode)(void);        /*!< returns SDR mode code   */
   uint32_t (*get_vfo_b_bw)(void);
+  uint32_t (*get_vfo_b_lo_cut)(void);
   /* Active VFO selection – triggers hardware swap when changed */
   void     (*set_active_vfo)(uint8_t vfo); /*!< 0=A, 1=B                */
   uint8_t  (*get_active_vfo)(void);
@@ -168,6 +175,7 @@ typedef struct {
   uint32_t vfo_b_freq;             /*!< VFO B stored frequency    */
   uint8_t  vfo_b_mode;             /*!< VFO B stored mode (CAT code) */
   uint32_t vfo_b_bw;               /*!< VFO B stored bandwidth Hz */
+  uint32_t vfo_b_lo_cut;           /*!< VFO B stored low-cut Hz   */
   uint8_t  active_vfo;             /*!< 0=VFO_A, 1=VFO_B (VS cmd) */
   bool     split_on;               /*!< Split: TX on VFO B        */
   bool     pa_on;                  /*!< PA preamp on/off (compatibility state) */
@@ -391,6 +399,12 @@ extern volatile uint32_t dbg_pacing_skips;
 extern volatile uint32_t dbg_frames_per_tx;
 extern volatile uint32_t dbg_multi_frame_pkts;
 extern volatile uint8_t  dbg_cat_ai_push_disable;
+/* BW command tracking — last opcode that called a set_bw callback.
+ *  ('F'<<8)|'W' = 0x4657 = FW; ('S'<<8)|'H' = 0x5348 = SH; 0 = none */
+extern volatile uint32_t dbg_last_bw_cmd;
+/* Raw CAT parameter from last BW command, before boundary clamp.
+ *  FW: 4-digit parsed value (0..65535); SH: 2-digit index (0..255). */
+extern volatile uint32_t dbg_last_bw_cat_value;
 
 /* Exported functions prototypes ---------------------------------------------*/
 

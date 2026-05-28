@@ -575,15 +575,22 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   dsp->mode        = mode;
   dsp->sample_rate = sample_rate;
 
+  /* Reset compressor when entering a voice mode from a digital mode so it
+   * re-tracks from zero rather than inheriting the settled tone level. */
+  if (mode != MODE_DIGU && mode != MODE_DIGL)
+    dsp->tx.comp_env = 0.0f;
+
   float mode_bw_hz;
   switch (mode)
   {
-    case MODE_AM:  mode_bw_hz = 6000.0f;  break;
-    case MODE_FM:  mode_bw_hz = 15000.0f; break;
+    case MODE_AM:   mode_bw_hz = 6000.0f;  break;
+    case MODE_FM:   mode_bw_hz = 15000.0f; break;
     case MODE_USB:
-    case MODE_LSB: mode_bw_hz = 3000.0f;  break;
-    case MODE_CW:  mode_bw_hz = 500.0f;   break;
-    default:       mode_bw_hz = 4000.0f;  break;
+    case MODE_LSB:
+    case MODE_DIGU:
+    case MODE_DIGL: mode_bw_hz = 3000.0f;  break;
+    case MODE_CW:   mode_bw_hz = 500.0f;   break;
+    default:        mode_bw_hz = 4000.0f;  break;
   }
   /* Never overwrite a caller-set bw_hz — only seed it on first init (bw_hz==0).
    * The caller is responsible for calling DSP_SetBW() with the desired BW after
@@ -795,9 +802,10 @@ void DSP_Process(DSP_State_t *dsp,
      *  Only active in USB/LSB modes to save computation.  The Hilbert FIR and
      *  delay buffer are reset in DSP_SetMode so the first 31 startup samples
      *  output zero (inaudible at 48 kHz). */
-    float filt_i_d = filt_i;   /* aligned I: delayed for USB/LSB, direct for others */
-    float filt_q_h = filt_q;   /* hq arg:    H{Q} for USB/LSB, raw Q for others    */
-    if (dsp->mode == MODE_USB || dsp->mode == MODE_LSB)
+    float filt_i_d = filt_i;   /* aligned I: delayed for USB/LSB/DIGU/DIGL, direct otherwise */
+    float filt_q_h = filt_q;   /* hq arg:    H{Q} for SSB modes, raw Q for others            */
+    if (dsp->mode == MODE_USB  || dsp->mode == MODE_LSB ||
+        dsp->mode == MODE_DIGU || dsp->mode == MODE_DIGL)
     {
       /* Hardware QSD produces Q = -sin for a signal at +f (USB side), i.e. the
        * complex baseband is exp(-jωt).  FFT_Precomp negates Im to fix the
@@ -816,12 +824,14 @@ void DSP_Process(DSP_State_t *dsp,
     float audio;
     switch (dsp->mode)
     {
-      case MODE_AM:  audio = Demod_AM(filt_i, filt_q);                          break;
-      case MODE_FM:  audio = Demod_FM(&dsp->fm, filt_i, filt_q);                break;
-      case MODE_USB: audio = Demod_USB(filt_i_d, filt_q_h);                     break;
-      case MODE_LSB: audio = Demod_LSB(filt_i_d, filt_q_h);                     break;
-      case MODE_CW:  audio = Demod_CW(filt_i, filt_q, &dsp->cw_phase_acc, dsp->cw_bfo_inc); break;
-      default:       audio = filt_i;                                              break;
+      case MODE_AM:   audio = Demod_AM(filt_i, filt_q);                          break;
+      case MODE_FM:   audio = Demod_FM(&dsp->fm, filt_i, filt_q);               break;
+      case MODE_USB:
+      case MODE_DIGU: audio = Demod_USB(filt_i_d, filt_q_h);                    break;
+      case MODE_LSB:
+      case MODE_DIGL: audio = Demod_LSB(filt_i_d, filt_q_h);                    break;
+      case MODE_CW:   audio = Demod_CW(filt_i, filt_q, &dsp->cw_phase_acc, dsp->cw_bfo_inc); break;
+      default:        audio = filt_i;                                             break;
     }
 
     /* ── 7. Audio LPF */
@@ -980,18 +990,21 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
      *       branches. Do NOT add another filter after the modulator. */
     float audio_lp = FIR_Process(&dsp->tx.fir_audio, audio);
 
-    /* ── 4b. TX compressor + soft limiter (prevent overdrive and splatter).
+    /* ── 4b. TX compressor + soft limiter.
      *
-     *   Stage 1 – Peak-tracking compressor (4:1 above 0.70 threshold).
-     *             Attack 1 ms / release 50 ms.  Transparent below threshold,
-     *             gently reduces gain when speech peaks exceed it.
+     *   Voice modes (USB/LSB/AM/FM/CW):
+     *     Stage 1 – Peak-tracking compressor (4:1 above 0.70 threshold).
+     *               Attack 1 ms / release 50 ms.  Transparent below threshold,
+     *               gently reduces gain when speech peaks exceed it.
+     *     Stage 2 – C1-smooth soft limiter for residual peaks.
+     *               Linear to 0.95; above that asymptotically approaches 1.0.
+     *               Formula:  y = 1 − 0.0025 / (|x| − 0.90)   for |x| > 0.95
      *
-     *   Stage 2 – C1-smooth soft limiter for residual peaks.
-     *             Linear to 0.95; above that asymptotically approaches 1.0
-     *             with continuous slope (no hard-clip distortion on the knee).
-     *             Formula:  y = 1 − 0.0025 / (|x| − 0.90)   for |x| > 0.95
-     *             Verified C1 at knee: dy/da|_{a=0.95} = 1.0 = incoming slope. */
-    {
+     *   Digital modes (DIGU/DIGL):
+     *     Both stages bypassed.  Pure linear pass — no gain riding, no
+     *     harmonic generation.  audio_gain (from digi_gain) is the only
+     *     amplitude scaling.  Preserves tone purity for WSJT-X/FT8/Tune. */
+    if (dsp->mode != MODE_DIGU && dsp->mode != MODE_DIGL) {
       float env = fabsf(audio_lp);
       if (env > dsp->tx.comp_env)
         dsp->tx.comp_env = dsp->tx.comp_attack * dsp->tx.comp_env
@@ -1019,8 +1032,11 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
     float tx_i = 0.0f, tx_q = 0.0f;
     switch (dsp->mode) {
       case MODE_USB:
-      case MODE_LSB: {
-        /* Phasing method: delay I by Hilbert group delay = (N-1)/2 samples */
+      case MODE_LSB:
+      case MODE_DIGU:
+      case MODE_DIGL: {
+        /* Phasing method: delay I by Hilbert group delay = (N-1)/2 samples.
+         * DIGU uses USB polarity (Q=+H), DIGL uses LSB polarity (Q=-H). */
         const uint16_t M = (HILBERT_TAPS - 1U) / 2U;
         dsp->tx.audio_delay[dsp->tx.delay_idx] = audio_lp;
         uint16_t ridx = (uint16_t)((dsp->tx.delay_idx + HILBERT_TAPS - M) % HILBERT_TAPS);
@@ -1028,7 +1044,7 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         dsp->tx.delay_idx = (uint16_t)((dsp->tx.delay_idx + 1U) % HILBERT_TAPS);
         float audio_h = Hilbert_Process(&dsp->tx.hilbert, audio_lp);
         tx_i = audio_d;
-        tx_q = (dsp->mode == MODE_USB) ? +audio_h : -audio_h;
+        tx_q = (dsp->mode == MODE_USB || dsp->mode == MODE_DIGU) ? +audio_h : -audio_h;
         break;
       }
       case MODE_AM:
@@ -1043,12 +1059,15 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         break;
     }
 
-    /* ── 6. FFT feed for TX spectrum display */
+    /* ── 6. FFT feed for TX spectrum display.
+     *       TX generates Q = +sin (correct convention).  FFT_Precomp negates Im
+     *       to correct for RX hardware Q = -sin; negate here so the double-
+     *       negation restores correct sign and the display is not mirrored. */
     if (dsp->fft_fill < DSP_FFT_SIZE)
     {
       float w = dsp->fft_window[dsp->fft_fill];
-      dsp->fft_buf[dsp->fft_fill].re = tx_i * w;
-      dsp->fft_buf[dsp->fft_fill].im = tx_q * w;
+      dsp->fft_buf[dsp->fft_fill].re =  tx_i * w;
+      dsp->fft_buf[dsp->fft_fill].im = -tx_q * w;
       dsp->fft_fill++;
       if (dsp->fft_fill >= DSP_FFT_SIZE)
       {

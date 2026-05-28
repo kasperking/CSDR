@@ -182,9 +182,10 @@ static struct {
 static struct {
   uint32_t bw_hz;
   uint32_t step;
-  int16_t  mic_gain;
+  int16_t  mic_gain;   /* voice gain OR digi_gain, depending on mode */
   uint8_t  att_db;
-  uint8_t  dsp_level;
+  int16_t  rit_hz;     /* passband graphic shifts with IF/RIT offset */
+  uint8_t  mode;       /* needed to re-render when DG↔voice label flips */
   bool     valid;
 } s_sbr_cache;
 
@@ -657,6 +658,7 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
                      ? UI_STATUS_OFF : UI_STATUS_VAL;
   uint16_t volt_x  = (uint16_t)(LCD_W - (uint16_t)(strlen(vstr) * Font6x8.width) - 4U);
   uint16_t txt_y   = (uint16_t)((HDR_H - Font6x8.height) / 2U);
+  const char *agc_str = ui->agc_fast ? "AGC-F" : "AGC-S";
 
   for (uint16_t row = 0; row < HDR_H; row++) {
     uint16_t *ln = s_hdr_buf + (uint32_t)row * LCD_W;
@@ -667,7 +669,8 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
     LCD_LineFill(ln, 0, LCD_W, UI_HDR_BG);
     if (row >= txt_y && row < txt_y + Font6x8.height) {
       uint16_t fr = row - txt_y;
-      LCD_LineStr(ln, volt_x, fr, vstr, &Font6x8, vcol, UI_HDR_BG);
+      LCD_LineStr(ln, 4U,     fr, agc_str, &Font6x8, UI_STATUS_LBL, UI_HDR_BG);
+      LCD_LineStr(ln, volt_x, fr, vstr,    &Font6x8, vcol,          UI_HDR_BG);
     }
   }
 
@@ -709,8 +712,8 @@ static void draw_compact_status(const SDR_UI_State_t *ui)
   s_sbr_cache.step       = ui->step;
   s_sbr_cache.valid      = true;
 
-  static const char *const mode_s[] = {"AM","FM","USB","LSB","CW"};
-  const char *mode_str = (ui->mode < 5U) ? mode_s[ui->mode] : "---";
+  static const char *const mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
+  const char *mode_str = (ui->mode < 7U) ? mode_s[ui->mode] : "---";
 
   char vol_str[8]; snprintf(vol_str, sizeof(vol_str), "VOL:%u",  ui->volume);
   char sql_str[8]; snprintf(sql_str, sizeof(sql_str), "SQL:%u",  ui->squelch);
@@ -755,7 +758,7 @@ static void draw_compact_status(const SDR_UI_State_t *ui)
       uint16_t r = (uint16_t)(row0_y + fr);
       if (r < STS_H) {
         uint16_t *ln = s_sts_buf + (uint32_t)r * LCD_W;
-        uint16_t col_mode = (ui->mode < 5U) ? UI_STATUS_VAL : UI_STATUS_LBL;
+        uint16_t col_mode = (ui->mode < 7U) ? UI_STATUS_VAL : UI_STATUS_LBL;
         LCD_LineStrW(ln, 4U,  fr, mode_str, &Font8x10, col_mode, UI_BG);
         /* vol and sql left-placed with gap after mode field */
         uint16_t vx = (uint16_t)(4U + 6U * Font8x10.width);  /* after "USB " gap */
@@ -821,11 +824,12 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
   s_sbl_cache.active_vfo = ui->active_vfo;
   s_sbl_cache.valid      = true;
 
-  static const char *const mode_s[]  = {"AM","FM","USB","LSB","CW"};
-  static const uint16_t    mode_bg[] = {UI_MODE_AM,UI_MODE_FM,UI_MODE_USB,
-                                         UI_MODE_LSB,UI_MODE_CW};
-  const char *mode_str = (ui->mode < 5U) ? mode_s[ui->mode]  : "---";
-  uint16_t    mbg      = (ui->mode < 5U) ? mode_bg[ui->mode] : UI_STATUS_LBL;
+  static const char *const mode_s[]  = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
+  static const uint16_t    mode_bg[] = {UI_MODE_AM, UI_MODE_FM,  UI_MODE_USB,
+                                        UI_MODE_LSB, UI_MODE_CW, UI_MODE_DIGU,
+                                        UI_MODE_DIGL};
+  const char *mode_str = (ui->mode < 7U) ? mode_s[ui->mode]  : "---";
+  uint16_t    mbg      = (ui->mode < 7U) ? mode_bg[ui->mode] : UI_STATUS_LBL;
 
   char vol_str[6]; snprintf(vol_str, sizeof(vol_str), "%u", ui->volume);
   char sql_str[6]; snprintf(sql_str, sizeof(sql_str), "%u", ui->squelch);
@@ -916,20 +920,112 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
                  s_sbl_buf, (uint32_t)SBL_W * SBL_H);
 }
 
+/* ── sbr_draw_passband ──────────────────────────────────────────────────────
+ * Xiegu-style passband trapezoid in the lower portion of the right sidebar.
+ * Draws BW label (Font5x8, centred) above a trapezoidal passband shape.
+ * y0/h: zone origin and height in s_sbr_buf.
+ * bw_hz: passband width; rit_hz: IF/RIT offset shifts the center left/right. */
+#if LCD_PANEL == LCD_PANEL_ST7796
+static void sbr_draw_passband(uint16_t y0, uint16_t h,
+                              uint32_t bw_hz, int16_t rit_hz)
+{
+  char bw_str[10];
+  if (bw_hz >= 10000U)
+    snprintf(bw_str, sizeof(bw_str), "%luk", (unsigned long)(bw_hz / 1000U));
+  else if (bw_hz >= 1000U)
+    snprintf(bw_str, sizeof(bw_str), "%lu.%luk",
+             (unsigned long)(bw_hz / 1000U),
+             (unsigned long)((bw_hz % 1000U) / 100U));
+  else
+    snprintf(bw_str, sizeof(bw_str), "%luHz", (unsigned long)bw_hz);
+
+  /* Layout: [2px pad][Font5x8 label][2px gap][shape fills rest] */
+  const uint16_t lbl_off = 2U;
+  const uint16_t shp_off = (uint16_t)(lbl_off + Font5x8.height + 2U);
+  const uint16_t shp_h   = (h > shp_off + 4U) ? (uint16_t)(h - shp_off - 1U) : 4U;
+
+  /* Passband half-width in pixels (BW 0–8 kHz maps to 0–36 px) */
+  const uint32_t bw_max = 8000U;
+  const uint16_t hw_max = 72U;
+  uint32_t bw_c = (bw_hz > bw_max) ? bw_max : bw_hz;
+  uint16_t hw   = (uint16_t)((uint32_t)bw_c * hw_max / bw_max);
+  if (hw < 3U) hw = 3U;
+
+  /* RIT/IF shift → center offset, saturated at ±12 px */
+  int16_t shift = 0;
+  if (bw_hz > 200U) {
+    int32_t s = (int32_t)rit_hz * 12 / ((int32_t)(bw_hz / 2U) + 1);
+    shift = (s > 12) ? 12 : (s < -12) ? -12 : (int16_t)s;
+  }
+  int16_t cx = (int16_t)(SBR_W / 2U) + shift;
+
+  /* Trapezoid: top = passband width, bottom flares by slope px each side */
+  const int16_t slope = (hw > 4U) ? 3 : 1;
+  int16_t xl_t = cx - (int16_t)hw;
+  int16_t xr_t = cx + (int16_t)hw;
+  int16_t xl_b = xl_t - slope;
+  int16_t xr_b = xr_t + slope;
+
+  uint16_t pw = SWAP16(UI_SPEC_BW);      /* cyan outline        */
+  uint16_t cm = SWAP16(UI_STATUS_VAL);   /* white center marker */
+  uint16_t fi = SWAP16(UI_SMETER_BG);    /* dim interior fill   */
+
+  for (uint16_t r = 0U; r < h; r++) {
+    uint16_t y = (uint16_t)(y0 + r);
+    if (y >= SBR_H) break;
+    uint16_t *ln = s_sbr_buf + (uint32_t)y * SBR_W;
+
+    if (r >= lbl_off && r < (uint16_t)(lbl_off + Font5x8.height)) {
+      uint16_t fr = (uint16_t)(r - lbl_off);
+      uint16_t lw = (uint16_t)(strlen(bw_str) * Font5x8.width);
+      uint16_t lx = (lw < SBR_W) ? (uint16_t)((SBR_W - lw) / 2U) : 0U;
+      LCD_LineStr(ln, lx, fr, bw_str, &Font5x8, UI_FREQ_KHZ, UI_SBR_BG);
+    }
+
+    if (r < shp_off) continue;
+    uint16_t sr = (uint16_t)(r - shp_off);
+    if (sr >= shp_h) continue;
+
+    /* Interpolate left/right edges linearly from top to bottom */
+    int16_t denom = (int16_t)(shp_h > 1U ? shp_h - 1U : 1U);
+    int16_t xl_e  = xl_t + (int16_t)((int32_t)(xl_b - xl_t) * (int32_t)sr / denom);
+    int16_t xr_e  = xr_t + (int16_t)((int32_t)(xr_b - xr_t) * (int32_t)sr / denom);
+    if (xl_e < 0)                 xl_e = 0;
+    if (xr_e < 0)                 xr_e = 0;
+    if (xl_e >= (int16_t)SBR_W)  xl_e = (int16_t)(SBR_W - 1U);
+    if (xr_e >= (int16_t)SBR_W)  xr_e = (int16_t)(SBR_W - 1U);
+
+    if (sr == 0U || sr == (uint16_t)(shp_h - 1U)) {
+      /* Top and bottom rails: full horizontal line */
+      for (int16_t x = xl_e; x <= xr_e; x++)
+        ln[(uint16_t)x] = (x == cx) ? cm : pw;
+    } else {
+      /* Interior: left/right outline pixels + dim fill + center marker */
+      ln[(uint16_t)xl_e] = pw;
+      ln[(uint16_t)xr_e] = pw;
+      for (int16_t x = (int16_t)(xl_e + 1); x < xr_e; x++) {
+        if (x < 0 || x >= (int16_t)SBR_W) continue;
+        ln[(uint16_t)x] = (x == cx) ? cm : fi;
+      }
+    }
+  }
+}
+#endif /* LCD_PANEL_ST7796 */
+
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawSidebarRight  (SBR_W=80 × SBR_H=96)
  *
- *  3 paired rows — more compact than the old 5-row stack:
+ *  2 paired text rows + Xiegu-style passband graphic below:
  *    Row 0: BW  <val>   |  ST  <val>
  *    Row 1: MIC <val>   |  AT  <val>
- *    Row 2: DSP <val>
+ *    Passband zone (rows 61-95): BW label + trapezoid indicator
  *
  *  Column geometry (left 36 px, right 35 px, 6 px gutter):
  *    Left  col: label at x=2,  value right-aligned to x=38
  *    Right col: label at x=44, value right-aligned to x=79
  *
- *  row_h=26: 3×26=78 px, 9 px top pad — centred in SBR_H=96 px.
- *  Thin separator between rows (1 px at top of rows 1 and 2).
+ *  row_h=26: 2×26=52 px + 9 px top pad = 61 px text area.
+ *  Thin separator between rows (1 px at top of row 1).
  *  Cache guard: skip buffer rebuild + push when values unchanged.
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
@@ -945,13 +1041,15 @@ void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
       && s_sbr_cache.step     == ui->step
       && s_sbr_cache.mic_gain == ui->mic_gain
       && s_sbr_cache.att_db   == ui->att_db
-      && s_sbr_cache.dsp_level== ui->dsp_level) return;
+      && s_sbr_cache.rit_hz   == ui->rit_hz
+      && s_sbr_cache.mode     == ui->mode) return;
 
   s_sbr_cache.bw_hz    = ui->bw_hz;
   s_sbr_cache.step     = ui->step;
   s_sbr_cache.mic_gain = ui->mic_gain;
   s_sbr_cache.att_db   = ui->att_db;
-  s_sbr_cache.dsp_level= ui->dsp_level;
+  s_sbr_cache.rit_hz   = ui->rit_hz;
+  s_sbr_cache.mode     = ui->mode;
   s_sbr_cache.valid    = true;
 
   /* Format strings */
@@ -974,26 +1072,25 @@ void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
   else if (st >=     10U) snprintf(step_str, sizeof(step_str), "10");
   else                    snprintf(step_str, sizeof(step_str), "1");
 
-  char mic_str[8]; snprintf(mic_str, sizeof(mic_str), "%d",  (int)ui->mic_gain);
-  char dsp_str[6]; snprintf(dsp_str, sizeof(dsp_str), "%u",  ui->dsp_level);
+  /* Row 1 left: MIC for voice modes, DG for digital modes.
+   * csdr_app passes digi_gain (not mic_gain) in ui->mic_gain when in DIGU/DIGL. */
+  bool digi_mode = (ui->mode == (uint8_t)5U || ui->mode == (uint8_t)6U); /* DIGU=5, DIGL=6 */
+  char mic_str[8]; snprintf(mic_str, sizeof(mic_str), "%d", (int)ui->mic_gain);
+  const char *mic_lbl = digi_mode ? "DG" : "MIC";
+  uint16_t    mic_vc  = digi_mode ? UI_STATUS_ON : UI_STATUS_VAL;
+
   char att_str[8]; snprintf(att_str, sizeof(att_str), "%udB", ui->att_db);
 
   buf_fill(s_sbr_buf, (uint32_t)SBR_H * SBR_W, UI_SBR_BG);
 
-  /*
-   * Paired row layout:
-   *   rows[3][2] — { {left_lbl,left_val,left_vc}, {right_lbl,right_val,right_vc} }
-   *   right_lbl==NULL → single item spanning full row (row 2, DSP only)
-   */
-  struct { const char *lbl; const char *val; uint16_t vc; } rows[3][2] = {
-    { { "BW",  bw_str,   UI_FREQ_KHZ   }, { "ST",  step_str, UI_FREQ_KHZ   } },
-    { { "MIC", mic_str,  UI_STATUS_VAL }, { "AT",  att_str,  UI_STATUS_VAL } },
-    { { "DSP", dsp_str,  UI_STATUS_VAL }, { NULL,  NULL,     0U            } },
+  /* 2 paired text rows; passband graphic fills the space below */
+  struct { const char *lbl; const char *val; uint16_t vc; } rows[2][2] = {
+    { { "BW",  bw_str,  UI_FREQ_KHZ }, { "ST",  step_str, UI_FREQ_KHZ   } },
+    { { mic_lbl, mic_str, mic_vc    }, { "AT",  att_str,  UI_STATUS_VAL } },
   };
 
   const uint16_t row_h   = 26U;
-  const uint16_t top_pad =  9U;  /* (SBR_H - 3*row_h) / 2 = (96-78)/2 = 9 — centred */
-  /* text vertically centred within row_h: (26-8)/2=9 px from row top */
+  const uint16_t top_pad =  9U;
   const uint16_t txt_off =  9U;
 
   /* Column geometry — left col 36 px, right col 35 px, 6 px gutter */
@@ -1002,7 +1099,7 @@ void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
   const uint16_t R_LBL_X = 44U;  /* right col label (gutter: 44-38=6 px) */
   const uint16_t R_VAL_X = 79U;  /* right col val right-edge */
 
-  for (uint8_t i = 0; i < 3U; i++) {
+  for (uint8_t i = 0; i < 2U; i++) {
     uint16_t y0 = (uint16_t)(top_pad + (uint32_t)i * row_h);
 
     /* Thin separator above rows 1 and 2 */
@@ -1044,6 +1141,13 @@ void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
     }
   }
 
+  /* Passband graphic fills the zone below the 2 text rows */
+  {
+    uint16_t pb_y0 = (uint16_t)(top_pad + 2U * row_h);
+    uint16_t pb_h  = (uint16_t)(SBR_H - pb_y0);
+    sbr_draw_passband(pb_y0, pb_h, ui->bw_hz, ui->rit_hz);
+  }
+
   LCD_PushWindow(SBR_X, SBR_Y,
                  (uint16_t)(SBR_X + SBR_W - 1U), SBR_Y2 - 1U,
                  s_sbr_buf, (uint32_t)SBR_W * SBR_H);
@@ -1057,8 +1161,8 @@ static void vfo_push_x_band(uint16_t x_lo, uint16_t x_hi,
  *  SDR_UI_DrawVFO  (VFO_W × VFO_H)
  *
  *  ST7796 (64 px): 7-segment digits rows 2..25, 15-px gap, thin divider row 33,
- *  secondary VFO sub-line rows 41..48 (Font5x8).  VFO_SPLIT=28.
- *  ST7789 (48 px): 7-segment digits rows 2..25, 12-px gap, sub-line rows 38..45 (Font5x8).
+ *  secondary VFO sub-line rows 41..50 (Font8x10).  VFO_SPLIT=28.
+ *  ST7789 (48 px): 7-segment digits rows 2..25, 12-px gap, sub-line rows 38..47 (Font8x10).
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 {
@@ -1086,8 +1190,8 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   }
 
   /* RX = green (subtle), TX = red — per UI spec */
-  static const char *const vfo_mode_s[] = {"AM","FM","USB","LSB","CW"};
-  const char *vfo_mode_str = (ui->mode < 5U) ? vfo_mode_s[ui->mode] : "---";
+  static const char *const vfo_mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
+  const char *vfo_mode_str = (ui->mode < 7U) ? vfo_mode_s[ui->mode] : "---";
   const char *rt_str       = ui->tx_mode ? "TX" : "RX";
   uint16_t    rt_color     = ui->tx_mode ? UI_TX_BG : UI_RX_BG;
 
@@ -1096,9 +1200,9 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   const uint16_t freq_top = 2U;
   const uint16_t vfoi_y   = 1U;
 
-  /* Gap between primary and secondary VFO.  Secondary uses Font5x8 (5×8 px). */
+  /* Gap between primary and secondary VFO.  Secondary uses Font8x10 (8×10 px). */
 #if LCD_PANEL == LCD_PANEL_ST7789
-  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 12U);  /* row 38: 12-px gap */
+  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 12U);  /* row 38: 12-px gap, Font8x10 fills rows 38-47 */
   const uint16_t div_y  = 0xFFFFU;  /* no room for divider on compact panel */
 #else
   const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 15U);  /* row 41: 15-px gap */
@@ -1136,11 +1240,11 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 
     /* Sub-line: secondary VFO freq | RIT offset | mode label */
     if (ui->freq_b_hz > 0U) {
-      if (row >= sub_y && (row - sub_y) < Font5x8.height)
-        LCD_LineStr(ln, 4U, row - sub_y, sub_str, &Font5x8, UI_FREQ_SUB, UI_VFO_BG);
+      if (row >= sub_y && (row - sub_y) < Font8x10.height)
+        LCD_LineStrW(ln, 4U, row - sub_y, sub_str, &Font8x10, UI_FREQ_SUB, UI_VFO_BG);
     } else if (ui->rit_hz != 0) {
-      if (row >= sub_y && (row - sub_y) < Font5x8.height)
-        LCD_LineStr(ln, 4U, row - sub_y, sub_str, &Font5x8, UI_FREQ_SUB, UI_VFO_BG);
+      if (row >= sub_y && (row - sub_y) < Font8x10.height)
+        LCD_LineStrW(ln, 4U, row - sub_y, sub_str, &Font8x10, UI_FREQ_SUB, UI_VFO_BG);
     } else {
       /* Mode label vertically aligned with badge */
       if (row >= rt_by && (row - rt_by) < rt_bad_h) {
@@ -1514,7 +1618,11 @@ void SDR_UI_UpdateSMeter(float signal_db)
  *  Marker: sm_mark_x(alc_b) — no fill bar.
  *  Value text: one Font5x8 line (8 px) below bottom rail: "ALC XX%  SWR X.X"
  * ════════════════════════════════════════════════════════════════════════════ */
-#define TX_VAL_R0  ((uint16_t)(SM_RAIL_BOT_R + 1U))   /* value text row */
+#if LCD_PANEL == LCD_PANEL_ST7796
+#  define TX_VAL_R0  ((uint16_t)(SM_RAIL_BOT_R + 3U))   /* 2-row gap on ST7796 */
+#else
+#  define TX_VAL_R0  ((uint16_t)(SM_RAIL_BOT_R + 2U))   /* 1-row gap on ST7789 */
+#endif
 
 static void tx_meter_render_rows(uint16_t row0, uint16_t row1,
                                  int32_t alc_b, int32_t alc_pct,
@@ -1590,9 +1698,11 @@ static void tx_meter_render_rows(uint16_t row0, uint16_t row1,
         ln[x] = tick_c;
     }
 
-    /* ── ALC hairline cursor: 1-px column, top rail through bottom rail ── */
-    if (row >= SM_RAIL_TOP_R && row <= SM_RAIL_BOT_R && SM_RAIL_BOT_R < MTR_H) {
-      if (ndx < MTR_W) ln[ndx] = pm;
+    /* ── ALC signal line: SM_LINE_H-px centered fill, ruler left to calibrated column ── */
+    if (row >= SM_LINE_R0 && row < (uint16_t)(SM_LINE_R0 + SM_LINE_H)) {
+      uint16_t end_x = (ndx < (uint16_t)(MTR_W - 1U)) ? ndx : (uint16_t)(MTR_W - 1U);
+      for (uint16_t px = (uint16_t)SM_START_X; px <= end_x; px++)
+        ln[px] = pm;
     }
 
     /* ── Value line: "ALC XX%   SWR X.X" below bottom rail ── */
@@ -1636,7 +1746,7 @@ void SDR_UI_UpdateTXMeters(int32_t alc_pct, int32_t swr_x10)
 
   /* Static content: label band, ticks, rails — render + push on first frame */
   if (first) {
-    uint16_t static_end = SM_RAIL_BOT_R < MTR_H ? SM_RAIL_BOT_R : (uint16_t)(MTR_H - 1U);
+    uint16_t static_end = (TX_VAL_R0 - 1U < MTR_H) ? (TX_VAL_R0 - 1U) : (uint16_t)(MTR_H - 1U);
     tx_meter_render_rows(0U, static_end, alc_b, alc_pct, swr_x10);
     tx_meter_push_rows(0U, static_end);
   }

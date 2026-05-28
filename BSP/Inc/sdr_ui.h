@@ -254,6 +254,8 @@ extern "C" {
 #define UI_MODE_USB       0xF800U
 #define UI_MODE_LSB       0xFFE0U
 #define UI_MODE_CW        0x07FFU
+#define UI_MODE_DIGU      0xFD20U  /* orange — digital USB (WSJT-X/FT8) */
+#define UI_MODE_DIGL      0xFCC0U  /* amber  — digital LSB               */
 #define UI_MODE_FG        0xFFFFU
 
 #define UI_S1_6           0x07E0U

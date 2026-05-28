@@ -45,7 +45,14 @@ extern "C" {
 
 /* ── SDR State ───────────────────────────────────────────── */
 typedef enum {
-  MODE_AM = 0, MODE_FM, MODE_USB, MODE_LSB, MODE_CW, MODE_COUNT
+  MODE_AM   = 0,
+  MODE_FM   = 1,
+  MODE_USB  = 2,   /* voice USB SSB          */
+  MODE_LSB  = 3,   /* voice LSB SSB          */
+  MODE_CW   = 4,
+  MODE_DIGU = 5,   /* digital USB (WSJT-X/FT8/DATA-USB) — linear TX path */
+  MODE_DIGL = 6,   /* digital LSB (DATA-LSB)             — linear TX path */
+  MODE_COUNT = 7
 } SDR_Mode_t;
 
 typedef enum {
@@ -59,7 +66,8 @@ typedef struct {
   uint8_t    band_idx;
   FreqStep_t step;
   int16_t    rit_hz;
-  uint32_t   bw_hz;
+  uint32_t   bw_hz;    /*!< SH high-cut edge in Hz (= DSP LPF cutoff)      */
+  uint32_t   sl_hz;    /*!< SL low-cut edge in Hz (= DSP IF shift magnitude) */
 } VFO_State_t;
 
 typedef struct {
@@ -79,7 +87,8 @@ typedef struct {
   bool        si5351_ok;
   uint8_t     att_db;
   bool        pwr_hold;
-  uint32_t    bw_hz;
+  uint32_t    bw_hz;       /*!< SH high-cut edge in Hz (= DSP LPF cutoff)        */
+  uint32_t    sl_hz;       /*!< SL low-cut edge in Hz (= DSP IF shift magnitude)  */
   int16_t     if_shift_hz;
   uint8_t     display_dirty;
   uint8_t     usb_mode;
@@ -90,7 +99,8 @@ typedef struct {
   int32_t     dc_i_offset;
   int32_t     dc_q_offset;
   int16_t     audio_gain_db;
-  int16_t     mic_gain;
+  int16_t     mic_gain;   /*!< Voice TX drive 0-100 (default 50)            */
+  int16_t     digi_gain;  /*!< DIGU/DIGL TX drive 0-100 (default 70)        */
   int16_t     smeter_offset_db;
   uint32_t    lo_offset_hz;
   /* Dual VFO */

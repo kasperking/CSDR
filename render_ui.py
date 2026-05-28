@@ -137,11 +137,13 @@ SPEC_BW     = c(G('UI_SPEC_BW',     0x07FF))
 SPEC_TRACE  = STATUS_ON   # green
 
 MODE_COLORS = {
-    "AM":  c(G('UI_MODE_AM',  0xFFFF)),
-    "FM":  c(G('UI_MODE_FM',  0x07E0)),
-    "USB": c(G('UI_MODE_USB', 0xF800)),
-    "LSB": c(G('UI_MODE_LSB', 0xFFE0)),
-    "CW":  c(G('UI_MODE_CW',  0x07FF)),
+    "AM":   c(G('UI_MODE_AM',   0xFFFF)),
+    "FM":   c(G('UI_MODE_FM',   0x07E0)),
+    "USB":  c(G('UI_MODE_USB',  0xF800)),
+    "LSB":  c(G('UI_MODE_LSB',  0xFFE0)),
+    "CW":   c(G('UI_MODE_CW',   0x07FF)),
+    "DIGU": c(G('UI_MODE_DIGU', 0xFD20)),
+    "DIGL": c(G('UI_MODE_DIGL', 0xFCC0)),
 }
 
 # ══════════════════════════════════════════════════════════════════════════════

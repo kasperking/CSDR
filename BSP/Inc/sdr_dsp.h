@@ -107,7 +107,8 @@ typedef struct {
   float        audio_gain;                 /*!< TX audio gain (0..1) */
   FIR_Filter_t fir_audio;                 /*!< TX-private audio LPF (separate from RX) */
   IIR_Biquad_t dc_block;                  /*!< TX-private audio DC blocker (separate from RX) */
-  /* Compressor/limiter – applied after FIR LPF, before modulator */
+  /* Compressor/limiter – applied after FIR LPF, before modulator.
+   * Bypassed automatically when dsp->mode is MODE_DIGU or MODE_DIGL. */
   float        comp_env;     /*!< Compressor peak envelope            */
   float        comp_attack;  /*!< Attack coeff  (~1 ms)               */
   float        comp_decay;   /*!< Release coeff (~50 ms)              */

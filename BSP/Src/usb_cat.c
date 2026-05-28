@@ -1,8 +1,8 @@
  /*
  * Features:
- *  - Kenwood TS-480 CAT protocol (ID020)
- *  - IF frame 38 chars (P15 shift byte added vs TS-2000)
- *  - SH/SL filter bandwidth (TS-480 standard), FW kept for legacy
+ *  - Kenwood TS-2000 CAT protocol (ID019)
+ *  - IF frame 37 chars (no P15 shift byte)
+ *  - SH/SL real filter bandwidth, FW = SH-SL for SSB/CW, IS real IF-shift
  *  - g_cat exported, CAT_FlushTX exported
  */
 
@@ -92,7 +92,7 @@ static inline uint8_t cat_clamp_vfo(uint8_t vfo)
 
 /* =========================================================
  * Mode mapping
- * Assumed SDR enum order: 0=AM, 1=FM, 2=USB, 3=LSB, 4=CW
+ * SDR enum: 0=AM, 1=FM, 2=USB, 3=LSB, 4=CW, 5=DIGU, 6=DIGL
  * ========================================================= */
 uint8_t CAT_SDRModeToCat(uint8_t m)
 {
@@ -102,6 +102,10 @@ uint8_t CAT_SDRModeToCat(uint8_t m)
         case 2U: return CAT_MODE_USB;
         case 3U: return CAT_MODE_LSB;
         case 4U: return CAT_MODE_CW;
+        /* DIGU/DIGL report as USB/LSB — Kenwood IF/MD is a single ASCII digit;
+         * CAT_MODE_DIGU/DIGL (0x0C/0x0D) are non-standard and would corrupt the frame */
+        case 5U: return CAT_MODE_USB;
+        case 6U: return CAT_MODE_LSB;
         default: return CAT_MODE_USB;
     }
 }
@@ -109,12 +113,15 @@ uint8_t CAT_SDRModeToCat(uint8_t m)
 uint8_t CAT_CatModeToSDR(uint8_t m)
 {
     switch (m) {
-        case CAT_MODE_AM:  return 0U;
-        case CAT_MODE_FM:  return 1U;
-        case CAT_MODE_USB: return 2U;
-        case CAT_MODE_LSB: return 3U;
-        case CAT_MODE_CW:  return 4U;
-        default:           return 2U;
+        case CAT_MODE_AM:   return 0U;
+        case CAT_MODE_FM:   return 1U;
+        case CAT_MODE_USB:  return 2U;
+        case CAT_MODE_LSB:  return 3U;
+        case CAT_MODE_CW:   return 4U;
+        case CAT_MODE_CWR:  return 4U;  /* CW-R → same DSP path */
+        case CAT_MODE_FSK:  return 5U;  /* FSK (DATA-USB) → DIGU */
+        case CAT_MODE_FSKR: return 6U;  /* FSK-R (DATA-LSB) → DIGL */
+        default:            return 2U;
     }
 }
 
@@ -268,6 +275,18 @@ volatile uint32_t dbg_pacing_skips        = 0U;
 volatile uint32_t dbg_frames_per_tx       = 0U;
 volatile uint32_t dbg_multi_frame_pkts    = 0U;
 volatile uint8_t  dbg_cat_ai_push_disable = 1U;
+
+/* BW command tracking — last opcode that triggered a set_bw callback.
+ *  Value: ('F'<<8)|'W' = 0x4657 when set by FW; ('S'<<8)|'H' = 0x5348 when set by SH.
+ *  0 = no BW SET received since reset.
+ *  Use alongside dbg_last_bw_* in csdr_app.c to see the full BW SET trace. */
+volatile uint32_t dbg_last_bw_cmd = 0U;
+
+/* Raw CAT parameter from the last BW command, captured BEFORE cat_exec boundary enforcement.
+ *  For FW: the 4-digit value as parsed (may be 0..99999 — not yet clamped to 100..9999).
+ *  For SH: the 2-digit index as parsed (may be > 11).
+ *  Compare with dbg_last_bw_value (post-boundary, in csdr_app.c) to see how much was clipped. */
+volatile uint32_t dbg_last_bw_cat_value = 0U;
 
 /* =========================================================
  * FIFO lifecycle snapshot — updated after every enqueue and every flush.
@@ -748,7 +767,7 @@ void CAT_Init(CAT_Handle_t *cat, const CAT_Callbacks_t *cb)
 }
 
 /* =========================================================
- * IF builder — TS-480 exact format (ID020), 38 chars + ';'
+ * IF builder — TS-2000 format (ID019), 37 chars + ';'
  *
  * Field audit — REAL fields are driven from live SDR state.
  *               FROZEN fields are compile-time constants safe for any host.
@@ -772,25 +791,24 @@ void CAT_Init(CAT_Handle_t *cat, const CAT_Callbacks_t *cb)
  *  32    P12    REAL     cat->split_on ('0'/'1')
  *  33    P13    FROZEN   '0' — CTCSS/tone not supported
  *  34-35 P14    FROZEN   "00" — CTCSS code not supported
- *  36    P15    FROZEN   '0' — TS-480 IF-shift extension, always off
- *  37    ';'
+ *  36    ';'
  *
- * Total: 38 chars (TS-480). TS-2000 is 37 (no P15, ID021).
+ * Total: 37 chars (TS-2000). No P15 byte (TS-480 extension removed).
  * hamlib cross-check: TX@28, mode@29, VFO@30, split@32.
  *
- * CAT_DBG_HARDCODE_IF — set to 1 to inject a fixed known-good TS-480
+ * CAT_DBG_HARDCODE_IF — set to 1 to inject a fixed known-good TS-2000
  * reference packet and confirm flrig parses IF correctly before testing
- * dynamic values. Expected string: IF0000710000000000+000000000020000000;
- * (7.100 MHz, USB, VFO A, RX, no split, 38 chars)
+ * dynamic values. Expected string: IF00007100000000000+000000000020000;
+ * (7.100 MHz, USB, VFO A, RX, no split, 37 chars)
  * ========================================================= */
-#define CAT_DBG_HARDCODE_IF  0   /* set 1 to inject static TS-480 IF test packet */
+#define CAT_DBG_HARDCODE_IF  0   /* set 1 to inject static TS-2000 IF test packet */
 
 void CAT_BuildIF(CAT_Handle_t *cat, char *buf)
 {
 #if CAT_DBG_HARDCODE_IF
-    /* Fixed TS-480 reference: 7.100 MHz, USB, VFO A, RX, no split — 38 chars
-     * IF[00007100000][00000][+][0000][0][0][000][0][2][0][0][0][0][00][0]; */
-    const char *ref = "IF0000710000000000+000000000020000000;";
+    /* Fixed TS-2000 reference: 7.100 MHz, USB, VFO A, RX, no split — 37 chars
+     * IF[00007100000][00000][+][0000][0][0][000][0][2][0][0][0][0][00]; */
+    const char *ref = "IF00007100000000000+000000000020000;";
     const char *s = ref;
     char *d = buf;
     while (*s) *d++ = *s++;
@@ -836,7 +854,6 @@ void CAT_BuildIF(CAT_Handle_t *cat, char *buf)
     *p++ = cat->split_on ? '1' : '0';                           /* [32]    P12 REAL  split */
     *p++ = '0';                                                  /* [33]    P13 FROZEN no tone */
     *p++ = '0'; *p++ = '0';                                     /* [34-35] P14 FROZEN no CTCSS */
-    *p++ = '0';                                                  /* [36]    P15 FROZEN TS-480 shift ext */
     *p++ = ';';
     *p   = '\0';
 }
@@ -890,28 +907,42 @@ static void cat_build_MD(CAT_Handle_t *cat, char *buf)
 static void cat_build_FW(CAT_Handle_t *cat, char *buf)
 {
     char *p = buf;
-    uint32_t bw = (cat->active_vfo == 1U)
+    /* TS-2000: FW = SH - SL for SSB/CW/DIGI (passband width).
+     * For AM/FM, SL is always 0 (no independent low-cut), so FW = SH directly. */
+    uint8_t cur_mode = cat->cb.get_mode ? cat->cb.get_mode() : 2U;
+    uint32_t sh = (cat->active_vfo == 1U)
                 ? (cat->cb.get_vfo_b_bw ? cat->cb.get_vfo_b_bw() : cat->vfo_b_bw)
                 : (cat->cb.get_bw       ? cat->cb.get_bw()        : 3000U);
-    if (bw > 9999U) bw = 9999U;
+    uint32_t sl = 0U;
+    if (cur_mode != 0U && cur_mode != 1U) {
+        /* SSB/CW/DIGI: include SL (low-cut) in passband calculation */
+        sl = (cat->active_vfo == 1U)
+           ? (cat->cb.get_vfo_b_lo_cut ? cat->cb.get_vfo_b_lo_cut() : cat->vfo_b_lo_cut)
+           : (cat->cb.get_lo_cut       ? cat->cb.get_lo_cut()        : 0U);
+    }
+    uint32_t fw = (sh > sl) ? (sh - sl) : 0U;
+    if (fw > 9999U) fw = 9999U;
     *p++ = 'F'; *p++ = 'W';
-    p = cat_put_u32(p, bw, 4U);
+    p = cat_put_u32(p, fw, 4U);
     *p++ = ';';
     *p = '\0';
 }
 
-/* TS-480 SH high-cut table: index 00-11 → Hz */
-static const uint32_t s_sh_tbl[12] = {
-    1000U, 1200U, 1400U, 1600U, 1800U, 2000U,
-    2200U, 2400U, 2600U, 2800U, 3000U, 3400U
+/* TS-2000 SSB/CW high-cut filter table: index 00-09 → Hz
+ * SH00-SH02 (1400-1800 Hz): narrow RX-only presets (below 2.0 kHz TX minimum)
+ * SH03-SH08 (2000-3000 Hz): TX filter bandwidth presets per TS-2000 manual
+ * SH09      (3400 Hz):      widest SSB preset */
+static const uint32_t s_sh_tbl[10] = {
+    1400U, 1600U, 1800U, 2000U, 2200U,
+    2400U, 2600U, 2800U, 3000U, 3400U
 };
 
 static uint8_t cat_bw_to_sh(uint32_t bw)
 {
-    for (uint8_t i = 0U; i < 11U; i++) {
+    for (uint8_t i = 0U; i < 9U; i++) {
         if (bw <= s_sh_tbl[i]) return i;
     }
-    return 11U;
+    return 9U;
 }
 
 static void cat_build_SH(CAT_Handle_t *cat, char *buf)
@@ -928,9 +959,38 @@ static void cat_build_SH(CAT_Handle_t *cat, char *buf)
     *p = '\0';
 }
 
-static void cat_build_SL(char *buf)
+/* TS-2000 SSB/CW low-cut filter table: index 00-11 → Hz
+ * SL00 = 0 Hz (no low cut), SL01-SL11 = 50-1000 Hz in practical steps. */
+static const uint32_t s_sl_tbl[12] = {
+    0U, 50U, 100U, 200U, 300U, 400U,
+    500U, 600U, 700U, 800U, 900U, 1000U
+};
+
+static uint8_t cat_hz_to_sl(uint32_t hz)
 {
-    buf[0] = 'S'; buf[1] = 'L'; buf[2] = '0'; buf[3] = '0'; buf[4] = ';'; buf[5] = '\0';
+    for (uint8_t i = 0U; i < 11U; i++) {
+        if (hz <= s_sl_tbl[i]) return i;
+    }
+    return 11U;
+}
+
+static void cat_build_SL(CAT_Handle_t *cat, char *buf)
+{
+    char *p = buf;
+    /* SL applies to SSB/CW only; AM/FM always return SL00 */
+    uint8_t cur_mode = cat->cb.get_mode ? cat->cb.get_mode() : 2U;
+    uint32_t sl = 0U;
+    if (cur_mode != 0U && cur_mode != 1U) {
+        sl = (cat->active_vfo == 1U)
+           ? (cat->cb.get_vfo_b_lo_cut ? cat->cb.get_vfo_b_lo_cut() : cat->vfo_b_lo_cut)
+           : (cat->cb.get_lo_cut       ? cat->cb.get_lo_cut()        : 0U);
+    }
+    uint8_t idx = cat_hz_to_sl(sl);
+    *p++ = 'S'; *p++ = 'L';
+    *p++ = (char)('0' + (idx / 10U));
+    *p++ = (char)('0' + (idx % 10U));
+    *p++ = ';';
+    *p = '\0';
 }
 
 static void cat_build_SM(CAT_Handle_t *cat, char *buf)
@@ -1051,7 +1111,7 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
 
     /* ID */
     else if (cmd[0] == 'I' && cmd[1] == 'D') {
-        cat_copy(resp, "ID020;");
+        cat_copy(resp, "ID019;");
     }
 
     /* AI — SET is ACK-only: Hamlib calls kenwood_transaction("AI0", NULL, 0).
@@ -1109,48 +1169,85 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
     /* FW — filter width: GET/SET routed to active VFO BW callbacks.
      * SET is ACK-only — flrig TS-2000 uses sendCommand() with no readback.
      * Returning FWnnnn; after SET leaves a stale frame in the host serial buffer
-     * that desynchronises the next command's response read. */
+     * that desynchronises the next command's response read.
+     * FM: cat_set_bw() ignores the SET (fixed filter); GET returns actual BW capped to 9999. */
     else if (cmd[0] == 'F' && cmd[1] == 'W') {
         if (cmd[2] == '\0') {
             cat_build_FW(cat, resp);
         } else {
-            uint32_t bw = cat_parse_u(&cmd[2], 4U);
-            if (bw < 100U) bw = 100U;
-            if (bw > 9999U) bw = 9999U;
+            uint32_t fw = cat_parse_u(&cmd[2], 4U);
+            dbg_last_bw_cat_value = fw;
+            dbg_last_bw_cmd = ((uint32_t)'F' << 8) | (uint32_t)'W';
+            /* FW = passband width; SH = FW + SL. Retrieve current SL to compute new SH. */
+            uint8_t cur_mode = cat->cb.get_mode ? cat->cb.get_mode() : 2U;
+            uint32_t sl = 0U;
+            if (cur_mode != 0U && cur_mode != 1U) {
+                sl = (cat->active_vfo == 1U)
+                   ? (cat->cb.get_vfo_b_lo_cut ? cat->cb.get_vfo_b_lo_cut() : cat->vfo_b_lo_cut)
+                   : (cat->cb.get_lo_cut       ? cat->cb.get_lo_cut()        : 0U);
+            }
+            uint32_t sh = fw + sl;
             if (cat->active_vfo == 1U) {
-                cat->vfo_b_bw = bw;
-                if (cat->cb.set_vfo_b_bw) cat->cb.set_vfo_b_bw(bw);
+                cat->vfo_b_bw = sh;
+                if (cat->cb.set_vfo_b_bw) cat->cb.set_vfo_b_bw(sh);
             } else if (cat->cb.set_bw) {
-                cat->cb.set_bw(bw);
+                cat->cb.set_bw(sh);
             }
             /* ACK-only: FW is in suppress list below — no echo */
         }
     }
 
-    /* SH — IF high-cut index: GET returns live BW→index; SET maps index→Hz, updates BW */
+    /* SH — IF high-cut index: GET returns live BW→index; SET maps index→Hz, updates BW.
+     * TS-2000: SH applies to SSB and CW only (indexes 00-09).
+     * In AM, bandwidth is controlled by FW only; SH GET returns SH00 (N/A), SET ignored.
+     * In FM, filter is fixed; SH is not applicable. */
     else if (cmd[0] == 'S' && cmd[1] == 'H') {
+        uint8_t cur_mode = cat->cb.get_mode ? cat->cb.get_mode() : 2U;
+        bool is_am_fm = (cur_mode == 0U || cur_mode == 1U);  /* SDR 0=AM, 1=FM */
         if (cmd[2] == '\0') {
-            cat_build_SH(cat, resp);
+            if (is_am_fm) {
+                cat_copy(resp, "SH00;");  /* N/A in AM/FM — return index 0 */
+            } else {
+                cat_build_SH(cat, resp);
+            }
         } else {
-            uint32_t idx = cat_parse_u(&cmd[2], 2U);
-            if (idx > 11U) idx = 11U;
-            uint32_t bw = s_sh_tbl[idx];
-            if (cat->active_vfo == 1U) {
-                cat->vfo_b_bw = bw;
-                if (cat->cb.set_vfo_b_bw) cat->cb.set_vfo_b_bw(bw);
-            } else if (cat->cb.set_bw) {
-                cat->cb.set_bw(bw);
+            if (!is_am_fm) {
+                uint32_t idx = cat_parse_u(&cmd[2], 2U);
+                dbg_last_bw_cat_value = idx;
+                if (idx > 9U) idx = 9U;
+                uint32_t bw = s_sh_tbl[idx];
+                dbg_last_bw_cmd = ((uint32_t)'S' << 8) | (uint32_t)'H';
+                if (cat->active_vfo == 1U) {
+                    cat->vfo_b_bw = bw;
+                    if (cat->cb.set_vfo_b_bw) cat->cb.set_vfo_b_bw(bw);
+                } else if (cat->cb.set_bw) {
+                    cat->cb.set_bw(bw);
+                }
             }
             /* ACK-only: SH SET suppress list prevents auto-echo (flrig no readback) */
         }
     }
 
-    /* SL — IF low-cut: always SL00 (no independent low-cut control) */
+    /* SL — IF low-cut: GET returns live index; SET applies to DSP via lo-cut callbacks.
+     * SL applies to SSB/CW/DIGI only; AM/FM always return SL00 and ignore SETs. */
     else if (cmd[0] == 'S' && cmd[1] == 'L') {
         if (cmd[2] == '\0') {
-            cat_build_SL(resp);
+            cat_build_SL(cat, resp);
+        } else {
+            uint8_t cur_mode = cat->cb.get_mode ? cat->cb.get_mode() : 2U;
+            if (cur_mode != 0U && cur_mode != 1U) {
+                uint32_t idx = cat_parse_u(&cmd[2], 2U);
+                if (idx > 11U) idx = 11U;
+                uint32_t sl = s_sl_tbl[idx];
+                if (cat->active_vfo == 1U) {
+                    cat->vfo_b_lo_cut = sl;
+                    if (cat->cb.set_vfo_b_lo_cut) cat->cb.set_vfo_b_lo_cut(sl);
+                } else if (cat->cb.set_lo_cut) {
+                    cat->cb.set_lo_cut(sl);
+                }
+            }
+            /* ACK-only: SL SET suppress list prevents auto-echo */
         }
-        /* SET SLnn; — ACK-only: flrig no readback, suppress list handles auto-echo */
     }
 
     /* SQ — stub: squelch not in minimal CAT set */
@@ -1298,10 +1395,30 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         /* SET XT0;/XT1; — ACK-only */
     }
 
-    /* IS — stub: IF shift not in minimal CAT set */
+    /* IS — IF shift: GET formats current shift as IS0±nnnn; SET applies via callback.
+     * TS-2000 IS format: IS0 + sign + 4-digit magnitude (e.g. IS0+0150; IS0-0300;) */
     else if (cmd[0] == 'I' && cmd[1] == 'S') {
-        if (cmd[2] == '\0' || cmd[3] == '\0') { cat_copy(resp, "IS0+0000;"); }
-        /* SET IS0±nnnn; — ACK-only stub */
+        if (cmd[2] == '\0') {
+            int32_t hz = cat->cb.get_if_shift ? cat->cb.get_if_shift() : 0;
+            char *p = resp;
+            *p++ = 'I'; *p++ = 'S'; *p++ = '0';
+            *p++ = (hz >= 0) ? '+' : '-';
+            uint32_t mag = (uint32_t)(hz >= 0 ? hz : -hz);
+            if (mag > 9999U) mag = 9999U;
+            p = cat_put_u32(p, mag, 4U);
+            *p++ = ';';
+            *p = '\0';
+        } else if (cmd[3] != '\0') {
+            /* IS0±nnnn; — P1='0', P2=sign, P3-6=magnitude */
+            char sign = cmd[3];
+            uint32_t mag = cat_parse_u(&cmd[4], 4U);
+            if (mag > 9999U) mag = 9999U;
+            int32_t hz = (int32_t)mag;
+            if (sign == '-') hz = -hz;
+            if (cat->cb.set_if_shift) cat->cb.set_if_shift(hz);
+            cat->if_shift = (int16_t)hz;
+            /* ACK-only: IS is in suppress list — no echo */
+        }
     }
 
     /* SP — GET returns split state; SET is ACK-only */
