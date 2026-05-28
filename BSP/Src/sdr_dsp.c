@@ -8,7 +8,7 @@
   *   - NCO   : Numerically Controlled Oscillator (32-bit acc, 1024-entry LUT)
   *   - FIR   : Lowpass filter, Hann-windowed sinc, circular buffer, 64 taps
   *   - IIR   : DC blocker  H(z)=(1-z^-1)/(1-0.995*z^-1)
-  *   - AGC   : Peak-hold + hang AGC, 1ms attack; slow=500ms hang/1.5s decay, fast=100ms hang/300ms decay
+  *   - AGC   : Peak-hold + hang AGC, 1ms attack, 0.2ms env smoother; mode presets: SSB 200ms/1s, CW 75ms/400ms, AM 500ms/2s; FM/DIGI bypass
   *   - FFT   : Radix-2 DIT, N=512, Hann window
   *   - DEMOD : AM, FM (atan2 differentiator), USB, LSB, CW (BFO 700Hz)
   *
@@ -258,11 +258,13 @@ void AGC_Init(AGC_t *agc, uint32_t sample_rate)
   agc->max_gain   = 64.0f;
   agc->min_gain   = 0.01f;
   agc->level      = 0.0f;
+  agc->env_smooth = 0.0f;
   agc->hang_timer = 0U;
-  /* Default to slow constants; caller overrides via AGC_SetSpeed() */
+  agc->bypass     = false;
+  /* Default to SSB-slow constants; caller overrides via AGC_SetMode() */
   agc->attack    = expf(-1.0f / (0.001f * (float)sample_rate));  /* 1 ms   */
-  agc->decay     = expf(-1.0f / (1.500f * (float)sample_rate));  /* 1.5 s  */
-  agc->hang_time = (uint32_t)(0.500f * (float)sample_rate);      /* 500 ms */
+  agc->decay     = expf(-1.0f / (1.000f * (float)sample_rate));  /* 1 s    */
+  agc->hang_time = (uint32_t)(0.200f * (float)sample_rate);      /* 200 ms */
   /* USER CODE END AGC_Init_0 */
 }
 
@@ -314,25 +316,72 @@ void DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level)
   dsp->nb.enabled = enabled;
 }
 
-/* Set AGC time constants.  Call once after AGC_Init and whenever agc_fast changes. */
+/* Set mode-specific AGC timing and bypass.  Primary configuration entry point.
+ *
+ * SSB (USB/LSB):  1 ms attack, 200 ms hang (slow) / 100 ms (fast),
+ *                 1 s decay (slow) / 300 ms (fast).  Stable voice, minimal pumping.
+ * CW:             1 ms attack, 75 ms hang (slow) / 25 ms (fast),
+ *                 400 ms decay (slow) / 150 ms (fast).  Fast recovery between dits.
+ * AM:             1 ms attack, 500 ms hang (slow) / 300 ms (fast),
+ *                 2 s decay (slow) / 800 ms (fast).  Smooth broadcast feel.
+ * FM / DIGI:      bypass=true, gain=1.0.  FM is constant-amplitude; AGC causes
+ *                 noise pumping.  DIGI needs stable amplitude for WSJT-X/FT8.
+ */
+void AGC_SetMode(AGC_t *agc, SDR_Mode_t mode, bool fast, uint32_t sample_rate)
+{
+  float sr = (float)sample_rate;
+  agc->attack = expf(-1.0f / (0.001f * sr));   /* 1 ms always */
+
+  switch (mode)
+  {
+    case MODE_FM:
+    case MODE_DIGU:
+    case MODE_DIGL:
+      agc->bypass     = true;
+      agc->gain       = 1.0f;
+      agc->hang_timer = 0U;
+      return;
+
+    case MODE_CW:
+      agc->decay     = expf(-1.0f / ((fast ? 0.150f : 0.400f) * sr));
+      agc->hang_time = (uint32_t)((fast ? 0.025f : 0.075f) * sr);
+      break;
+
+    case MODE_AM:
+      agc->decay     = expf(-1.0f / ((fast ? 0.800f : 2.000f) * sr));
+      agc->hang_time = (uint32_t)((fast ? 0.300f : 0.500f) * sr);
+      break;
+
+    case MODE_USB:
+    case MODE_LSB:
+    default:
+      agc->decay     = expf(-1.0f / ((fast ? 0.300f : 1.000f) * sr));
+      agc->hang_time = (uint32_t)((fast ? 0.100f : 0.200f) * sr);
+      break;
+  }
+  agc->bypass = false;
+}
+
+/* Compatibility wrapper — applies SSB-equivalent timing when mode is not known.
+ * Prefer AGC_SetMode() for all new call sites. */
 void AGC_SetSpeed(AGC_t *agc, bool fast, uint32_t sample_rate)
 {
-  /* USER CODE BEGIN AGC_SetSpeed_0 */
-  agc->attack = expf(-1.0f / (0.001f * (float)sample_rate));   /* 1 ms always */
-  if (fast) {
-    agc->decay     = expf(-1.0f / (0.300f * (float)sample_rate)); /* 300 ms */
-    agc->hang_time = (uint32_t)(0.100f * (float)sample_rate);     /* 100 ms */
-  } else {
-    agc->decay     = expf(-1.0f / (1.500f * (float)sample_rate)); /* 1.5 s  */
-    agc->hang_time = (uint32_t)(0.500f * (float)sample_rate);     /* 500 ms */
-  }
-  /* USER CODE END AGC_SetSpeed_0 */
+  AGC_SetMode(agc, MODE_USB, fast, sample_rate);
 }
 
 float AGC_Process(AGC_t *agc, float x)
 {
   /* USER CODE BEGIN AGC_Process_0 */
-  float env = fabsf(x);
+  /* FM and DIGI: bypass completely – AGC pumping on constant-amplitude
+   * or narrow digital signals causes noise breathing / amplitude wander. */
+  if (agc->bypass) { return x; }
+
+  /* Smooth the instantaneous magnitude with a short IIR (τ ≈ 0.2 ms at 48 kHz).
+   * α=0.9 → single-sample click only moves env_smooth to 10% of its amplitude,
+   * preventing a one-sample transient from triggering a full AGC attack cycle. */
+  agc->env_smooth = 0.9f * agc->env_smooth + 0.1f * fabsf(x);
+  float env = agc->env_smooth;
+
   if (env >= agc->level) {
     /* Attack: signal rising – fast approach, reset hang timer */
     agc->level      = agc->attack * agc->level + (1.0f - agc->attack) * env;
@@ -625,8 +674,11 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   dsp->rx_delay_idx   = 0U;
 
   /* Reset AGC runtime: inherited level/gain from previous mode can cause
-   * an initial burst (if previous mode was loud) or silence (if quiet) */
+   * an initial burst (if previous mode was loud) or silence (if quiet).
+   * env_smooth is also cleared so the smoothed envelope starts from zero.
+   * bypass and timing constants are set by AGC_SetMode() after this call. */
   dsp->agc.level      = 0.0f;
+  dsp->agc.env_smooth = 0.0f;
   dsp->agc.gain       = 1.0f;
   dsp->agc.hang_timer = 0U;
 

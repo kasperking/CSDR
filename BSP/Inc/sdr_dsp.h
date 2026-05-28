@@ -54,15 +54,17 @@ typedef struct {
 
 /** AGC – Automatic Gain Control (peak-hold + hang) */
 typedef struct {
-  float    gain;        /*!< Current gain                   */
-  float    attack;      /*!< Attack coeff  (~1 ms)          */
-  float    decay;       /*!< Release coeff (~1.5 s slow)    */
-  float    target;      /*!< Target output level (0–1)      */
+  float    gain;        /*!< Current gain                       */
+  float    attack;      /*!< Attack coeff  (~1 ms)              */
+  float    decay;       /*!< Release coeff (mode-dependent)     */
+  float    target;      /*!< Target output level (0–1)          */
   float    max_gain;
   float    min_gain;
-  float    level;       /*!< Peak envelope estimate         */
-  uint32_t hang_timer;  /*!< Samples remaining in hang hold */
-  uint32_t hang_time;   /*!< Hang duration (samples)        */
+  float    level;       /*!< Peak envelope estimate             */
+  float    env_smooth;  /*!< Pre-smoothed envelope (α=0.9, ~0.2 ms) */
+  uint32_t hang_timer;  /*!< Samples remaining in hang hold     */
+  uint32_t hang_time;   /*!< Hang duration (samples)            */
+  bool     bypass;      /*!< true = FM/DIGI: unity gain, no AGC */
 } AGC_t;
 
 /** Noise Blanker – time-domain impulse suppressor for HF (PSU spikes, ignition) */
@@ -206,6 +208,7 @@ float IIR_DCBlock_Process(IIR_Biquad_t *f, float x);
 
 /* AGC */
 void  AGC_Init(AGC_t *agc, uint32_t sample_rate);
+void  AGC_SetMode(AGC_t *agc, SDR_Mode_t mode, bool fast, uint32_t sample_rate);
 void  AGC_SetSpeed(AGC_t *agc, bool fast, uint32_t sample_rate);
 float AGC_Process(AGC_t *agc, float x);
 

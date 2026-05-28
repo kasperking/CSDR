@@ -201,6 +201,7 @@ static void csdr_update_waterfall(void);
 static void csdr_refresh_display(void);
 static void menu_apply_cb(void);
 static uint32_t default_bw_for_mode(SDR_Mode_t m);
+static void csdr_apply_nco_if(void);
 static void csdr_vfo_swap(void);
 static void csdr_vfo_copy_to_b(void);
 /* CAT VFO-B callbacks */
@@ -304,7 +305,7 @@ void CSDR_Init(void)
   DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
   DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
-  AGC_SetSpeed(&g_dsp.agc, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
+  AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, g_sdr.nb_on, g_sdr.nb_level);
 
   /* Encoder – TIM3 quadrature (PB4/PB5), initialised as encoder in MX_TIM3_Init */
@@ -848,6 +849,7 @@ void CSDR_Loop(void)
       g_sdr.cat_mode_dirty = false;
       DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
       DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
+      AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
       g_sdr.cat_rit_dirty = true;  /* recompute nco_if with updated sl_sign for new mode */
     }
     if (g_sdr.cat_tx_dirty) {
@@ -1078,8 +1080,11 @@ static void csdr_handle_encoder(void)
     }
     g_sdr.mode   = (SDR_Mode_t)((g_sdr.mode + 1U) % MODE_COUNT);
     g_sdr.bw_hz  = default_bw_for_mode(g_sdr.mode);
+    g_sdr.sl_hz  = 0U;
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
+    AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
+    csdr_apply_nco_if();
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
   }
   if (Encoder_GetLongPress(&g_encoder)) {
@@ -1198,8 +1203,11 @@ static void csdr_handle_keys(void)
   if (Key_Press(&k_mode)) {
     g_sdr.mode  = (SDR_Mode_t)((g_sdr.mode + 1U) % MODE_COUNT);
     g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
+    g_sdr.sl_hz = 0U;
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
+    AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
+    csdr_apply_nco_if();
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
   }
 
@@ -1350,7 +1358,7 @@ static void menu_apply_cb(void)
                   &vol, &mic, &sq, &step, &att, &band, &mode, &usb, &zoom);
   g_sdr.mic_gain = (int16_t)mic;
   g_sdr.agc_fast = agc; g_sdr.nb_on = nb; g_sdr.nr_on = nr;
-  AGC_SetSpeed(&g_dsp.agc, agc, CSDR_AUDIO_SAMPLE_RATE);
+  AGC_SetMode(&g_dsp.agc, g_sdr.mode, agc, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, nb, g_sdr.nb_level);
   g_sdr.rit_hz = rit;
   g_sdr.cat_rit_dirty = true;  /* apply new RIT offset to nco_if via CSDR_Loop */
@@ -1361,8 +1369,11 @@ static void menu_apply_cb(void)
   if (mode != (uint8_t)g_sdr.mode) {
     g_sdr.mode  = (SDR_Mode_t)mode;
     g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
+    g_sdr.sl_hz = 0U;
     DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
+    AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
+    csdr_apply_nco_if();
   }
   g_sdr.usb_mode = usb;
   if (zoom != SDR_UI_GetSpecZoom()) SDR_UI_SetSpecZoom(zoom);
@@ -1373,26 +1384,44 @@ static void menu_apply_cb(void)
  *  Dual-VFO helpers
  * ══════════════════════════════════════════════════════════ */
 
+/* Recompute and apply DSP nco_if from current g_sdr state.
+ * Call whenever mode, sl_hz, if_shift_hz, or rit changes via a direct (non-deferred)
+ * path — e.g. physical key presses, VFO swap. CAT-deferred path uses cat_rit_dirty. */
+static void csdr_apply_nco_if(void)
+{
+  int32_t sl_sign = 0;
+  if (g_sdr.mode == MODE_USB || g_sdr.mode == MODE_CW || g_sdr.mode == MODE_DIGU)
+      sl_sign = +1;
+  else if (g_sdr.mode == MODE_LSB || g_sdr.mode == MODE_DIGL)
+      sl_sign = -1;
+  int32_t eff_if = (int32_t)g_sdr.if_shift_hz
+                 + (g_cat.rit_on ? (int32_t)g_sdr.rit_hz : 0)
+                 + sl_sign * (int32_t)g_sdr.sl_hz;
+  DSP_SetIFShift(&g_dsp, eff_if, CSDR_AUDIO_SAMPLE_RATE);
+}
+
 /* Swap active ↔ inactive VFO and apply new active state to hardware */
 static void csdr_vfo_swap(void)
 {
   VFO_State_t tmp = {
-    .freq_hz  = g_sdr.freq_hz,
-    .mode     = g_sdr.mode,
-    .band_idx = g_sdr.band_idx,
-    .step     = g_sdr.step,
-    .rit_hz   = g_sdr.rit_hz,
-    .bw_hz    = g_sdr.bw_hz,
-    .sl_hz    = g_sdr.sl_hz,
+    .freq_hz      = g_sdr.freq_hz,
+    .mode         = g_sdr.mode,
+    .band_idx     = g_sdr.band_idx,
+    .step         = g_sdr.step,
+    .rit_hz       = g_sdr.rit_hz,
+    .bw_hz        = g_sdr.bw_hz,
+    .sl_hz        = g_sdr.sl_hz,
+    .if_shift_hz  = g_sdr.if_shift_hz,
   };
 
-  g_sdr.freq_hz  = g_sdr.vfo_b.freq_hz;
-  g_sdr.mode     = g_sdr.vfo_b.mode;
-  g_sdr.band_idx = g_sdr.vfo_b.band_idx;
-  g_sdr.step     = g_sdr.vfo_b.step;
-  g_sdr.rit_hz   = g_sdr.vfo_b.rit_hz;
-  g_sdr.bw_hz    = g_sdr.vfo_b.bw_hz;
-  g_sdr.sl_hz    = g_sdr.vfo_b.sl_hz;
+  g_sdr.freq_hz     = g_sdr.vfo_b.freq_hz;
+  g_sdr.mode        = g_sdr.vfo_b.mode;
+  g_sdr.band_idx    = g_sdr.vfo_b.band_idx;
+  g_sdr.step        = g_sdr.vfo_b.step;
+  g_sdr.rit_hz      = g_sdr.vfo_b.rit_hz;
+  g_sdr.bw_hz       = g_sdr.vfo_b.bw_hz;
+  g_sdr.sl_hz       = g_sdr.vfo_b.sl_hz;
+  g_sdr.if_shift_hz = g_sdr.vfo_b.if_shift_hz;
 
   g_sdr.vfo_b    = tmp;
   g_sdr.active_vfo ^= 1U;
@@ -1403,6 +1432,8 @@ static void csdr_vfo_swap(void)
   LPF_SetBand(g_sdr.band_idx);
   DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
+  AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
+  csdr_apply_nco_if();
   DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
   g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
@@ -1411,14 +1442,15 @@ static void csdr_vfo_swap(void)
 /* Copy active VFO state into the inactive VFO slot (A→B when A active, B→A when B active) */
 static void csdr_vfo_copy_to_b(void)
 {
-  g_sdr.vfo_b.freq_hz  = g_sdr.freq_hz;
-  g_sdr.vfo_b.mode     = g_sdr.mode;
-  g_sdr.vfo_b.band_idx = g_sdr.band_idx;
-  g_sdr.vfo_b.step     = g_sdr.step;
-  g_sdr.vfo_b.rit_hz   = g_sdr.rit_hz;
-  g_sdr.vfo_b.bw_hz    = g_sdr.bw_hz;
-  g_sdr.vfo_b.sl_hz    = g_sdr.sl_hz;
-  g_sdr.display_dirty  |= DIRTY_VFO;
+  g_sdr.vfo_b.freq_hz     = g_sdr.freq_hz;
+  g_sdr.vfo_b.mode        = g_sdr.mode;
+  g_sdr.vfo_b.band_idx    = g_sdr.band_idx;
+  g_sdr.vfo_b.step        = g_sdr.step;
+  g_sdr.vfo_b.rit_hz      = g_sdr.rit_hz;
+  g_sdr.vfo_b.bw_hz       = g_sdr.bw_hz;
+  g_sdr.vfo_b.sl_hz       = g_sdr.sl_hz;
+  g_sdr.vfo_b.if_shift_hz = g_sdr.if_shift_hz;
+  g_sdr.display_dirty     |= DIRTY_VFO;
 }
 
 /* ── VFO-B + active-VFO CAT callbacks ──────────────────────────────────────
@@ -1426,7 +1458,13 @@ static void csdr_vfo_copy_to_b(void)
  * so UI state and Hamlib/flrig/WSJT-X always agree.
  * ─────────────────────────────────────────────────────────────────────────*/
 static void     cat_set_vfo_b_freq(uint32_t hz) { g_sdr.vfo_b.freq_hz = hz; g_sdr.display_dirty |= DIRTY_VFO; }
-static void     cat_set_vfo_b_mode(uint8_t m)   { g_sdr.vfo_b.mode = (SDR_Mode_t)m; g_sdr.display_dirty |= DIRTY_VFO; }
+static void     cat_set_vfo_b_mode(uint8_t m)
+{
+    g_sdr.vfo_b.mode  = (SDR_Mode_t)m;
+    g_sdr.vfo_b.bw_hz = default_bw_for_mode((SDR_Mode_t)m);  /* reset stale BW from prior mode */
+    g_sdr.vfo_b.sl_hz = 0U;                                   /* reset low-cut for new mode */
+    g_sdr.display_dirty |= DIRTY_VFO;
+}
 static void     cat_set_vfo_b_bw(uint32_t hz)      { g_sdr.vfo_b.bw_hz = hz;    g_sdr.display_dirty |= DIRTY_VFO; }
 static void     cat_set_vfo_b_lo_cut(uint32_t hz)  { g_sdr.vfo_b.sl_hz = hz;    g_sdr.display_dirty |= DIRTY_VFO; }
 static uint32_t cat_get_vfo_b_freq(void)           { return g_sdr.vfo_b.freq_hz; }
@@ -1450,22 +1488,24 @@ static void cat_set_active_vfo(uint8_t vfo)
   }
   /* Full swap: exchange active ↔ inactive VFO storage, then defer hardware */
   VFO_State_t tmp = {
-    .freq_hz  = g_sdr.freq_hz,
-    .mode     = g_sdr.mode,
-    .band_idx = g_sdr.band_idx,
-    .step     = g_sdr.step,
-    .rit_hz   = g_sdr.rit_hz,
-    .bw_hz    = g_sdr.bw_hz,
-    .sl_hz    = g_sdr.sl_hz,
+    .freq_hz      = g_sdr.freq_hz,
+    .mode         = g_sdr.mode,
+    .band_idx     = g_sdr.band_idx,
+    .step         = g_sdr.step,
+    .rit_hz       = g_sdr.rit_hz,
+    .bw_hz        = g_sdr.bw_hz,
+    .sl_hz        = g_sdr.sl_hz,
+    .if_shift_hz  = g_sdr.if_shift_hz,
   };
-  g_sdr.freq_hz  = g_sdr.vfo_b.freq_hz;
-  g_sdr.mode     = g_sdr.vfo_b.mode;
-  g_sdr.band_idx = g_sdr.vfo_b.band_idx;
-  g_sdr.step     = g_sdr.vfo_b.step;
-  g_sdr.rit_hz   = g_sdr.vfo_b.rit_hz;
-  g_sdr.bw_hz    = g_sdr.vfo_b.bw_hz;
-  g_sdr.sl_hz    = g_sdr.vfo_b.sl_hz;
-  g_sdr.vfo_b    = tmp;
+  g_sdr.freq_hz     = g_sdr.vfo_b.freq_hz;
+  g_sdr.mode        = g_sdr.vfo_b.mode;
+  g_sdr.band_idx    = g_sdr.vfo_b.band_idx;
+  g_sdr.step        = g_sdr.vfo_b.step;
+  g_sdr.rit_hz      = g_sdr.vfo_b.rit_hz;
+  g_sdr.bw_hz       = g_sdr.vfo_b.bw_hz;
+  g_sdr.sl_hz       = g_sdr.vfo_b.sl_hz;
+  g_sdr.if_shift_hz = g_sdr.vfo_b.if_shift_hz;
+  g_sdr.vfo_b       = tmp;
   g_sdr.active_vfo ^= 1U;
   g_cat.active_vfo   = g_sdr.active_vfo;
 
@@ -1486,9 +1526,26 @@ static void     cat_set_freq(uint32_t f)
 static void     cat_set_mode(uint8_t m)
 {
   if (g_sdr.cat_mode_dirty) dbg_cat_blocked_updates++;
-  g_sdr.mode  = (SDR_Mode_t)m;
-  g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
-  g_sdr.sl_hz = 0U;  /* reset low-cut on mode change; nco_if recomputed via cat_rit_dirty */
+  SDR_Mode_t new_mode = (SDR_Mode_t)m;
+  /* bw_hz: reset to default when mode changes OR when the new mode is NOT AM/FM.
+   *
+   * Asymmetric rule justified by two conflicting requirements:
+   *   AM/FM: flrig polls MD5;/MD4; every cycle.  Resetting bw_hz on every poll
+   *     would undo any custom bandwidth the user had set → only reset on actual
+   *     mode change.
+   *   USB/LSB/CW/DIGI: WSJT-X / Hamlib expects a predictable default passband when
+   *     it asserts the mode.  A stale bw_hz (e.g. 2200 Hz from a prior flrig session)
+   *     makes Hamlib report an unexpected width → WSJT-X triggers extra code paths
+   *     that expose the Hamlib VFO_NONE bug (kenwood_set_freq: unsupported VFO None).
+   *     Resetting to 3000 Hz on every MD2; is safe — it is what WSJT-X would set. */
+  bool mode_changed = (new_mode != g_sdr.mode);
+  bool is_am_fm     = (new_mode == MODE_AM || new_mode == MODE_FM);
+  if (mode_changed || !is_am_fm) {
+    g_sdr.bw_hz = default_bw_for_mode(new_mode);
+  }
+  /* sl_hz unconditional: stale lo-cut shifts eff_if and breaks FT8 decode. */
+  g_sdr.sl_hz = 0U;
+  g_sdr.mode = new_mode;
   g_sdr.cat_mode_dirty = true; /* DSP mode + BW applied by CSDR_Loop */
   g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
 }
@@ -1576,9 +1633,9 @@ static void     cat_set_nb(bool on)       { g_sdr.nb_on = on; DSP_NB_Set(&g_dsp,
 /* BW command diagnostics — watch in Live Expressions.
  *  dbg_last_bw_value:      raw Hz value received from CAT before mode-dependent clamping
  *  dbg_last_bw_mode:       g_sdr.mode (SDR enum) when the BW SET arrived
- *  dbg_last_bw_applied_hz: Hz actually written to DSP; unchanged = FM rejected
- *  dbg_bw_invalid_count:   SETs fully rejected (FM only — filter is fixed, value discarded)
- *  dbg_bw_clamped_count:   SETs adjusted to stay within mode bounds (AM 3000–9000, SSB 100–24000) */
+ *  dbg_last_bw_applied_hz: Hz actually written to DSP after clamping
+ *  dbg_bw_invalid_count:   reserved (was FM-rejection counter; FM now accepts BW changes)
+ *  dbg_bw_clamped_count:   SETs adjusted to mode bounds (FM 5000–15000, AM 1500–9000, SSB 100–24000) */
 volatile uint32_t dbg_last_bw_value      = 0U;
 volatile uint32_t dbg_last_bw_mode       = 0U;
 volatile uint32_t dbg_last_bw_applied_hz = 0U;
@@ -1592,18 +1649,18 @@ static void cat_set_bw(uint32_t hz)
 
     switch (g_sdr.mode) {
         case MODE_FM:
-            /* FM uses a fixed-width filter — BW SET not applicable (TS-2000 ignores FW in FM).
-             * Preserve the natural 15000 Hz DSP filter; do not let the SSB SH table (max 3400 Hz)
-             * or a FW value overwrite it. */
-            dbg_bw_invalid_count++;
-            dbg_last_bw_applied_hz = g_sdr.bw_hz;   /* unchanged */
-            return;
+            /* FM accepts BW changes — map to practical [5000, 15000] Hz range.
+             * FW GET returns min(bw_hz, 9999) for the 4-digit field; round-trip is
+             * stable for any stored value ≤ 9999, and 15000 (default) reports as FW9999. */
+            if (hz < 5000U)       { hz = 5000U;  dbg_bw_clamped_count++; }
+            else if (hz > 15000U) { hz = 15000U; dbg_bw_clamped_count++; }
+            break;
         case MODE_AM:
-            /* AM bandwidth via FW only (SH is not routed to AM in the CAT handler).
-             * TS-2000 AM hardware presets are 3 kHz (narrow) and 6 kHz (wide).
-             * DSP accepts any value in 3000-9000 Hz for smooth AM filtering. */
-            if (hz < 3000U) { hz = 3000U; dbg_bw_clamped_count++; }
-            else if (hz > 9000U) { hz = 9000U; dbg_bw_clamped_count++; }
+            /* AM bandwidth via FW only (SH is not applicable to AM in TS-2000).
+             * Accepts [1500, 9000] Hz: covers narrow presets some clients send (~2400 Hz)
+             * as well as Hamlib normal (9000 Hz) and narrow (6000 Hz) AM filters. */
+            if (hz < 1500U)       { hz = 1500U;  dbg_bw_clamped_count++; }
+            else if (hz > 9000U)  { hz = 9000U;  dbg_bw_clamped_count++; }
             break;
         default:
             if (hz < 100U)        { hz = 100U;   dbg_bw_clamped_count++; }

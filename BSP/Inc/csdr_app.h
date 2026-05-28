@@ -66,8 +66,9 @@ typedef struct {
   uint8_t    band_idx;
   FreqStep_t step;
   int16_t    rit_hz;
-  uint32_t   bw_hz;    /*!< SH high-cut edge in Hz (= DSP LPF cutoff)      */
-  uint32_t   sl_hz;    /*!< SL low-cut edge in Hz (= DSP IF shift magnitude) */
+  uint32_t   bw_hz;       /*!< SH high-cut edge in Hz (= DSP LPF cutoff)        */
+  uint32_t   sl_hz;       /*!< SL low-cut edge in Hz (= DSP IF shift magnitude)  */
+  int16_t    if_shift_hz; /*!< IS: IF shift Hz — per-VFO, survives VFO swap      */
 } VFO_State_t;
 
 typedef struct {
