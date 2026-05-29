@@ -1291,6 +1291,24 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         /* SET BCn; — ACK-only */
     }
 
+    /* RG — RF AGC (PE4302 automatic front-end attenuator control)
+     *   GET  RG;   → RG0; (off) or RG1; (on)
+     *   SET  RG0;  → disable RF AGC (manual att control)
+     *        RG1;  → enable RF AGC  (automatic overload prevention)
+     * Non-standard extension; safe to ignore on TS-2000 compatible software. */
+    else if (cmd[0] == 'R' && cmd[1] == 'G') {
+        if (cmd[2] == '\0') {
+            bool on = cat->cb.get_rf_agc ? cat->cb.get_rf_agc() : false;
+            resp[0] = 'R'; resp[1] = 'G';
+            resp[2] = on ? '1' : '0';
+            resp[3] = ';'; resp[4] = '\0';
+        } else if (cmd[2] == '0' || cmd[2] == '1') {
+            if (cat->cb.set_rf_agc) cat->cb.set_rf_agc(cmd[2] == '1');
+        } else {
+            cat_mark_malformed(cmd); cat_copy(resp, "?;");
+        }
+    }
+
     /* VS — GET returns active VFO; SET selects active VFO (triggers hardware swap) */
     else if (cmd[0] == 'V' && cmd[1] == 'S') {
         if (cmd[2] != '\0') {

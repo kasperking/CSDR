@@ -26,6 +26,8 @@
 #include "cal.h"
 #include "sdr_scan.h"
 #include "runtime_diag.h"
+#include "rf_agc.h"
+#include "usb_flash_proto.h"
 #include <string.h>
 #include <math.h>
 
@@ -217,6 +219,62 @@ static uint32_t cat_get_vfo_b_bw(void);
 static uint32_t cat_get_vfo_b_lo_cut(void);
 static void     cat_set_active_vfo(uint8_t vfo);
 static uint8_t  cat_get_active_vfo(void);
+static void     cat_set_rf_agc(bool on);
+static bool     cat_get_rf_agc(void);
+
+/* ── Settings persistence helper ──────────────────────────
+ * Serialises g_sdr to Flash_Settings_t and calls Flash_SaveSettings.
+ * Call from menu_apply_cb and rf_agc_on toggle. */
+static void csdr_save_settings(void)
+{
+  Flash_Settings_t fs;
+  memset(&fs, 0, sizeof(fs));
+
+  /* VFO A */
+  fs.freq_hz         = g_sdr.freq_hz;
+  fs.step            = (uint32_t)g_sdr.step;
+  fs.bw_hz           = g_sdr.bw_hz;
+  fs.sl_hz           = g_sdr.sl_hz;
+  fs.mode            = (uint8_t)g_sdr.mode;
+  fs.band_idx        = g_sdr.band_idx;
+  fs.volume          = g_sdr.volume;
+  fs.squelch         = g_sdr.squelch;
+  fs.att_db          = g_sdr.att_db;
+  fs.if_shift_hz     = g_sdr.if_shift_hz;
+
+  /* Flags */
+  fs.agc_fast        = g_sdr.agc_fast;
+  fs.nb_on           = g_sdr.nb_on;
+  fs.nr_on           = g_sdr.nr_on;
+  fs.nb_level        = g_sdr.nb_level;
+  fs.rf_agc_on       = g_sdr.rf_agc_on;
+
+  /* TX / audio */
+  fs.mic_gain        = g_sdr.mic_gain;
+  fs.digi_gain       = g_sdr.digi_gain;
+  fs.audio_gain_db   = g_sdr.audio_gain_db;
+
+  /* Calibration */
+  fs.xtal_ppm        = g_sdr.xtal_ppm;
+  fs.dc_i_offset     = g_sdr.dc_i_offset;
+  fs.dc_q_offset     = g_sdr.dc_q_offset;
+  fs.lo_offset_hz    = g_sdr.lo_offset_hz;
+  fs.smeter_offset_db = g_sdr.smeter_offset_db;
+  fs.iq_gain         = g_sdr.iq_gain;
+  fs.iq_phase        = g_sdr.iq_phase;
+
+  /* VFO B */
+  fs.vfo_b_freq_hz     = g_sdr.vfo_b.freq_hz;
+  fs.vfo_b_step        = (uint32_t)g_sdr.vfo_b.step;
+  fs.vfo_b_bw_hz       = g_sdr.vfo_b.bw_hz;
+  fs.vfo_b_sl_hz       = g_sdr.vfo_b.sl_hz;
+  fs.vfo_b_mode        = (uint8_t)g_sdr.vfo_b.mode;
+  fs.vfo_b_band_idx    = g_sdr.vfo_b.band_idx;
+  fs.vfo_b_if_shift_hz = g_sdr.vfo_b.if_shift_hz;
+  fs.active_vfo        = g_sdr.active_vfo;
+
+  Flash_SaveSettings(&g_flash, &fs);
+}
 
 /* ══════════════════════════════════════════════════════════
  *  CSDR_Init  – gọi từ main.c USER CODE BEGIN 2
@@ -251,14 +309,44 @@ void CSDR_Init(void)
   if (W25Q_Init(&g_flash, &hspi3, FLASH_CS_GPIO_Port, FLASH_CS_Pin) == HAL_OK) {
     Flash_Settings_t fs;
     if (Flash_LoadSettings(&g_flash, &fs) == HAL_OK) {
-      g_sdr.freq_hz  = fs.freq_hz;
-      g_sdr.mode     = (SDR_Mode_t)fs.mode;
-      g_sdr.band_idx = fs.band_idx;
-      g_sdr.volume   = fs.volume;
-      g_sdr.squelch  = fs.squelch;
-      g_sdr.att_db   = fs.att_db;
-      g_sdr.agc_fast = fs.agc_fast;
-      g_sdr.step     = (FreqStep_t)fs.step;
+      /* VFO A */
+      g_sdr.freq_hz       = fs.freq_hz;
+      g_sdr.mode          = (SDR_Mode_t)fs.mode;
+      g_sdr.band_idx      = fs.band_idx;
+      g_sdr.step          = (FreqStep_t)fs.step;
+      g_sdr.bw_hz         = fs.bw_hz;
+      g_sdr.sl_hz         = fs.sl_hz;
+      g_sdr.if_shift_hz   = fs.if_shift_hz;
+      /* Operating controls */
+      g_sdr.volume        = fs.volume;
+      g_sdr.squelch       = fs.squelch;
+      g_sdr.att_db        = fs.att_db;
+      g_sdr.agc_fast      = fs.agc_fast;
+      g_sdr.nb_on         = fs.nb_on;
+      g_sdr.nr_on         = fs.nr_on;
+      g_sdr.nb_level      = fs.nb_level;
+      g_sdr.rf_agc_on     = fs.rf_agc_on;
+      /* TX / audio */
+      g_sdr.mic_gain      = fs.mic_gain;
+      g_sdr.digi_gain     = fs.digi_gain;
+      g_sdr.audio_gain_db = fs.audio_gain_db;
+      /* Calibration */
+      g_sdr.xtal_ppm         = fs.xtal_ppm;
+      g_sdr.dc_i_offset      = fs.dc_i_offset;
+      g_sdr.dc_q_offset      = fs.dc_q_offset;
+      g_sdr.lo_offset_hz     = fs.lo_offset_hz;
+      g_sdr.smeter_offset_db = fs.smeter_offset_db;
+      g_sdr.iq_gain          = fs.iq_gain;
+      g_sdr.iq_phase         = fs.iq_phase;
+      /* VFO B */
+      g_sdr.vfo_b.freq_hz     = fs.vfo_b_freq_hz;
+      g_sdr.vfo_b.mode        = (SDR_Mode_t)fs.vfo_b_mode;
+      g_sdr.vfo_b.band_idx    = fs.vfo_b_band_idx;
+      g_sdr.vfo_b.step        = (FreqStep_t)fs.vfo_b_step;
+      g_sdr.vfo_b.bw_hz       = fs.vfo_b_bw_hz;
+      g_sdr.vfo_b.sl_hz       = fs.vfo_b_sl_hz;
+      g_sdr.vfo_b.if_shift_hz = fs.vfo_b_if_shift_hz;
+      g_sdr.active_vfo        = fs.active_vfo;
     }
   }
   SDR_UI_Init();
@@ -293,6 +381,11 @@ void CSDR_Init(void)
   /* PE4302 Attenuator */
   PE4302_Init(&g_att);
   PE4302_SetAttn_dB(&g_att, g_sdr.att_db);
+
+  /* RF AGC — syncs tracked target to the hardware value set above */
+  RFAGC_Init(&g_rfagc);
+  g_rfagc.target_x2 = g_att.current_atten_x2;   /* no step-change on first update */
+  RFAGC_SetEnabled(&g_rfagc, g_sdr.rf_agc_on, g_att.current_atten_x2);
 
   /* BPF + LPF */
   BPF_LPF_Init();
@@ -368,6 +461,8 @@ void CSDR_Init(void)
     .get_vfo_b_lo_cut = cat_get_vfo_b_lo_cut,
     .set_active_vfo  = cat_set_active_vfo,
     .get_active_vfo  = cat_get_active_vfo,
+    .set_rf_agc      = cat_set_rf_agc,
+    .get_rf_agc      = cat_get_rf_agc,
   };
   CAT_Init(&g_cat, &cb);
 
@@ -540,6 +635,7 @@ void CSDR_Loop(void)
 
   /* Timed tasks */
   static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0, t_spec=0, t_tx_spec=0;
+  static uint32_t t_rfagc = 0U;
   uint32_t now = HAL_GetTick();
 
   if (now - t_analog >= 100U) {
@@ -549,6 +645,19 @@ void CSDR_Loop(void)
   }
   if (now - t_fan    >= 1000U){ t_fan    = now; Fan_Update(g_analog.temp_c); }
   if (now - t_pwr    >= 100U) { t_pwr    = now; PWR_Poll(); }
+
+  /* RF AGC: update PE4302 attenuation from DSP signal level, RX only.
+   * Runs at RFAGC_INTERVAL_MS (20 ms).  All SPI writes are bit-bang and
+   * complete in < 2 µs — negligible main-loop impact. */
+  if (!g_sdr.tx_mode && (now - t_rfagc >= RFAGC_INTERVAL_MS)) {
+    t_rfagc = now;
+    uint8_t new_x2 = RFAGC_Update(&g_rfagc, g_dsp.signal_power_db, g_sdr.tx_mode);
+    if (new_x2 != RFAGC_NO_CHANGE) {
+      PE4302_SetAttn_Raw(&g_att, new_x2);
+      g_sdr.att_db = g_att.current_atten_db;  /* keep integer field in sync for CAT */
+      g_sdr.display_dirty |= DIRTY_SBR;
+    }
+  }
 
   /* Spectrum: ~15 fps in RX.  Independent timer from waterfall — allows fast
    * peak-trace responsiveness without pulling the slower waterfall scroll rate.
@@ -860,6 +969,9 @@ void CSDR_Loop(void)
       g_sdr.cat_att_dirty = false;
       PE4302_SetAttn_dB(&g_att, g_sdr.att_db);
       g_sdr.att_db = g_att.current_atten_db;
+      /* Manual change: notify RF AGC so it respects the cooldown */
+      RFAGC_NotifyManual(&g_rfagc, g_att.current_atten_x2);
+      g_sdr.display_dirty |= DIRTY_SBR;
     }
     if (g_sdr.cat_rit_dirty) {
       g_sdr.cat_rit_dirty = false;
@@ -892,6 +1004,10 @@ void CSDR_Loop(void)
     }
   }
 
+  /* Flash protocol: execute any pending command and send response.
+   * Runs before CAT_FlushTX so the CDC TX is free when CAT needs it. */
+  FlashProto_Process();
+
   /* CAT TX flush — single call site, runs every main-loop tick (~1 ms).
    * Positioned AFTER CAT_Process so new responses are drained on the same
    * tick they are enqueued.  On non-Process ticks this retries any remaining
@@ -916,7 +1032,11 @@ void CSDR_SysTickCallback(void)
  * ══════════════════════════════════════════════════════════ */
 void CSDR_CDC_Receive(uint8_t *buf, uint32_t len)
 {
-  CAT_Receive(&g_cat, buf, (uint16_t)len);
+  if (len > 0U && (buf[0] == FLASH_PROTO_MAGIC || FlashProto_IsActive())) {
+      FlashProto_Receive(buf, (uint16_t)len);
+  } else {
+      CAT_Receive(&g_cat, buf, (uint16_t)len);
+  }
 }
 
 /* Called from CDC_Close (USB disconnect) to flush stale parser state so the
@@ -929,6 +1049,7 @@ void CSDR_CDC_ResetCAT(void)
    * the already-zeroed struct back — losing all function pointers.
    * BASEPRI = 0x20: masks USB OTG IRQ (CAT_Receive appends to rx_len);
    * SAI/DMA (priority 0) unmasked — audio continues during this copy. */
+  FlashProto_Init();
   CAT_Callbacks_t saved_cb;
   __set_BASEPRI(0x20U);
   saved_cb     = g_cat.cb;
@@ -1068,6 +1189,7 @@ static void csdr_handle_encoder(void)
                 SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
               SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
             }
+            csdr_save_settings();
           }
         } else if (strcmp(name, "SWR Scan") == 0) {
           SWR_Scan_Run();
@@ -1172,6 +1294,7 @@ static void csdr_handle_keys(void)
                 SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
               SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
             }
+            csdr_save_settings();
           }
         } else if (strcmp(name, "SWR Scan") == 0) {
           SWR_Scan_Run();
@@ -1279,6 +1402,8 @@ static void csdr_refresh_display(void)
     ui.signal_db = g_dsp.signal_power_db;
     ui.bw_hz     = g_sdr.bw_hz;         ui.voltage_x10 = (int16_t)(g_analog.voltage_mv / 100);
     ui.att_db    = g_sdr.att_db;
+    ui.att_x2    = g_att.current_atten_x2;   /* 0.5 dB precision for sidebar display */
+    ui.rf_agc_on = g_sdr.rf_agc_on;
     ui.mic_gain  = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL)
                    ? g_sdr.digi_gain : g_sdr.mic_gain;
     ui.freq_b_hz = g_sdr.vfo_b.freq_hz; /* inactive VFO shown in sub-line */
@@ -1364,7 +1489,11 @@ static void menu_apply_cb(void)
   g_sdr.cat_rit_dirty = true;  /* apply new RIT offset to nco_if via CSDR_Loop */
   csdr_apply_volume(vol); g_sdr.squelch = sq;
   g_sdr.step = (FreqStep_t)step;
-  if (att != g_sdr.att_db) { PE4302_SetAttn_dB(&g_att, att); g_sdr.att_db = att; }
+  if (att != g_sdr.att_db) {
+    PE4302_SetAttn_dB(&g_att, att);
+    g_sdr.att_db = att;
+    RFAGC_NotifyManual(&g_rfagc, g_att.current_atten_x2);  /* freeze RF AGC cooldown */
+  }
   if (band != g_sdr.band_idx) csdr_apply_band(band);
   if (mode != (uint8_t)g_sdr.mode) {
     g_sdr.mode  = (SDR_Mode_t)mode;
@@ -1378,6 +1507,7 @@ static void menu_apply_cb(void)
   g_sdr.usb_mode = usb;
   if (zoom != SDR_UI_GetSpecZoom()) SDR_UI_SetSpecZoom(zoom);
   g_sdr.display_dirty |= DIRTY_ALL;
+  csdr_save_settings();
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1731,6 +1861,15 @@ static void cat_set_lo_cut(uint32_t hz)
   g_sdr.display_dirty |= DIRTY_VFO;
 }
 static uint32_t cat_get_lo_cut(void) { return g_sdr.sl_hz; }
+
+static void cat_set_rf_agc(bool on)
+{
+  RFAGC_SetEnabled(&g_rfagc, on, g_att.current_atten_x2);
+  g_sdr.rf_agc_on = on;
+  g_sdr.display_dirty |= DIRTY_SBR;
+  csdr_save_settings();
+}
+static bool cat_get_rf_agc(void) { return g_sdr.rf_agc_on; }
 
 int32_t *CSDR_GetTxBuf(void) { return s_tx_buf; }
 int32_t *CSDR_GetRxBuf(void) { return s_rx_buf; }

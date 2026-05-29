@@ -157,6 +157,9 @@ typedef struct {
   /* Active VFO selection – triggers hardware swap when changed */
   void     (*set_active_vfo)(uint8_t vfo); /*!< 0=A, 1=B                */
   uint8_t  (*get_active_vfo)(void);
+  /* RF AGC (PE4302 automatic front-end attenuation) — RG command */
+  void     (*set_rf_agc)(bool on);         /*!< RGn: 0=off, 1=on        */
+  bool     (*get_rf_agc)(void);
 } CAT_Callbacks_t;
 
 /** CAT driver state */

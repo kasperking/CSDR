@@ -87,22 +87,73 @@ typedef struct {
   bool               present;    /* true nếu chip phát hiện  */
 } W25Q_Handle_t;
 
-/* Settings structure lưu trong flash */
+/* Settings structure stored in flash sector 0.
+ * Layout: 4-byte fields first, 2-byte next, 1-byte/bool last → zero implicit
+ * padding.  crc32 covers all bytes except itself (last 4).  Struct size = 132 B.
+ * Changing any field breaks backward compat (CRC mismatch → defaults loaded). */
 typedef struct {
-  uint32_t   magic;              /* 0xFADEFADE → valid         */
+  /* ── always first ───────────────────────────────────────────── */
+  uint32_t   magic;              /* 0xFADEFADE → valid           */
+
+  /* ── VFO A — 4-byte ─────────────────────────────────────────── */
   uint32_t   freq_hz;
-  uint8_t    mode;
+  uint32_t   step;               /* FreqStep_t cast to u32       */
+  uint32_t   bw_hz;              /* high-cut filter edge Hz      */
+  uint32_t   sl_hz;              /* low-cut filter edge Hz       */
+
+  /* ── Calibration — 4-byte ───────────────────────────────────── */
+  int32_t    xtal_ppm;           /* SI5351 crystal correction    */
+  int32_t    dc_i_offset;        /* DSP DC-I bias                */
+  int32_t    dc_q_offset;        /* DSP DC-Q bias                */
+  uint32_t   lo_offset_hz;       /* LO tuning offset             */
+
+  /* ── VFO B — 4-byte ─────────────────────────────────────────── */
+  uint32_t   vfo_b_freq_hz;
+  uint32_t   vfo_b_step;
+  uint32_t   vfo_b_bw_hz;
+  uint32_t   vfo_b_sl_hz;
+
+  /* ── VFO A / TX / audio — 2-byte ────────────────────────────── */
+  int16_t    if_shift_hz;
+  int16_t    mic_gain;           /* voice TX drive 0-100         */
+  int16_t    digi_gain;          /* digi TX drive 0-100          */
+  int16_t    audio_gain_db;
+
+  /* ── Calibration — 2-byte ───────────────────────────────────── */
+  int16_t    smeter_offset_db;
+  int16_t    iq_gain;
+  int16_t    iq_phase;
+
+  /* ── VFO B — 2-byte ─────────────────────────────────────────── */
+  int16_t    vfo_b_if_shift_hz;
+
+  /* ── VFO A — 1-byte ─────────────────────────────────────────── */
+  uint8_t    mode;               /* SDR_Mode_t cast to u8        */
   uint8_t    band_idx;
   uint8_t    volume;
   uint8_t    squelch;
   uint8_t    att_db;
+  uint8_t    nb_level;           /* noise blanker intensity 0-100 */
+  uint8_t    active_vfo;         /* 0 = A, 1 = B                 */
+
+  /* ── VFO B — 1-byte ─────────────────────────────────────────── */
+  uint8_t    vfo_b_mode;
+  uint8_t    vfo_b_band_idx;
+
+  /* ── Bool flags ─────────────────────────────────────────────── */
   bool       agc_fast;
   bool       nb_on;
   bool       nr_on;
-  uint32_t   step;
-  uint8_t    si5351_cal[32];     /* SI5351 crystal correction  */
-  uint8_t    reserved[64];
-  uint32_t   crc32;             /* CRC cuối cùng              */
+  bool       rf_agc_on;
+
+  /* ── SI5351 per-band calibration (future) ───────────────────── */
+  uint8_t    si5351_cal[32];
+
+  /* ── Reserved / padding to align crc32 to 4-byte boundary ───── */
+  uint8_t    reserved[15];       /* crc32 lands at offset 128    */
+
+  /* ── always last ────────────────────────────────────────────── */
+  uint32_t   crc32;
 } Flash_Settings_t;
 
 #define FLASH_SETTINGS_MAGIC     0xFADEFADEUL

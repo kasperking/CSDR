@@ -36,7 +36,9 @@ SYSTEM_C    = os.path.join(ROOT, "Core", "Src", "system_stm32h7xx.c")
 # ── Menu catalogue ────────────────────────────────────────────────────────────
 # Each entry:  (value_key, display_label)
 # Double-space separates the short name (shown in main menu) from the detail.
-# Settings with "custom_input": True handle a CUSTOM sentinel in choices.
+# "custom_input": True  -- enables a CUSTOM sentinel that prompts for a value.
+# "ask_custom":          -- "hz" (frequency Hz) or "mbit" (capacity Mbit).
+# "parent"/"parent_val" -- setting only shown when parent matches parent_val.
 
 SETTINGS = OrderedDict([
     ("lcd_controller", {
@@ -102,17 +104,44 @@ SETTINGS = OrderedDict([
         "default": "CRYSTAL",
     }),
     ("hse_freq_hz", {
-        "label":   "HSE Frequency",
+        "label":      "HSE Frequency",
         "choices": OrderedDict([
             ("24000000", "24.000 MHz  (common TCXO)"),
             ("25000000", "25.000 MHz  (default crystal)"),
             ("26000000", "26.000 MHz  (common TCXO)"),
             ("CUSTOM",   "Custom value  (enter exact Hz)"),
         ]),
-        "default": "25000000",
+        "default":     "25000000",
         "custom_input": True,
+        "ask_custom":   "hz",
+    }),
+    ("storage_type", {
+        "label":   "Ext NVM Storage",
+        "choices": OrderedDict([
+            ("NONE",     "None           (no external NVM fitted)"),
+            ("I2C_EE",   "I2C EEPROM     (AT24Cxx, M24xxx, etc.)"),
+            ("SPI_EE",   "SPI EEPROM     (M95xxx, CAT25xxx, etc.)"),
+            ("W25Q_NOR", "W25Q NOR Flash  (W25Q16 .. W25Q128+)"),
+        ]),
+        "default": "W25Q_NOR",
+    }),
+    ("w25q_model", {
+        "label":      "  W25Q Model",
+        "choices": OrderedDict([
+            ("W25Q16",  "W25Q16   16 Mbit   (2 MB)"),
+            ("W25Q32",  "W25Q32   32 Mbit   (4 MB)"),
+            ("W25Q64",  "W25Q64   64 Mbit   (8 MB)"),
+            ("W25Q128", "W25Q128  128 Mbit  (16 MB)  [CSDR default]"),
+            ("CUSTOM",  "Custom   (enter capacity in Mbit)"),
+        ]),
+        "default":      "W25Q128",
+        "custom_input": True,
+        "ask_custom":   "mbit",
+        "parent":       "storage_type",   # only shown when parent matches
+        "parent_val":   "W25Q_NOR",
     }),
 ])
+
 
 # Built-in presets
 PRESETS = OrderedDict([
@@ -123,6 +152,7 @@ PRESETS = OrderedDict([
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "MEDIUM",
             "board_type":      "TEST",   "dma_chunk_rows":  "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
+            "storage_type":    "W25Q_NOR", "w25q_model":    "W25Q128",
         },
     }),
     ("hw_prod_v1", {
@@ -132,6 +162,7 @@ PRESETS = OrderedDict([
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "VERY_HIGH",
             "board_type":      "PRODUCTION", "dma_chunk_rows": "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
+            "storage_type":    "W25Q_NOR", "w25q_model":    "W25Q128",
         },
     }),
     ("hw_long_fpc_debug", {
@@ -141,6 +172,7 @@ PRESETS = OrderedDict([
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "MEDIUM",
             "board_type":      "LONG_FPC", "dma_chunk_rows": "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
+            "storage_type":    "W25Q_NOR", "w25q_model":    "W25Q128",
         },
     }),
     ("hw_compact_st7789", {
@@ -150,6 +182,7 @@ PRESETS = OrderedDict([
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "MEDIUM",
             "board_type":      "TEST",   "dma_chunk_rows":  "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
+            "storage_type":    "W25Q_NOR", "w25q_model":    "W25Q128",
         },
     }),
 ])
@@ -217,6 +250,33 @@ BOARD_LABEL = {
     "LONG_FPC":   "Long FPC debug",
 }
 
+# Known W25Q model -> capacity in Mbit
+W25Q_MODELS = {
+    "W25Q16":  16,
+    "W25Q32":  32,
+    "W25Q64":  64,
+    "W25Q128": 128,
+}
+
+# Storage type numeric IDs emitted as HW_STORAGE_TYPE
+# 0=none 1=i2c_ee 2=spi_ee 3=w25q 4=fram 5=qspi_nor 6=nand 7=sd
+STORAGE_TYPE_ID = {
+    "NONE":     0,
+    "I2C_EE":   1,
+    "SPI_EE":   2,
+    "W25Q_NOR": 3,
+}
+
+STORAGE_LABEL = {
+    "NONE":     "None",
+    "I2C_EE":   "I2C EEPROM",
+    "SPI_EE":   "SPI EEPROM",
+    "W25Q_NOR": "W25Q NOR Flash",
+}
+
+# Minimum W25Q capacity for HW_HAS_LARGE_NVM and HW_SUPPORTS_WATERFALL_CACHE
+_LARGE_NVM_MBIT = 8    # >= 1 MB usable
+
 
 # ── PLL computation ────────────────────────────────────────────────────────────
 
@@ -282,7 +342,6 @@ def compute_pll2(hse_hz):
         if not (1_000_000 <= vco_in <= 16_000_000):
             continue
         for p in range(2, 129):
-            # n closest to TARGET*p/vco_in
             n_exact = TARGET * p / vco_in
             n = int(round(n_exact))
             if n < 4 or n > 512:
@@ -308,6 +367,53 @@ def compute_pll2(hse_hz):
 def _pll_fallback():
     return {"m": 0, "n": 0, "p": 0, "vco_in": 0, "vco_out": 0,
             "sai_hz": 0, "err_hz": 0, "rge": "RCC_PLL1VCIRANGE_0"}
+
+
+# ── Storage resolution ────────────────────────────────────────────────────────
+
+def resolve_w25q_mbit(model_val):
+    """Return W25Q capacity in Mbit from model key or custom numeric string."""
+    if model_val in W25Q_MODELS:
+        return W25Q_MODELS[model_val]
+    try:
+        return int(model_val)
+    except (ValueError, TypeError):
+        return 128  # safe fallback
+
+
+def resolve_storage(cfg):
+    """Return dict of storage-derived values for the current config."""
+    stype   = cfg.get("storage_type", "NONE")
+    type_id = STORAGE_TYPE_ID.get(stype, 0)
+    is_w25q = 1 if stype == "W25Q_NOR" else 0
+
+    if is_w25q:
+        mbit         = resolve_w25q_mbit(cfg.get("w25q_model", "W25Q128"))
+        has_large    = 1 if mbit >= _LARGE_NVM_MBIT else 0
+        supports_wf  = 1 if mbit >= _LARGE_NVM_MBIT else 0
+        page_size    = 256
+        sector_size  = 4096
+    else:
+        mbit        = 0
+        has_large   = 0
+        supports_wf = 0
+        page_size   = 0
+        sector_size = 0
+
+    has_storage = 1 if stype != "NONE" else 0
+
+    return {
+        "stype":       stype,
+        "type_id":     type_id,
+        "is_w25q":     is_w25q,
+        "has_storage": has_storage,
+        "has_large":   has_large,
+        "supports_wf": supports_wf,
+        "mbit":        mbit,
+        "page_size":   page_size,
+        "sector_size": sector_size,
+        "label":       STORAGE_LABEL.get(stype, stype),
+    }
 
 
 # ── Validation ────────────────────────────────────────────────────────────────
@@ -405,36 +511,138 @@ def resolve(cfg):
     except (ValueError, TypeError):
         hse_hz = 25_000_000
 
-    pll1 = compute_pll1(hse_hz) or _pll_fallback()
-    pll2 = compute_pll2(hse_hz) or _pll_fallback()
+    pll1    = compute_pll1(hse_hz) or _pll_fallback()
+    pll2    = compute_pll2(hse_hz) or _pll_fallback()
+    storage = resolve_storage(cfg)
 
     return {
-        "panel":       PANEL_ID[ctrl],
-        "madctl":      madctl_val,
-        "madctl_desc": madctl_desc,
-        "lcd_w":       w,
-        "lcd_h":       h,
-        "timing":      timing,
-        "gpio_speed":  GPIO_SPEED_CONST[speed],
-        "dma_rows":    rows,
-        "hse_hz":      hse_hz,
-        "hse_source":  cfg["hse_source"],
+        "panel":        PANEL_ID[ctrl],
+        "madctl":       madctl_val,
+        "madctl_desc":  madctl_desc,
+        "lcd_w":        w,
+        "lcd_h":        h,
+        "timing":       timing,
+        "gpio_speed":   GPIO_SPEED_CONST[speed],
+        "dma_rows":     rows,
+        "hse_hz":       hse_hz,
+        "hse_source":   cfg["hse_source"],
         "hse_rcc_mode": HSE_RCC_MODE[cfg["hse_source"]],
-        "pll1":        pll1,
-        "pll2":        pll2,
+        "pll1":         pll1,
+        "pll2":         pll2,
+        "storage":      storage,
     }
 
 
 # ── Header generation ─────────────────────────────────────────────────────────
 
+def _storage_header_section(cfg, st):
+    """Return the storage section string for hw_config_active.h."""
+    stype      = st["stype"]
+    type_id    = st["type_id"]
+    has_store  = st["has_storage"]
+    has_large  = st["has_large"]
+    sup_wf     = st["supports_wf"]
+    is_w25q    = st["is_w25q"]
+    mbit       = st["mbit"]
+    page       = st["page_size"]
+    sector     = st["sector_size"]
+
+    # One-line summary for comment
+    if is_w25q:
+        model_str = cfg.get("w25q_model", "W25Q128")
+        if model_str not in W25Q_MODELS:
+            model_str = f"Custom {mbit} Mbit"
+        summary = f"W25Q NOR Flash  {model_str}  {mbit} Mbit ({mbit // 8} MB)"
+    elif stype == "NONE":
+        summary = "None (no external NVM fitted)"
+    else:
+        summary = st["label"]
+
+    # Build flag lines — one flag = 1 per type, rest = 0
+    flags = {
+        "HW_STORAGE_NONE":     1 if stype == "NONE"     else 0,
+        "HW_STORAGE_I2C_EE":   1 if stype == "I2C_EE"   else 0,
+        "HW_STORAGE_SPI_EE":   1 if stype == "SPI_EE"   else 0,
+        "HW_STORAGE_W25Q":     1 if stype == "W25Q_NOR"  else 0,
+        "HW_STORAGE_FRAM":     0,   # future: SPI FRAM (e.g. MB85RSxxx)
+        "HW_STORAGE_QSPI_NOR": 0,   # future: QSPI NOR (OSPI / OCTOSPI)
+        "HW_STORAGE_NAND":     0,   # future: SPI/parallel NAND
+        "HW_STORAGE_SD":       0,   # future: SD / MMC card
+    }
+
+    lines = [
+        "/* -- External NVM storage -----------------------------------------------\n",
+        f" * Selected : {summary}\n",
+        " *\n",
+        " * Use #if HW_STORAGE_W25Q / HW_STORAGE_NONE etc. for conditional\n",
+        " * compilation.  Future variants (FRAM, QSPI_NOR, NAND, SD) will use\n",
+        " * the same flag pattern with type IDs 4-7.\n",
+        " *\n",
+        " * HW_HAS_PERSISTENT_STORAGE : any writable NVM is fitted\n",
+        " * HW_HAS_LARGE_NVM          : >= 8 Mbit fitted (suitable for IQ/WF buffering)\n",
+        " * HW_SUPPORTS_WATERFALL_CACHE: large NVM available for waterfall snapshots  */\n",
+        "\n",
+        "/* Storage type flags (exactly one equals 1) */\n",
+    ]
+    for name, val in flags.items():
+        comment = ""
+        if name == "HW_STORAGE_FRAM":
+            comment = "   /* future */"
+        elif name == "HW_STORAGE_QSPI_NOR":
+            comment = "  /* future */"
+        elif name == "HW_STORAGE_NAND":
+            comment = "      /* future */"
+        elif name == "HW_STORAGE_SD":
+            comment = "        /* future */"
+        lines.append(f"#define {name:<28s} {val}{comment}\n")
+
+    lines += [
+        "\n",
+        f"/* Storage type ID  (0=none 1=i2c_ee 2=spi_ee 3=w25q 4-7=future) */\n",
+        f"#define HW_STORAGE_TYPE              {type_id}\n",
+        "\n",
+        "/* Capability flags */\n",
+        f"#define HW_HAS_PERSISTENT_STORAGE    {has_store}\n",
+        f"#define HW_HAS_LARGE_NVM             {has_large}\n",
+        f"#define HW_SUPPORTS_WATERFALL_CACHE  {sup_wf}\n",
+    ]
+
+    if is_w25q:
+        cap_bytes_expr = f"({mbit}UL * 131072UL)"  # Mbit * 128KB
+        lines += [
+            "\n",
+            "/* W25Q geometry  (valid only when HW_STORAGE_W25Q == 1) */\n",
+            f"#define HW_W25Q_CAPACITY_MBIT        {mbit}U\n",
+            f"#define HW_W25Q_CAPACITY_BYTES       {cap_bytes_expr}\n",
+            f"#define HW_W25Q_PAGE_SIZE            {page}U\n",
+            f"#define HW_W25Q_SECTOR_SIZE          {sector}U\n",
+            f"#define HW_W25Q_BLOCK32_SIZE         32768U\n",
+            f"#define HW_W25Q_BLOCK64_SIZE         65536U\n",
+        ]
+
+    return "".join(lines)
+
+
 def generate_header(cfg, r):
     """Return the complete content of hw_config_active.h as a string."""
-    t     = r["timing"]
-    ts    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    mdesc = r["madctl_desc"]
-    p1    = r["pll1"]
-    p2    = r["pll2"]
+    t       = r["timing"]
+    ts      = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mdesc   = r["madctl_desc"]
+    p1      = r["pll1"]
+    p2      = r["pll2"]
+    st      = r["storage"]
     sai_mhz = p2["sai_hz"] / 1e6 if p2["sai_hz"] else 0.0
+
+    # Storage summary for file-header comment
+    if st["is_w25q"]:
+        model_str = cfg.get("w25q_model", "W25Q128")
+        if model_str not in W25Q_MODELS:
+            model_str = f"Custom {st['mbit']} Mbit"
+        storage_comment = f"W25Q NOR  {model_str}  {st['mbit']} Mbit"
+    elif st["stype"] == "NONE":
+        storage_comment = "None"
+    else:
+        storage_comment = st["label"]
 
     return (
         "/* hw_config_active.h -- CSDR Hardware Configuration (auto-generated)\n"
@@ -449,6 +657,7 @@ def generate_header(cfg, r):
         f" * HSE        : {r['hse_hz']/1e6:.3f} MHz  {cfg['hse_source']}\n"
         f" * SYSCLK     : 480 MHz  (PLL1 M={p1['m']} N={p1['n']} P={p1['p']})\n"
         f" * SAI1       : {sai_mhz:.4f} MHz  (PLL2 M={p2['m']} N={p2['n']} P={p2['p']})\n"
+        f" * Storage    : {storage_comment}\n"
         " */\n"
         "\n"
         "#ifndef HW_CONFIG_ACTIVE_H\n"
@@ -501,6 +710,8 @@ def generate_header(cfg, r):
         f"#define HW_PLL2_P           {p2['p']}U\n"
         f"#define HW_PLL2_VCIRANGE    {p2['rge']}\n"
         "\n"
+        + _storage_header_section(cfg, st) +
+        "\n"
         "#endif /* HW_CONFIG_ACTIVE_H */\n"
     )
 
@@ -529,12 +740,9 @@ def patch_main_clock(r):
     p2 = r["pll2"]
     m  = r["hse_rcc_mode"]
 
-    # HSE state
     text = _sub1(
         r"(RCC_OscInitStruct\.HSEState\s*=\s*)RCC_HSE_\w+;",
         rf"\g<1>{m};", text, "main.c HSEState")
-
-    # PLL1 dividers
     text = _sub1(r"(RCC_OscInitStruct\.PLL\.PLLM\s*=\s*)\d+;",
                  rf"\g<1>{p1['m']};", text, "main.c PLLM")
     text = _sub1(r"(RCC_OscInitStruct\.PLL\.PLLN\s*=\s*)\d+;",
@@ -543,8 +751,6 @@ def patch_main_clock(r):
                  rf"\g<1>{p1['p']};", text, "main.c PLLP")
     text = _sub1(r"(RCC_OscInitStruct\.PLL\.PLLRGE\s*=\s*)RCC_PLL1VCIRANGE_\d;",
                  rf"\g<1>{p1['rge']};", text, "main.c PLLRGE")
-
-    # PLL2 dividers
     text = _sub1(r"(PeriphClkInitStruct\.PLL2\.PLL2M\s*=\s*)\d+;",
                  rf"\g<1>{p2['m']};", text, "main.c PLL2M")
     text = _sub1(r"(PeriphClkInitStruct\.PLL2\.PLL2N\s*=\s*)\d+;",
@@ -562,7 +768,6 @@ def patch_hse_value(hse_hz):
     """Patch HSE_VALUE literals in stm32h7xx_hal_conf.h and system_stm32h7xx.c."""
     hz = int(hse_hz)
 
-    # hal_conf.h:  #define HSE_VALUE    (25000000UL)
     if os.path.isfile(CONF_H):
         with open(CONF_H, encoding="utf-8") as fh:
             text = fh.read()
@@ -574,7 +779,6 @@ def patch_hse_value(hse_hz):
     else:
         print(f"  [!] {CONF_H} not found.", file=sys.stderr)
 
-    # system_stm32h7xx.c:  #define HSE_VALUE    ((uint32_t)25000000)
     if os.path.isfile(SYSTEM_C):
         with open(SYSTEM_C, encoding="utf-8") as fh:
             text = fh.read()
@@ -609,13 +813,21 @@ def load_state():
             if val in sdef["choices"]:
                 cfg[k] = val
             elif sdef.get("custom_input"):
-                # Accept numeric strings that aren't in the preset list
-                try:
-                    hz = int(val)
-                    if 1_000_000 <= hz <= 100_000_000:
-                        cfg[k] = str(hz)
-                except (ValueError, TypeError):
-                    pass
+                ask_fn = sdef.get("ask_custom", "hz")
+                if ask_fn == "mbit":
+                    try:
+                        v = int(val)
+                        if 1 <= v <= 16384:
+                            cfg[k] = str(v)
+                    except (ValueError, TypeError):
+                        pass
+                else:  # hz
+                    try:
+                        hz = int(val)
+                        if 1_000_000 <= hz <= 100_000_000:
+                            cfg[k] = str(hz)
+                    except (ValueError, TypeError):
+                        pass
         return cfg
     except (json.JSONDecodeError, KeyError, TypeError):
         return default_config()
@@ -654,15 +866,14 @@ def apply_config(cfg):
     with open(OUTPUT_FILE, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(content)
 
-    # Patch clock values into firmware source files
     patch_main_clock(r)
     patch_hse_value(r["hse_hz"])
-
     save_state(cfg)
 
     t  = r["timing"]
     p1 = r["pll1"]
     p2 = r["pll2"]
+    st = r["storage"]
     print("  Config written and source files patched:")
     print(f"    Header    : BSP/Inc/hw_config_active.h")
     print(f"    Patched   : Core/Src/main.c")
@@ -682,13 +893,34 @@ def apply_config(cfg):
           f"  ({r['hse_rcc_mode']})")
     print(f"  PLL1    : M={p1['m']} N={p1['n']} P={p1['p']}"
           f"  -> SYSCLK 480 MHz  [{p1['rge']}]")
-    sai_err = p2['err_hz']
+    sai_err = p2["err_hz"]
     print(f"  PLL2    : M={p2['m']} N={p2['n']} P={p2['p']}"
           f"  -> SAI1 {p2['sai_hz']/1e6:.4f} MHz"
           f"  (err {sai_err/1e3:.1f} kHz)  [{p2['rge']}]")
+    _print_storage_summary(st, cfg)
     print()
     print("  Rebuild firmware to apply this configuration.")
     return True
+
+
+def _print_storage_summary(st, cfg):
+    """Print the storage section of the apply/show output."""
+    if st["is_w25q"]:
+        model_str = cfg.get("w25q_model", "W25Q128")
+        if model_str not in W25Q_MODELS:
+            model_str = f"Custom {st['mbit']} Mbit"
+        cap = f"{st['mbit']} Mbit ({st['mbit'] // 8} MB)"
+        print(f"  NVM     : W25Q NOR Flash  {model_str}  {cap}")
+        flags = []
+        if st["has_storage"]:  flags.append("HAS_PERSISTENT_STORAGE")
+        if st["has_large"]:    flags.append("HAS_LARGE_NVM")
+        if st["supports_wf"]:  flags.append("SUPPORTS_WATERFALL_CACHE")
+        if flags:
+            print(f"            flags: {' '.join(flags)}")
+    elif st["stype"] == "NONE":
+        print("  NVM     : None")
+    else:
+        print(f"  NVM     : {st['label']}  -> HAS_PERSISTENT_STORAGE")
 
 
 # ── Terminal helpers ──────────────────────────────────────────────────────────
@@ -702,18 +934,38 @@ def clr():
     os.system("cls" if os.name == "nt" else "clear")
 
 
+def active_keys(cfg):
+    """Return the ordered list of setting keys to show/edit in the current cfg.
+
+    Settings with a 'parent' key are only included when
+    cfg[parent] == parent_val.
+    """
+    result = []
+    for k, sdef in SETTINGS.items():
+        parent = sdef.get("parent")
+        if parent is None or cfg.get(parent) == sdef.get("parent_val"):
+            result.append(k)
+    return result
+
+
 def short_label(key, val):
     """Short display name for a setting value."""
     sdef = SETTINGS[key]
     full = sdef["choices"].get(val)
     if full:
         return full.split("  ")[0].strip()
-    # Custom numeric value (hse_freq_hz stored as Hz string)
     if sdef.get("custom_input"):
-        try:
-            return f"{int(val)/1e6:.3f} MHz"
-        except (ValueError, TypeError):
-            pass
+        ask_fn = sdef.get("ask_custom", "hz")
+        if ask_fn == "mbit":
+            try:
+                return f"Custom {int(val)} Mbit"
+            except (ValueError, TypeError):
+                pass
+        else:
+            try:
+                return f"{int(val)/1e6:.3f} MHz"
+            except (ValueError, TypeError):
+                pass
     return str(val)
 
 
@@ -752,9 +1004,28 @@ def ask_hz(label):
             v = int(raw)
             if 1_000_000 <= v <= 100_000_000:
                 return str(v)
-            print("    Value out of range (1 MHz – 100 MHz).")
+            print("    Value out of range (1 MHz - 100 MHz).")
         except ValueError:
             print("    Enter a plain integer in Hz, e.g. 25000000")
+
+
+def ask_mbit(label):
+    """Prompt for flash capacity in Mbit; returns as string."""
+    while True:
+        try:
+            raw = input(f"\n  Enter {label} capacity in Mbit (e.g. 256): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(0)
+        if not raw:
+            continue
+        try:
+            v = int(raw)
+            if 1 <= v <= 16384:
+                return str(v)
+            print("    Value out of range (1 - 16384 Mbit).")
+        except ValueError:
+            print("    Enter an integer in Mbit, e.g. 256")
 
 
 # ── Sub-menus ─────────────────────────────────────────────────────────────────
@@ -762,21 +1033,28 @@ def ask_hz(label):
 def run_setting_menu(key, current):
     """Display choices for one setting; return the chosen value."""
     sdef    = SETTINGS[key]
-    choices = list(sdef["choices"].items())   # [(val, label), ...]
+    choices = list(sdef["choices"].items())
     is_custom_mode = current not in sdef["choices"] and sdef.get("custom_input")
+    ask_fn  = sdef.get("ask_custom", "hz")
 
     clr()
     print(_SEP)
-    print(f"  {sdef['label']}")
+    print(f"  {sdef['label'].strip()}")
     print(_THIN)
     for i, (val, desc) in enumerate(choices, 1):
         if val == current:
             marker = "  <--"
         elif val == "CUSTOM" and is_custom_mode:
-            try:
-                marker = f"  <-- ({int(current)/1e6:.3f} MHz)"
-            except (ValueError, TypeError):
-                marker = "  <--"
+            if ask_fn == "mbit":
+                try:
+                    marker = f"  <-- ({int(current)} Mbit)"
+                except (ValueError, TypeError):
+                    marker = "  <--"
+            else:
+                try:
+                    marker = f"  <-- ({int(current)/1e6:.3f} MHz)"
+                except (ValueError, TypeError):
+                    marker = "  <--"
         else:
             marker = ""
         print(f"  {i}.  {desc}{marker}")
@@ -790,7 +1068,7 @@ def run_setting_menu(key, current):
         return current
     chosen_val = choices[idx - 1][0]
     if chosen_val == "CUSTOM" and sdef.get("custom_input"):
-        return ask_hz(sdef["label"])
+        return ask_mbit(sdef["label"].strip()) if ask_fn == "mbit" else ask_hz(sdef["label"].strip())
     return chosen_val
 
 
@@ -812,7 +1090,6 @@ def run_preset_menu(cfg):
     )
     if idx == 0:
         return cfg
-    # Merge preset over defaults so all keys are always present
     new_cfg = default_config()
     new_cfg.update(preset_list[idx - 1][1]["config"])
     return new_cfg
@@ -833,6 +1110,24 @@ def _hse_resolved_line(r):
         pll2_str = f"SAI {p2['sai_hz']/1e6:.4f} MHz (err {p2['err_hz']/1e3:.1f} kHz)"
     hz_str = f"{r['hse_hz']/1e6:.3f} MHz  {r['hse_source']}"
     return hz_str, pll1_str, pll2_str
+
+
+def _storage_resolved_line(r, cfg):
+    st = r["storage"]
+    if st["is_w25q"]:
+        model_str = cfg.get("w25q_model", "W25Q128")
+        if model_str not in W25Q_MODELS:
+            model_str = f"Custom {st['mbit']} Mbit"
+        cap = f"{st['mbit']} Mbit  page={st['page_size']}  sector={st['sector_size']}"
+        flags = []
+        if st["has_storage"]:  flags.append("HAS_PERSISTENT")
+        if st["has_large"]:    flags.append("HAS_LARGE_NVM")
+        if st["supports_wf"]:  flags.append("SUPPORTS_WF_CACHE")
+        return f"W25Q  {model_str}  {cap}", " ".join(flags)
+    elif st["stype"] == "NONE":
+        return "None", ""
+    else:
+        return st["label"], "HAS_PERSISTENT"
 
 
 def print_main_menu(cfg, errors, warnings):
@@ -861,7 +1156,7 @@ def print_main_menu(cfg, errors, warnings):
             _wrap("  [!]   ", w)
         print()
 
-    keys = list(SETTINGS.keys())
+    keys = active_keys(cfg)
     for i, key in enumerate(keys, 1):
         lbl = SETTINGS[key]["label"]
         val = short_label(key, cfg[key])
@@ -870,6 +1165,7 @@ def print_main_menu(cfg, errors, warnings):
     r = resolve(cfg)
     t = r["timing"]
     hz_str, pll1_str, pll2_str = _hse_resolved_line(r)
+    st_str, st_flags = _storage_resolved_line(r, cfg)
     print()
     print("  Resolved:")
     print(f"    LCD    : {r['lcd_w']} x {r['lcd_h']}  (HW_LCD_PANEL = {r['panel']})")
@@ -880,6 +1176,9 @@ def print_main_menu(cfg, errors, warnings):
     print(f"    HSE    : {hz_str}")
     print(f"           -> {pll1_str}")
     print(f"           -> {pll2_str}")
+    print(f"    NVM    : {st_str}")
+    if st_flags:
+        print(f"           -> {st_flags}")
 
     n = len(keys)
     print()
@@ -892,12 +1191,11 @@ def print_main_menu(cfg, errors, warnings):
 
 def run_interactive(cfg):
     """Interactive menu loop. Returns final cfg on generate, None on exit."""
-    keys = list(SETTINGS.keys())
-    n    = len(keys)
-
     while True:
         errors, warnings = validate(cfg)
         print_main_menu(cfg, errors, warnings)
+        keys = active_keys(cfg)
+        n    = len(keys)
         choice = ask_int(f"\n  Select option [0-{n+2}]: ", lo=0, hi=n + 2)
 
         if choice == 0:
@@ -932,10 +1230,15 @@ def cmd_show():
     r = resolve(cfg)
     t = r["timing"]
     hz_str, pll1_str, pll2_str = _hse_resolved_line(r)
+    st_str, st_flags = _storage_resolved_line(r, cfg)
 
     print("Current hardware configuration  (config/hw_config_state.json):")
     print()
     for key, sdef in SETTINGS.items():
+        # Skip hidden conditional settings
+        parent = sdef.get("parent")
+        if parent and cfg.get(parent) != sdef.get("parent_val"):
+            continue
         val = short_label(key, cfg.get(key, sdef["default"]))
         print(f"  {sdef['label']:<22s}: {val}")
     print()
@@ -949,6 +1252,9 @@ def cmd_show():
     print(f"    HSE    : {hz_str}")
     print(f"           -> {pll1_str}")
     print(f"           -> {pll2_str}")
+    print(f"    NVM    : {st_str}")
+    if st_flags:
+        print(f"           -> {st_flags}")
 
     if errors:
         print()

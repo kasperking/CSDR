@@ -1,7 +1,7 @@
 /* hw_config_active.h -- CSDR Hardware Configuration (auto-generated)
  * DO NOT EDIT -- regenerate with:  python tools/hw_config.py
  *
- * Generated  : 2026-05-27 16:30:01
+ * Generated  : 2026-05-29 10:59:36
  * Controller : ST7796
  * Orientation: Landscape BGR
  * FMC width  : 8-bit
@@ -10,6 +10,7 @@
  * HSE        : 25.000 MHz  CRYSTAL
  * SYSCLK     : 480 MHz  (PLL1 M=5 N=192 P=2)
  * SAI1       : 12.2881 MHz  (PLL2 M=2 N=58 P=59)
+ * Storage    : W25Q NOR  W25Q128  128 Mbit
  */
 
 #ifndef HW_CONFIG_ACTIVE_H
@@ -61,5 +62,42 @@
 #define HW_PLL2_N           58U
 #define HW_PLL2_P           59U
 #define HW_PLL2_VCIRANGE    RCC_PLL2VCIRANGE_3
+
+/* -- External NVM storage -----------------------------------------------
+ * Selected : W25Q NOR Flash  W25Q128  128 Mbit (16 MB)
+ *
+ * Use #if HW_STORAGE_W25Q / HW_STORAGE_NONE etc. for conditional
+ * compilation.  Future variants (FRAM, QSPI_NOR, NAND, SD) will use
+ * the same flag pattern with type IDs 4-7.
+ *
+ * HW_HAS_PERSISTENT_STORAGE : any writable NVM is fitted
+ * HW_HAS_LARGE_NVM          : >= 8 Mbit fitted (suitable for IQ/WF buffering)
+ * HW_SUPPORTS_WATERFALL_CACHE: large NVM available for waterfall snapshots  */
+
+/* Storage type flags (exactly one equals 1) */
+#define HW_STORAGE_NONE              0
+#define HW_STORAGE_I2C_EE            0
+#define HW_STORAGE_SPI_EE            0
+#define HW_STORAGE_W25Q              1
+#define HW_STORAGE_FRAM              0   /* future */
+#define HW_STORAGE_QSPI_NOR          0  /* future */
+#define HW_STORAGE_NAND              0      /* future */
+#define HW_STORAGE_SD                0        /* future */
+
+/* Storage type ID  (0=none 1=i2c_ee 2=spi_ee 3=w25q 4-7=future) */
+#define HW_STORAGE_TYPE              3
+
+/* Capability flags */
+#define HW_HAS_PERSISTENT_STORAGE    1
+#define HW_HAS_LARGE_NVM             1
+#define HW_SUPPORTS_WATERFALL_CACHE  1
+
+/* W25Q geometry  (valid only when HW_STORAGE_W25Q == 1) */
+#define HW_W25Q_CAPACITY_MBIT        128U
+#define HW_W25Q_CAPACITY_BYTES       (128UL * 131072UL)
+#define HW_W25Q_PAGE_SIZE            256U
+#define HW_W25Q_SECTOR_SIZE          4096U
+#define HW_W25Q_BLOCK32_SIZE         32768U
+#define HW_W25Q_BLOCK64_SIZE         65536U
 
 #endif /* HW_CONFIG_ACTIVE_H */

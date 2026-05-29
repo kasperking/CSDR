@@ -299,6 +299,8 @@ typedef struct {
   uint32_t  bw_hz;
   int16_t   voltage_x10;  /*!< Supply voltage × 10, e.g. 132 = 13.2 V     */
   uint8_t   att_db;
+  uint8_t   att_x2;       /*!< PE4302 raw value (0–63, 0.5 dB/step); overrides att_db in display */
+  bool      rf_agc_on;    /*!< RF AGC active — colours AT label green */
   int16_t   mic_gain;
   uint16_t  filter_len;
   uint8_t   dsp_level;

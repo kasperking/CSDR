@@ -552,6 +552,8 @@ void SDR_UI_DrawTXSpectrum(const float *fft_db, uint16_t bins,
 
   s_wf_head = (s_wf_head >= (uint8_t)(WF_H - 1U)) ? 0U : (uint8_t)(s_wf_head + 1U);
 
+  /* s_wf_buf must not be written while any previous WF DMA is still reading it. */
+  LCD_Wait();
   uint16_t *wf_row = &s_wf_buf[s_wf_head][TX_PANEL_X];
   for (uint16_t x = 0U; x < TX_PANEL_W; x++) {
     float    fbin = (float)b_lo + (float)x * bpp;
@@ -563,10 +565,14 @@ void SDR_UI_DrawTXSpectrum(const float *fft_db, uint16_t bins,
   }
 
   uint16_t wf_lcd_y = (uint16_t)(WF_Y + s_wf_head);
-  LCD_Wait();
   LCD_PushWindowAsync((uint16_t)(WF_X + TX_PANEL_X), wf_lcd_y,
                       (uint16_t)(WF_X + TX_PANEL_X + TX_PANEL_W - 1U), wf_lcd_y,
                       wf_row, (uint32_t)TX_PANEL_W * 2U);
+  /* Barrier: do not exit with DMA in flight.  csdr_refresh_display fires every
+   * 1000 ms in TX mode — same loop iteration as t_tx_spec at LCM(200,1000) —
+   * and calls synchronous LCD_PushWindow.  Without this wait the two paths
+   * write to LCD_FMC_DATA_ADDR concurrently, corrupting the command stream. */
+  LCD_Wait();
 }
 
 /* ── Spectrum zoom state ─────────────────────────────────────────────────────
@@ -1078,14 +1084,21 @@ void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
   const char *mic_lbl = digi_mode ? "DG" : "MIC";
   uint16_t    mic_vc  = digi_mode ? UI_STATUS_ON : UI_STATUS_VAL;
 
-  char att_str[8]; snprintf(att_str, sizeof(att_str), "%udB", ui->att_db);
+  /* AT: show 0.5 dB precision from PE4302 raw register value.
+   * When RF AGC is active the value colour changes to green (UI_STATUS_ON). */
+  char att_str[8];
+  if (ui->att_x2 & 1U)
+    snprintf(att_str, sizeof(att_str), "%.1f", (float)ui->att_x2 * 0.5f);
+  else
+    snprintf(att_str, sizeof(att_str), "%udB", ui->att_x2 / 2U);
+  uint16_t att_vc = ui->rf_agc_on ? UI_STATUS_ON : UI_STATUS_VAL;
 
   buf_fill(s_sbr_buf, (uint32_t)SBR_H * SBR_W, UI_SBR_BG);
 
   /* 2 paired text rows; passband graphic fills the space below */
   struct { const char *lbl; const char *val; uint16_t vc; } rows[2][2] = {
-    { { "BW",  bw_str,  UI_FREQ_KHZ }, { "ST",  step_str, UI_FREQ_KHZ   } },
-    { { mic_lbl, mic_str, mic_vc    }, { "AT",  att_str,  UI_STATUS_VAL } },
+    { { "BW",  bw_str,  UI_FREQ_KHZ }, { "ST",  step_str, UI_FREQ_KHZ } },
+    { { mic_lbl, mic_str, mic_vc    }, { "AT",  att_str,  att_vc      } },
   };
 
   const uint16_t row_h   = 26U;
@@ -2037,6 +2050,13 @@ uint8_t SDR_UI_WaterfallPrecompute(const float *fft_db, uint16_t bins)
  *  DMA: WF_W × WF_H × 2 B = 69,120 B ≈ 8.1 ms over 8-bit FMC.
  *  At 75 ms frame period (13 fps): ~8.3 ms / 75 ms = 11 % FMC time.
  *
+ *  Synchronisation invariant:
+ *    s_wf_buf must not be modified (memmove or row write) while LCD DMA is
+ *    actively reading from it.  Two explicit LCD_Wait() barriers enforce this:
+ *      1. Before memmove — guards the entire buffer rewrite.
+ *      2. After the final strip push — ensures the function never exits with
+ *         an in-flight DMA on s_wf_buf; any subsequent buffer touch is safe.
+ *
  *  Skipped when s_wf_suppressed is set by adaptive load control.
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_WaterfallPush(uint8_t buf_idx)
@@ -2045,28 +2065,27 @@ void SDR_UI_WaterfallPush(uint8_t buf_idx)
 
   RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_WF_SCROLL);
 
-  /* Wait for any in-flight DMA before modifying s_wf_buf */
+  /* Wait for any in-flight spec DMA before memmove touches s_wf_buf. */
   LCD_Wait();
 
-  /* Shift history down; write newest row at index 0 (top of display) */
   memmove(&s_wf_buf[1][0], &s_wf_buf[0][0],
           (WF_H - 1U) * WF_W * sizeof(uint16_t));
   const uint8_t *src = s_wf_idx[buf_idx];
   uint16_t      *row = s_wf_buf[0];
   for (uint16_t x = 0U; x < WF_W; x++) row[x] = s_wf_lut[src[x]];
 
-  /* Push full WF zone in SPEC_CHUNK_ROWS strips */
+  /* Synchronous CPU push — no DMA.
+   * The ring-buffer code (1 row/frame, async DMA) never produced white screen.
+   * The memmove code (9 strips/frame, async DMA) does.  Root-cause hypothesis:
+   * DMA2 M2M FIFO (FULL threshold) occasionally generates a spurious extra byte
+   * to the FMC data register under SAI DMA bus contention.  At 9 strips × 13fps
+   * the FIFO runs ~72× more operations per second than the old ring path; the
+   * extra byte shifts the LCD RAMWR counter, eventually desyncing the command
+   * stream and producing a fully-white display.  CPU writes are byte-exact. */
   uint32_t cyc0 = DWT->CYCCNT;
-  for (uint16_t strip = 0U; strip < WF_H; strip += SPEC_CHUNK_ROWS) {
-    uint16_t rows = (uint16_t)(WF_H - strip);
-    if (rows > SPEC_CHUNK_ROWS) rows = SPEC_CHUNK_ROWS;
-    LCD_Wait();
-    LCD_PushWindowAsync(WF_X, (uint16_t)(WF_Y + strip),
-                        (uint16_t)(WF_X + WF_W - 1U),
-                        (uint16_t)(WF_Y + strip + rows - 1U),
-                        &s_wf_buf[strip][0],
-                        (uint32_t)WF_W * rows * 2U);
-  }
+  LCD_PushWindow(WF_X, WF_Y,
+                 (uint16_t)(WF_X + WF_W - 1U), (uint16_t)(WF_Y + WF_H - 1U),
+                 &s_wf_buf[0][0], (uint32_t)WF_W * WF_H);
   uint32_t row_us = ui_cyc_to_us(DWT->CYCCNT - cyc0);
 
   s_lcd_chunk_count++;
@@ -2074,8 +2093,6 @@ void SDR_UI_WaterfallPush(uint8_t buf_idx)
 
   RuntimeDiag_LcdChunkReport(s_lcd_chunk_count, s_lcd_chunk_abort_count,
                                s_wf_partial_count, s_max_chunk_render_us);
-  RuntimeDiag_LcdDmaReport(LCD_DMA_GetMaxLatencyUs(), LCD_DMA_GetQueuedCount(),
-                            LCD_IsBusy());
 
   RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_WF_SCROLL);
 }

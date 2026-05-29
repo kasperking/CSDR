@@ -87,6 +87,8 @@ named hardware profile, or choose **Generate** to write the header.
 | DMA Chunk Rows | 4 / 8 / 16 | Spectrum strip height for async DMA |
 | HSE Source | Crystal / TCXO / Bypass | Sets RCC_HSE_ON or RCC_HSE_BYPASS |
 | HSE Frequency | 24 / 25 / 26 MHz or custom | PLL input; determines SYSCLK and SAI1 |
+| Ext NVM Storage | None / I2C EEPROM / SPI EEPROM / W25Q NOR | Generates storage type flags and capability flags |
+| W25Q Model *(sub)* | W25Q16/32/64/128 / Custom Mbit | Geometry defines; shown only when W25Q NOR selected |
 
 ### MADCTL resolution table
 
@@ -230,6 +232,89 @@ This re-patches all files and regenerates the header in one step.
 
 ---
 
+## External NVM storage
+
+### Storage type selection
+
+| Menu option | `HW_STORAGE_*` flag | Type ID | Notes |
+|---|---|---|---|
+| None | `HW_STORAGE_NONE = 1` | 0 | No NVM fitted; all capability flags = 0 |
+| I2C EEPROM | `HW_STORAGE_I2C_EE = 1` | 1 | AT24Cxx, M24xxx; `HAS_PERSISTENT` only |
+| SPI EEPROM | `HW_STORAGE_SPI_EE = 1` | 2 | M95xxx, CAT25xxx; `HAS_PERSISTENT` only |
+| W25Q NOR Flash | `HW_STORAGE_W25Q = 1` | 3 | W25Q16–W25Q128+; full capability flags |
+
+Future variants (type IDs 4–7) use the same flag pattern and are reserved as
+`HW_STORAGE_FRAM`, `HW_STORAGE_QSPI_NOR`, `HW_STORAGE_NAND`, `HW_STORAGE_SD`.
+
+### W25Q model selection
+
+Shown in the menu only when W25Q NOR Flash is selected.
+
+| Model | Capacity | Notes |
+|---|---|---|
+| W25Q16 | 16 Mbit (2 MB) | Minimum for settings + small buffers |
+| W25Q32 | 32 Mbit (4 MB) | |
+| W25Q64 | 64 Mbit (8 MB) | Meets `HW_HAS_LARGE_NVM` threshold |
+| W25Q128 | 128 Mbit (16 MB) | **CSDR default** — fitted on current board |
+| Custom | 1–16384 Mbit | Enter exact capacity in Mbit |
+
+All W25Q variants share the same SPI NOR geometry:
+`PAGE_SIZE = 256 B`, `SECTOR_SIZE = 4096 B`, `BLOCK32 = 32768 B`, `BLOCK64 = 65536 B`.
+
+### Capability flags
+
+| Flag | Set when | SDR use cases |
+|---|---|---|
+| `HW_HAS_PERSISTENT_STORAGE` | Any NVM fitted | Settings storage (`Flash_Settings_t`), calibration data, band memory |
+| `HW_HAS_LARGE_NVM` | W25Q >= 8 Mbit (>= 1 MB usable) | IQ capture buffering, audio snapshots, extended logging |
+| `HW_SUPPORTS_WATERFALL_CACHE` | Same as `HW_HAS_LARGE_NVM` | Waterfall snapshot storage, playback, IQ demodulation replay |
+
+Firmware usage pattern:
+
+```c
+#include "hw_config_active.h"
+
+#if HW_STORAGE_W25Q
+    /* W25Q driver active — Flash_Settings_t, sector layout, etc. */
+    Flash_LoadSettings(&g_flash, &fs);
+#elif HW_STORAGE_I2C_EE || HW_STORAGE_SPI_EE
+    /* Small EEPROM — settings only, no large buffers */
+#else
+    /* HW_STORAGE_NONE — use RAM-only defaults */
+#endif
+
+#if HW_HAS_LARGE_NVM
+    /* Allocate IQ capture ring in flash free area */
+#endif
+
+#if HW_SUPPORTS_WATERFALL_CACHE
+    /* Enable waterfall snapshot save / restore */
+#endif
+```
+
+### Flash sector layout (W25Q NOR, current firmware)
+
+```
+Sector 0   0x000000 .. 0x000FFF   4 KB   Settings (Flash_Settings_t + CRC32)
+Sector 1   0x001000 .. 0x001FFF   4 KB   SI5351 band calibration (future)
+Sectors 3-40  0x003000 .. 0x028FFF  152 KB  Boot logo (320×240 RGB565)
+0x029000 onwards                   Free — IQ capture / waterfall cache
+```
+
+### Future-proofing
+
+New storage variants require only:
+
+1. Add a new entry to `STORAGE_TYPE_ID` in `tools/hw_config.py` (next free ID).
+2. Add a choice to `SETTINGS["storage_type"]["choices"]`.
+3. Add a `HW_STORAGE_<NAME>` flag line in `_storage_header_section()`.
+4. If the variant has sub-options (model, capacity), add a child setting with
+   `"parent": "storage_type"` and `"parent_val": "<NEW_TYPE>"`.
+5. No changes to the firmware include chain — `hw_config_active.h` propagates
+   through `lcd_panel_config.h` to all translation units.
+
+---
+
 ## Validation
 
 The interactive tool rejects or warns on:
@@ -302,6 +387,10 @@ Add an entry to `PRESETS` in `tools/hw_config.py`:
         "gpio_speed":      "MEDIUM",
         "board_type":      "TEST",
         "dma_chunk_rows":  "8",
+        "hse_source":      "CRYSTAL",
+        "hse_freq_hz":     "25000000",
+        "storage_type":    "W25Q_NOR",
+        "w25q_model":      "W25Q128",
     },
 }),
 ```

@@ -114,6 +114,8 @@ typedef struct {
   bool        cat_tx_dirty;   /* TX/RX: apply T/R relay + codec outside CAT context */
   bool        cat_att_dirty;  /* RA SET: apply PE4302 attenuator outside CAT context */
   bool        cat_rit_dirty;  /* RT/RC/RU/RD/IS: recompute nco_if = if_shift_hz + (rit_on ? rit_hz : 0) */
+  /* RF front-end AGC (PE4302) */
+  bool        rf_agc_on;     /*!< Automatic PE4302 RF attenuator control (overload prevention) */
 } SDR_State_t;
 
 extern SDR_State_t g_sdr;
