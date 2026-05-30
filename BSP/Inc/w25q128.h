@@ -135,6 +135,8 @@ typedef struct {
   uint8_t    att_db;
   uint8_t    nb_level;           /* noise blanker intensity 0-100 */
   uint8_t    active_vfo;         /* 0 = A, 1 = B                 */
+  uint8_t    tx_power;           /* TX output power 0-100%       */
+  uint8_t    pa_watts;           /* PA rating: 0/20/45/100 W     */
 
   /* ── VFO B — 1-byte ─────────────────────────────────────────── */
   uint8_t    vfo_b_mode;
@@ -150,7 +152,7 @@ typedef struct {
   uint8_t    si5351_cal[32];
 
   /* ── Reserved / padding to align crc32 to 4-byte boundary ───── */
-  uint8_t    reserved[15];       /* crc32 lands at offset 128    */
+  uint8_t    reserved[13];       /* crc32 lands at offset 128    */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;

@@ -169,6 +169,8 @@ static struct {
   int16_t  rit_hz;
   bool     tx_mode;
   uint8_t  active_vfo;
+  uint8_t  tx_power;
+  uint8_t  pa_watts;
   bool     valid;
   /* Glyph-level cache for upper-section partial push */
   char     mhz_s[6];
@@ -185,6 +187,9 @@ static struct {
   uint8_t  att_db;
   int16_t  rit_hz;     /* passband graphic shifts with IF/RIT offset */
   uint8_t  mode;       /* needed to re-render when DG↔voice label flips */
+  uint8_t  tx_power;
+  uint8_t  pa_watts;
+  bool     tx_mode;
   bool     valid;
 } s_sbr_cache;
 
@@ -1088,9 +1093,9 @@ void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
    * When RF AGC is active the value colour changes to green (UI_STATUS_ON). */
   char att_str[8];
   if (ui->att_x2 & 1U)
-    snprintf(att_str, sizeof(att_str), "%.1f", (float)ui->att_x2 * 0.5f);
+    snprintf(att_str, sizeof(att_str), "%u.5", ui->att_x2 / 2U);
   else
-    snprintf(att_str, sizeof(att_str), "%udB", ui->att_x2 / 2U);
+    snprintf(att_str, sizeof(att_str), "%u dB", ui->att_x2 / 2U);
   uint16_t att_vc = ui->rf_agc_on ? UI_STATUS_ON : UI_STATUS_VAL;
 
   buf_fill(s_sbr_buf, (uint32_t)SBR_H * SBR_W, UI_SBR_BG);
@@ -1207,6 +1212,17 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   const char *rt_str       = ui->tx_mode ? "TX" : "RX";
   uint16_t    rt_color     = ui->tx_mode ? UI_TX_BG : UI_RX_BG;
 
+  /* PW badge (ST7796 only — no vertical room on ST7789) */
+#if LCD_PANEL != LCD_PANEL_ST7789
+  char pw_str[8] = "";
+  if (ui->tx_mode) {
+    uint16_t actual_w = (ui->pa_watts > 0U)
+      ? (uint16_t)((uint32_t)ui->pa_watts * ui->tx_power / 100U)
+      : (uint16_t)ui->tx_power;
+    snprintf(pw_str, sizeof(pw_str), "%dW", (int)actual_w);
+  }
+#endif
+
   buf_fill(s_vfo_buf, (uint32_t)VFO_H * VFO_W, UI_VFO_BG);
 
   const uint16_t freq_top = 2U;
@@ -1222,12 +1238,16 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 #endif
   const uint16_t badge_y = (uint16_t)(freq_top + BIG_H + 2U);  /* row 28, mode/RX/TX base */
 
-  /* RX/TX text-only badge: no filled background; colour identifies mode */
+  /* RX/TX text-only badge: no filled background; colour identifies mode.
+   * In TX mode the badge is pinned to badge_y (no centering) to free the
+   * lower rows for the watts readout. */
   const uint16_t rt_bad_w = (uint16_t)(2U * MED_W + 6U);
   const uint16_t rt_bad_h = (uint16_t)(MED_H + 4U);
   const uint16_t rt_bx    = (uint16_t)(VFO_W - 2U - rt_bad_w);
-  const uint16_t rt_by    = (uint16_t)(badge_y +
-      ((VFO_H > badge_y + rt_bad_h) ? (VFO_H - badge_y - rt_bad_h) / 2U : 0U));
+  const uint16_t rt_by    = ui->tx_mode
+      ? badge_y
+      : (uint16_t)(badge_y +
+          ((VFO_H > badge_y + rt_bad_h) ? (VFO_H - badge_y - rt_bad_h) / 2U : 0U));
 
   /* Frequency centering: each digit = BIG_W px, each '.' = 6 px */
   uint16_t total_w = 0U;
@@ -1273,6 +1293,19 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
         ln_medstr(ln, (uint16_t)(rt_bx + 3U), br - 2U, rt_str, rt_color, UI_VFO_BG);
     }
 
+#if LCD_PANEL != LCD_PANEL_ST7789
+    /* Watts readout — MED font, right-aligned under TX badge, TX mode only */
+    if (ui->tx_mode && pw_str[0] != '\0') {
+      uint16_t pw_by = (uint16_t)(badge_y + rt_bad_h);  /* row 48 */
+      if (row >= pw_by && (row - pw_by) < MED_H) {
+        uint16_t med_row = row - pw_by;
+        uint16_t pw_len  = (uint16_t)(strlen(pw_str) * MED_W);
+        uint16_t pw_x    = (uint16_t)(rt_bx + rt_bad_w - pw_len);
+        ln_medstr(ln, pw_x, med_row, pw_str, UI_TX_BG, UI_VFO_BG);
+      }
+    }
+#endif
+
     /* Thin centred divider between primary and secondary VFO (only when sub-freq shown) */
     if (row == div_y && ui->freq_b_hz > 0U) {
       uint16_t dx0 = (uint16_t)(VFO_W / 5U);
@@ -1295,7 +1328,9 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
       || s_vfo_cache.freq_b_hz  != ui->freq_b_hz
       || s_vfo_cache.rit_hz     != ui->rit_hz
       || s_vfo_cache.tx_mode    != ui->tx_mode
-      || s_vfo_cache.active_vfo != ui->active_vfo;
+      || s_vfo_cache.active_vfo != ui->active_vfo
+      || s_vfo_cache.tx_power   != ui->tx_power
+      || s_vfo_cache.pa_watts   != ui->pa_watts;
 
   /* Glyph-level dirty flags — compare against OLD cache values */
   bool mhz_g  = !s_vfo_cache.valid || strcmp(mhz_s, s_vfo_cache.mhz_s) != 0
@@ -1312,6 +1347,8 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   s_vfo_cache.rit_hz     = ui->rit_hz;
   s_vfo_cache.tx_mode    = ui->tx_mode;
   s_vfo_cache.active_vfo = ui->active_vfo;
+  s_vfo_cache.tx_power   = ui->tx_power;
+  s_vfo_cache.pa_watts   = ui->pa_watts;
   strncpy(s_vfo_cache.mhz_s, mhz_s, sizeof(s_vfo_cache.mhz_s) - 1U);
   s_vfo_cache.mhz_s[sizeof(s_vfo_cache.mhz_s) - 1U] = '\0';
   strncpy(s_vfo_cache.khz_s, khz_s, sizeof(s_vfo_cache.khz_s) - 1U);

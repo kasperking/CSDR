@@ -295,8 +295,8 @@ static void scan_draw_zone(uint32_t start_hz, uint32_t stop_hz,
                     uint32_t min_mhz = min_hz / 1000000U;
                     uint32_t min_khz = (min_hz % 1000000U) / 1000U;
                     snprintf(buf, sizeof(buf),
-                             " MIN %.2f @ %lu.%03lu MHz  [F4=EXIT]",
-                             (double)min_swr * 0.01,
+                             " MIN %u.%02u @ %lu.%03lu MHz  [F4=EXIT]",
+                             (unsigned)min_swr / 100U, (unsigned)min_swr % 100U,
                              (unsigned long)min_mhz, (unsigned long)min_khz);
                 } else {
                     snprintf(buf, sizeof(buf), " No data  [F4=EXIT]");

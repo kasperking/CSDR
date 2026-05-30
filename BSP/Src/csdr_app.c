@@ -67,6 +67,8 @@ SDR_State_t g_sdr = {
   .lo_offset_hz  = LO_OFFSET_DEFAULT,
   .mic_gain      = 50,
   .digi_gain     = 70,
+  .tx_power      = 100,
+  .pa_watts      = 0,
   .vfo_b         = {
     .freq_hz     = 14200000UL,   /* VFO B default: 20m */
     .mode        = MODE_USB,
@@ -221,6 +223,8 @@ static void     cat_set_active_vfo(uint8_t vfo);
 static uint8_t  cat_get_active_vfo(void);
 static void     cat_set_rf_agc(bool on);
 static bool     cat_get_rf_agc(void);
+static void     cat_set_tx_power(uint8_t pct);
+static uint8_t  cat_get_tx_power(void);
 
 /* ── Settings persistence helper ──────────────────────────
  * Serialises g_sdr to Flash_Settings_t and calls Flash_SaveSettings.
@@ -252,6 +256,8 @@ static void csdr_save_settings(void)
   /* TX / audio */
   fs.mic_gain        = g_sdr.mic_gain;
   fs.digi_gain       = g_sdr.digi_gain;
+  fs.tx_power        = g_sdr.tx_power;
+  fs.pa_watts        = g_sdr.pa_watts;
   fs.audio_gain_db   = g_sdr.audio_gain_db;
 
   /* Calibration */
@@ -329,6 +335,8 @@ void CSDR_Init(void)
       /* TX / audio */
       g_sdr.mic_gain      = fs.mic_gain;
       g_sdr.digi_gain     = fs.digi_gain;
+      g_sdr.tx_power      = fs.tx_power ? fs.tx_power : 100U; /* default 100 for old EEPROM */
+      g_sdr.pa_watts      = fs.pa_watts;
       g_sdr.audio_gain_db = fs.audio_gain_db;
       /* Calibration */
       g_sdr.xtal_ppm         = fs.xtal_ppm;
@@ -463,6 +471,8 @@ void CSDR_Init(void)
     .get_active_vfo  = cat_get_active_vfo,
     .set_rf_agc      = cat_set_rf_agc,
     .get_rf_agc      = cat_get_rf_agc,
+    .set_tx_power    = cat_set_tx_power,
+    .get_tx_power    = cat_get_tx_power,
   };
   CAT_Init(&g_cat, &cb);
 
@@ -1171,6 +1181,7 @@ static void csdr_handle_encoder(void)
             .mic_gain        = g_sdr.mic_gain,
             .smeter_offset_db= g_sdr.smeter_offset_db,
             .lo_offset_hz    = g_sdr.lo_offset_hz,
+            .pa_watts        = g_sdr.pa_watts,
           };
           if (Cal_Run(&cp)) {
             g_sdr.xtal_ppm        = cp.xtal_ppm;
@@ -1182,6 +1193,7 @@ static void csdr_handle_encoder(void)
             g_sdr.mic_gain        = cp.mic_gain;
             g_sdr.smeter_offset_db= cp.smeter_offset_db;
             g_sdr.lo_offset_hz    = cp.lo_offset_hz;
+            g_sdr.pa_watts        = cp.pa_watts;
             DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
             DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
             if (g_sdr.si5351_ok) {
@@ -1276,6 +1288,7 @@ static void csdr_handle_keys(void)
             .mic_gain        = g_sdr.mic_gain,
             .smeter_offset_db= g_sdr.smeter_offset_db,
             .lo_offset_hz    = g_sdr.lo_offset_hz,
+            .pa_watts        = g_sdr.pa_watts,
           };
           if (Cal_Run(&cp)) {
             g_sdr.xtal_ppm        = cp.xtal_ppm;
@@ -1287,6 +1300,7 @@ static void csdr_handle_keys(void)
             g_sdr.mic_gain        = cp.mic_gain;
             g_sdr.smeter_offset_db= cp.smeter_offset_db;
             g_sdr.lo_offset_hz    = cp.lo_offset_hz;
+            g_sdr.pa_watts        = cp.pa_watts;
             DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
             DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
             if (g_sdr.si5351_ok) {
@@ -1337,7 +1351,7 @@ static void csdr_handle_keys(void)
   if (Key_Press(&k_ptt)) {
     bool _tx = !g_sdr.tx_mode;
     g_sdr.tx_mode = _tx;
-    g_sdr.display_dirty |= _tx ? DIRTY_HDR : (uint8_t)DIRTY_ALL;
+    g_sdr.display_dirty |= _tx ? (uint8_t)(DIRTY_HDR | DIRTY_VFO | DIRTY_SBR) : (uint8_t)DIRTY_ALL;
     csdr_apply_tx();   /* immediate for physical PTT — no deferred path */
   }
 }
@@ -1406,6 +1420,8 @@ static void csdr_refresh_display(void)
     ui.rf_agc_on = g_sdr.rf_agc_on;
     ui.mic_gain  = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL)
                    ? g_sdr.digi_gain : g_sdr.mic_gain;
+    ui.tx_power  = g_sdr.tx_power;
+    ui.pa_watts  = g_sdr.pa_watts;
     ui.freq_b_hz = g_sdr.vfo_b.freq_hz; /* inactive VFO shown in sub-line */
     ui.active_vfo = g_sdr.active_vfo;
 
@@ -1413,11 +1429,17 @@ static void csdr_refresh_display(void)
       /* Menu đang mở: re-render để đảm bảo không bị xóa */
       Menu_Render(&g_menu);
     } else if (g_sdr.tx_mode) {
-      /* TX: only redraw Header – meter is handled by UpdateTXMeters below */
+      /* TX: redraw Header, VFO (PW badge lives here), and sidebar */
       if (dirty & DIRTY_HDR) {
         RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
         SDR_UI_DrawHeader(&ui);
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
+      }
+      if (dirty & DIRTY_VFO) {
+        SDR_UI_DrawVFO(&ui);
+      }
+      if (dirty & DIRTY_SBR) {
+        SDR_UI_DrawSidebarRight(&ui);
       }
     } else {
       /* RX: redraw only zones flagged dirty */
@@ -1687,7 +1709,7 @@ static void cat_set_tx(bool tx)
   if (g_sdr.cat_tx_dirty) dbg_cat_blocked_updates++;
   g_sdr.tx_mode    = tx;
   g_sdr.cat_tx_dirty = true;
-  g_sdr.display_dirty |= tx ? DIRTY_HDR : (uint8_t)DIRTY_ALL;
+  g_sdr.display_dirty |= tx ? (uint8_t)(DIRTY_HDR | DIRTY_VFO | DIRTY_SBR) : (uint8_t)DIRTY_ALL;
 }
 static void     cat_set_att(uint8_t lv)
 {
@@ -1722,7 +1744,8 @@ static void csdr_apply_volume(uint8_t vol)
 static void csdr_apply_tx(void)
 {
   if (g_sdr.tx_mode) {
-    /* RX → TX: switch BPF relay bank first (includes 2 ms relay gap), then close T/R. */
+    /* RX → TX: mute headphone first (TX IQ is not audio), then switch hardware. */
+    WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, true);
     BPF_SetMode(RF_MODE_TX);
     /* Split: retune LO to TX VFO (inactive slot) before gating RF */
     if (g_cat.split_on && g_sdr.si5351_ok)
@@ -1738,10 +1761,11 @@ static void csdr_apply_tx(void)
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
   }
   /* Select gain source: digi_gain for digital modes, mic_gain for voice.
-   * Both are 0-100; clamped to [0.01, 1.0] before applying to DSP. */
+   * Scale by tx_power (0-100%) as master output level. Clamped to [0.01, 1.0]. */
   {
     bool digi = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL);
-    float g = (float)(digi ? g_sdr.digi_gain : g_sdr.mic_gain) * (1.0f / 100.0f);
+    float g = (float)(digi ? g_sdr.digi_gain : g_sdr.mic_gain) * (1.0f / 100.0f)
+              * ((float)g_sdr.tx_power * (1.0f / 100.0f));
     if (g < 0.01f) g = 0.01f;
     if (g > 1.0f)  g = 1.0f;
     g_dsp.tx.audio_gain = g;
@@ -1870,6 +1894,16 @@ static void cat_set_rf_agc(bool on)
   csdr_save_settings();
 }
 static bool cat_get_rf_agc(void) { return g_sdr.rf_agc_on; }
+
+static void cat_set_tx_power(uint8_t pct)
+{
+  if (pct > 100U) pct = 100U;
+  g_sdr.tx_power = pct;
+  g_sdr.display_dirty |= DIRTY_SBR;
+  if (g_sdr.tx_mode) g_sdr.cat_tx_dirty = true; /* re-apply gain mid-TX */
+  csdr_save_settings();
+}
+static uint8_t cat_get_tx_power(void) { return g_sdr.tx_power; }
 
 int32_t *CSDR_GetTxBuf(void) { return s_tx_buf; }
 int32_t *CSDR_GetRxBuf(void) { return s_rx_buf; }

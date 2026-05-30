@@ -1279,10 +1279,24 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         cat_copy(resp, "PS1;");
     }
 
-    /* PC — power control stub (no TX power control hardware) */
+    /* PC — TX output power (0-100%).  Scales DSP audio amplitude via cat_set_tx_power.
+     *   GET  PC;      → PC0nn; (3-digit, 000-100)
+     *   SET  PCnnn;   → apply immediately; re-scales gain mid-TX if transmitting */
     else if (cmd[0] == 'P' && cmd[1] == 'C') {
-        if (cmd[2] == '\0') { cat_copy(resp, "PC050;"); }
-        /* SET PCnnn; — ACK-only */
+        if (cmd[2] == '\0') {
+            uint8_t pct = cat->cb.get_tx_power ? cat->cb.get_tx_power() : 100U;
+            resp[0]='P'; resp[1]='C';
+            resp[2]=(char)('0' + pct/100U);
+            resp[3]=(char)('0' + (pct%100U)/10U);
+            resp[4]=(char)('0' + pct%10U);
+            resp[5]=';'; resp[6]='\0';
+        } else if (cmd[2] >= '0' && cmd[2] <= '1' && cmd[3] >= '0' && cmd[3] <= '9' && cmd[4] >= '0' && cmd[4] <= '9') {
+            uint8_t pct = (uint8_t)((cmd[2]-'0')*100 + (cmd[3]-'0')*10 + (cmd[4]-'0'));
+            if (pct > 100U) pct = 100U;
+            if (cat->cb.set_tx_power) cat->cb.set_tx_power(pct);
+        } else {
+            cat_mark_malformed(cmd); cat_copy(resp, "?;");
+        }
     }
 
     /* BC — Beat Canceller stub (no hardware) */

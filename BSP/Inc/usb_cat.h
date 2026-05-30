@@ -45,7 +45,7 @@
   *  │ SL   │ IF low-cut                   │ REAL   │ SLnn; live sl_hz→idx  │
   *  │ SQ   │ Squelch                      │ STUB   │ SQ0000; (fixed off)   │
   *  │ GT   │ AGC speed                    │ STUB   │ GT00; (fixed fast)    │
-  *  │ PC   │ TX power                     │ STUB   │ PC050; (no HW)        │
+  *  │ PC   │ TX power                     │ REAL   │ PC000-100; live scale │
   *  │ PA   │ Preamp                       │ STUB   │ PA0; (no HW)          │
   *  │ RG   │ RF gain                      │ STUB   │ RG100; (no HW)        │
   *  │ RL   │ NR level                     │ STUB   │ RL00; (fixed)         │
@@ -160,6 +160,9 @@ typedef struct {
   /* RF AGC (PE4302 automatic front-end attenuation) — RG command */
   void     (*set_rf_agc)(bool on);         /*!< RGn: 0=off, 1=on        */
   bool     (*get_rf_agc)(void);
+  /* TX output power — PC command */
+  void     (*set_tx_power)(uint8_t pct);   /*!< PCnnn: 0-100 percent     */
+  uint8_t  (*get_tx_power)(void);
 } CAT_Callbacks_t;
 
 /** CAT driver state */

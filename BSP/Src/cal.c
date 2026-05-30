@@ -67,16 +67,18 @@ static void push_ln(uint16_t y)
 /* ── Data model ─────────────────────────────────────────────────────────── */
 
 typedef enum {
-  CAL_T_INT,      /* integer with min/max/step */
-  CAL_T_ACTION,   /* immediate action          */
-  CAL_T_BACK,     /* "Exit" within a section   */
+  CAL_T_INT,      /* integer with min/max/step          */
+  CAL_T_ACTION,   /* immediate action                   */
+  CAL_T_BACK,     /* "Exit" within a section            */
+  CAL_T_ENUM,     /* cycles val in [0,max]; choices[val] displayed */
 } CalItemType_t;
 
 typedef struct {
-  const char   *label;
-  CalItemType_t type;
-  int32_t       min, max, step;
-  int32_t      *val;        /* NULL for actions */
+  const char        *label;
+  CalItemType_t      type;
+  int32_t            min, max, step;
+  int32_t           *val;        /* NULL for actions */
+  const char *const *choices;    /* CAL_T_ENUM: label per index; NULL otherwise */
 } CalItem_t;
 
 typedef struct {
@@ -84,6 +86,20 @@ typedef struct {
   const CalItem_t *items;
   uint8_t       count;
 } CalSection_t;
+
+/* ── PA watts ↔ index conversion ───────────────────────────────────────── */
+static const uint8_t pa_watts_table[] = { 0U, 20U, 45U, 100U };
+static uint8_t pa_idx_to_watts(int32_t idx)
+{
+  if (idx < 0 || idx > 3) return 0U;
+  return pa_watts_table[(uint8_t)idx];
+}
+static int32_t pa_watts_to_idx(uint8_t w)
+{
+  for (int32_t i = 0; i < 4; i++)
+    if (pa_watts_table[i] == w) return i;
+  return 0;
+}
 
 /* ── Value storage ─ mirrors Cal_Params_t fields for live editing ───────── */
 static int32_t v_xtal_ppm;
@@ -95,6 +111,7 @@ static int32_t v_audio_gain;
 static int32_t v_mic_gain;
 static int32_t v_smeter_off;
 static int32_t v_lo_offset;
+static int32_t v_pa_idx;
 
 /* ── Section item tables ────────────────────────────────────────────────── */
 static const CalItem_t items_freq[] = {
@@ -129,14 +146,21 @@ static const CalItem_t items_rf[] = {
   { "Exit",          CAL_T_BACK,   0,0,0,            NULL         },
 };
 
+static const char *const pa_choices[] = { "None", "20W", "45W", "100W" };
+static const CalItem_t items_hw[] = {
+  { "PA Power",  CAL_T_ENUM, 0, 3, 1, &v_pa_idx, pa_choices },
+  { "Exit",      CAL_T_BACK, 0, 0, 0, NULL,       NULL       },
+};
+
 static const CalSection_t s_sections[] = {
   { "Frequency Cal",   items_freq,  3U },
   { "IQ Calibration",  items_iq,    4U },
   { "DC Offset",       items_dc,    4U },
   { "Audio Cal",       items_audio, 3U },
   { "RF / Display Cal",items_rf,    3U },
+  { "PA Hardware",     items_hw,    2U },
 };
-#define SECTION_COUNT  5U
+#define SECTION_COUNT  6U
 
 /* Top-level item types */
 #define TOP_SECT   0   /* enter section submenu */
@@ -152,12 +176,13 @@ static const TopItem_t s_top[] = {
   { "DC Offset",        TOP_SECT  },
   { "Audio Cal",        TOP_SECT  },
   { "RF / Display Cal", TOP_SECT  },
+  { "PA Hardware",      TOP_SECT  },
   { "Save Settings",    TOP_SAVE  },
   { "Load Settings",    TOP_LOAD  },
   { "Reset Default",    TOP_RESET },
   { "Exit Calibration", TOP_EXIT  },
 };
-#define TOP_COUNT  9U
+#define TOP_COUNT  10U
 
 /* ── Rendering ──────────────────────────────────────────────────────────── */
 
@@ -218,7 +243,7 @@ static void render_sub_item(const CalItem_t *it, uint8_t idx,
                              uint8_t cursor, bool editing, uint16_t abs_y)
 {
   bool sel  = (idx == cursor);
-  bool edit = sel && editing && (it->type == CAL_T_INT);
+  bool edit = sel && editing && (it->type == CAL_T_INT || it->type == CAL_T_ENUM);
   uint16_t bg  = sel ? CAL_SEL_BG : CAL_BG;
   if (it->type == CAL_T_BACK)   { bg = sel ? 0x8000U : CAL_BG; }
   if (it->type == CAL_T_ACTION) { bg = sel ? 0x0010U : CAL_BG; }
@@ -226,6 +251,8 @@ static void render_sub_item(const CalItem_t *it, uint8_t idx,
   char val_s[16] = "";
   if (it->type == CAL_T_INT && it->val)
     snprintf(val_s, sizeof(val_s), "%ld", (long)*it->val);
+  else if (it->type == CAL_T_ENUM && it->val && it->choices)
+    snprintf(val_s, sizeof(val_s), "%s", it->choices[*it->val]);
   else if (it->type == CAL_T_ACTION)
     snprintf(val_s, sizeof(val_s), ">> RUN");
   else if (it->type == CAL_T_BACK)
@@ -242,7 +269,7 @@ static void render_sub_item(const CalItem_t *it, uint8_t idx,
     }
     if (!top && !bot && fr >= 4U && fr < 4U + (uint16_t)Font6x8.height) {
       uint16_t row = fr - 4U;
-      if (it->type == CAL_T_INT) {
+      if (it->type == CAL_T_INT || it->type == CAL_T_ENUM) {
         LCD_LineStr(ln, (uint16_t)(CAL_X + 4U), row,
                     it->label, &Font6x8, CAL_LBL, bg);
         uint16_t vc = edit ? CAL_EDIT_VAL : CAL_VAL;
@@ -351,6 +378,12 @@ static void run_section(uint8_t sect_idx)
         *v += d * it->step;
         if (*v < it->min) *v = it->min;
         if (*v > it->max) *v = it->max;
+      } else if (editing && sec->items[cursor].type == CAL_T_ENUM) {
+        int32_t *v = sec->items[cursor].val;
+        const CalItem_t *it = &sec->items[cursor];
+        *v += d;
+        if (*v < it->min) *v = it->max;   /* wrap around */
+        if (*v > it->max) *v = it->min;
       } else {
         if (d > 0 && cursor < sec->count - 1U) { cursor++; }
         if (d < 0 && cursor > 0U)              { cursor--; }
@@ -363,7 +396,7 @@ static void run_section(uint8_t sect_idx)
     /* ENC press: toggle edit / confirm action / back */
     if (Key_Press(&k_enc)) {
       const CalItem_t *it = &sec->items[cursor];
-      if (it->type == CAL_T_INT) {
+      if (it->type == CAL_T_INT || it->type == CAL_T_ENUM) {
         editing = !editing;
       } else if (it->type == CAL_T_BACK) {
         return;
@@ -381,6 +414,11 @@ static void run_section(uint8_t sect_idx)
         const CalItem_t *it = &sec->items[cursor];
         *v += it->step; if (*v > it->max) *v = it->max;
         render_sublevel(sect_idx, cursor, editing, scroll);
+      } else if (editing && sec->items[cursor].type == CAL_T_ENUM) {
+        int32_t *v = sec->items[cursor].val;
+        const CalItem_t *it = &sec->items[cursor];
+        *v += it->step; if (*v > it->max) *v = it->min;
+        render_sublevel(sect_idx, cursor, editing, scroll);
       }
     }
 
@@ -390,6 +428,11 @@ static void run_section(uint8_t sect_idx)
         int32_t *v = sec->items[cursor].val;
         const CalItem_t *it = &sec->items[cursor];
         *v -= it->step; if (*v < it->min) *v = it->min;
+        render_sublevel(sect_idx, cursor, editing, scroll);
+      } else if (editing && sec->items[cursor].type == CAL_T_ENUM) {
+        int32_t *v = sec->items[cursor].val;
+        const CalItem_t *it = &sec->items[cursor];
+        *v -= it->step; if (*v < it->min) *v = it->max;
         render_sublevel(sect_idx, cursor, editing, scroll);
       }
     }
@@ -428,6 +471,7 @@ bool Cal_Run(Cal_Params_t *params)
   v_mic_gain   = (int32_t)params->mic_gain;
   v_smeter_off = (int32_t)params->smeter_offset_db;
   v_lo_offset  = (int32_t)params->lo_offset_hz;
+  v_pa_idx     = pa_watts_to_idx(params->pa_watts);
 
   uint8_t cursor = 0U;
   uint8_t scroll = 0U;
@@ -466,6 +510,7 @@ bool Cal_Run(Cal_Params_t *params)
         params->mic_gain        = (int16_t)v_mic_gain;
         params->smeter_offset_db= (int16_t)v_smeter_off;
         params->lo_offset_hz    = (uint32_t)v_lo_offset;
+        params->pa_watts        = pa_idx_to_watts(v_pa_idx);
         return true;
 
       } else if (it->kind == TOP_LOAD) {
@@ -479,6 +524,7 @@ bool Cal_Run(Cal_Params_t *params)
         v_mic_gain   = (int32_t)params->mic_gain;
         v_smeter_off = (int32_t)params->smeter_offset_db;
         v_lo_offset  = (int32_t)params->lo_offset_hz;
+        v_pa_idx     = pa_watts_to_idx(params->pa_watts);
         render_toplevel(cursor, scroll);
 
       } else if (it->kind == TOP_RESET) {
@@ -492,6 +538,7 @@ bool Cal_Run(Cal_Params_t *params)
         v_mic_gain   = def.mic_gain;
         v_smeter_off = def.smeter_offset_db;
         v_lo_offset  = (int32_t)def.lo_offset_hz;
+        v_pa_idx     = pa_watts_to_idx(def.pa_watts);
         render_toplevel(cursor, scroll);
 
       } else { /* TOP_EXIT */

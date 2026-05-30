@@ -36,10 +36,13 @@ typedef struct {
   /* RF / Display */
   int16_t  smeter_offset_db;   /* S-meter offset     -20 .. +20 dB      */
   uint32_t lo_offset_hz;       /* LO offset       10000 .. 25000 Hz     */
+
+  /* PA hardware */
+  uint8_t  pa_watts;           /* PA power rating: 0=None, 20, 45, 100 W */
 } Cal_Params_t;
 
 #define CAL_PARAMS_DEFAULT \
-  { 0, 0, 0, 0, 0, 0, 50, 0, 18000U }
+  { 0, 0, 0, 0, 0, 0, 50, 0, 18000U, 0 }
 
 /* Run the calibration overlay.  Blocks until the user exits.
  * Returns true  → user chose Save; caller should apply + persist params.

@@ -302,6 +302,8 @@ typedef struct {
   uint8_t   att_x2;       /*!< PE4302 raw value (0–63, 0.5 dB/step); overrides att_db in display */
   bool      rf_agc_on;    /*!< RF AGC active — colours AT label green */
   int16_t   mic_gain;
+  uint8_t   tx_power;     /*!< TX output power 0-100% for sidebar display */
+  uint8_t   pa_watts;     /*!< PA rating 0/20/45/100 W; 0 = no PA */
   uint16_t  filter_len;
   uint8_t   dsp_level;
   uint8_t   active_vfo;    /*!< 0 = VFO A active, 1 = VFO B active */
