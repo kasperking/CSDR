@@ -183,16 +183,18 @@ class App(tk.Tk):
         self._r_len.insert(0, "256")
         self._r_len.grid(row=0, column=3, sticky="ew", padx=4)
 
-        # Row 1 — output file + Browse + Read (all on the same row)
+        # Row 1 — output file + Browse + Read (Browse & Read always adjacent)
+        # File entry spans col 1-3 (same width as addr+length above).
+        # Browse=col4, Read=col5 — both outside the weighted columns.
         ttk.Label(rf, text="Output:").grid(row=1, column=0, sticky="w", pady=(4, 0))
         self._r_file = ttk.Entry(rf)
-        self._r_file.grid(row=1, column=1, columnspan=2, sticky="ew",
+        self._r_file.grid(row=1, column=1, columnspan=3, sticky="ew",
                           padx=4, pady=(4, 0))
         ttk.Button(rf, text="Browse…",
                    command=lambda: self._browse_save(self._r_file, "bin")
-                   ).grid(row=1, column=3, padx=2, pady=(4, 0), sticky="ew")
+                   ).grid(row=1, column=4, padx=(2, 2), pady=(4, 0))
         ttk.Button(rf, text="Read →",
-                   command=self._do_read).grid(row=1, column=4, padx=(6, 0),
+                   command=self._do_read).grid(row=1, column=5, padx=(0, 0),
                                                pady=(4, 0))
 
         # ── WRITE ─────────────────────────────────────────────────────────

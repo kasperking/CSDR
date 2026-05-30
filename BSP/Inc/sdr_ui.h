@@ -269,6 +269,7 @@ extern "C" {
 #define UI_STATUS_VAL     0xFFFFU
 #define UI_STATUS_ON      0x07E0U
 #define UI_STATUS_OFF     0xF800U
+#define UI_STATUS_WARN    0xFD00U   /* amber (R=31,G=40,B=0) — hardware missing warning */
 
 #define UI_TX_BG          0xF800U   /* TX = red                      */
 #define UI_TX_FG          0xFFFFU

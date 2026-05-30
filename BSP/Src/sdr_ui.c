@@ -31,6 +31,7 @@
 #include "sdr_dsp.h"    /* DSP_FFT_SIZE */
 #include "runtime_diag.h"
 #include "lcd_dma.h"    /* LCD_Wait / LCD_PushWindowAsync / diagnostics */
+#include "selftest.h"   /* g_selftest, SelfTest_AnyFail — top-bar HW warnings */
 #include "core_cm7.h"   /* DWT->CYCCNT for chunk render timing */
 #include <string.h>
 #include <stdio.h>
@@ -619,26 +620,74 @@ static void draw_footer_rows(uint32_t half_hz)
 {
   char lbuf[12] = "";
   char rbuf[12] = "";
-  uint16_t rx_x = 0U;
+  char lm_buf[6] = "";
+  char rm_buf[6] = "";
+  uint16_t rx_x  = 0U;
+  uint16_t lm_lx = 0U;   /* -12K label left edge */
+  uint16_t rm_lx = 0U;   /* +12K label left edge */
+  uint16_t lm_px = 0U;   /* -12K marker pixel (for tick) */
+  uint16_t rm_px = 0U;   /* +12K marker pixel (for tick) */
+  bool show_mid = false;
+
   if (half_hz > 0U) {
     uint32_t bk = half_hz / 1000U;
     snprintf(lbuf, sizeof(lbuf), "-%luK", (unsigned long)bk);
     snprintf(rbuf, sizeof(rbuf), "+%luK", (unsigned long)bk);
     rx_x = (uint16_t)(LCD_W - (uint16_t)(strlen(rbuf) * Font6x8.width) - 4U);
   }
-  uint16_t fh  = Font6x8.height;
-  uint16_t pad = (FTR_H - fh) / 2U;
+
+  /* ±12k intermediate markers — only rendered when span > ±12kHz */
+  if (half_hz > 12000U) {
+    uint16_t cx  = (uint16_t)(LCD_W / 2U);
+    uint16_t off = (uint16_t)((uint32_t)12000U * (uint32_t)(LCD_W / 2U) / half_hz);
+    lm_px = (uint16_t)(cx - off);
+    rm_px = (uint16_t)(cx + off);
+    snprintf(lm_buf, sizeof(lm_buf), "-12K");
+    snprintf(rm_buf, sizeof(rm_buf), "+12K");
+    uint16_t lw = (uint16_t)(4U * (uint16_t)Font6x8.width);  /* 4 chars wide */
+    lm_lx = (lm_px >= lw / 2U) ? (uint16_t)(lm_px - lw / 2U) : 0U;
+    rm_lx = (rm_px >= lw / 2U) ? (uint16_t)(rm_px - lw / 2U) : 0U;
+    if (rm_lx + lw > LCD_W) rm_lx = (uint16_t)(LCD_W - lw);
+    show_mid = true;
+  }
+
+  uint16_t fh    = Font6x8.height;
+  uint16_t pad   = (FTR_H - fh) / 2U;
+  uint16_t cx_px = (uint16_t)(LCD_W / 2U);
+
+  /* Tick marks sit immediately above labels.
+   * Major (0 kHz): 4-row tall, bright.  Medium (±12k): 2-row tall, dimmer. */
+  uint16_t tmaj0    = (pad >= 4U) ? (uint16_t)(pad - 4U) : 0U;
+  uint16_t tmed0    = (pad >= 2U) ? (uint16_t)(pad - 2U) : 0U;
+  uint16_t tick_maj = SWAP16(UI_STATUS_VAL);   /* bright white */
+  uint16_t tick_med = SWAP16(UI_SMETER_TICK);  /* medium gray  */
 
   for (uint16_t row = 0U; row < FTR_H; row++) {
     uint16_t *ln = LCD_GetLineBuf();
     LCD_LineFill(ln, 0U, LCD_W, UI_BG);
+
+    /* 4-row center tick */
+    if (row >= tmaj0 && row < pad && cx_px < LCD_W)
+      ln[cx_px] = tick_maj;
+
+    /* 2-row ±12k ticks */
+    if (show_mid && row >= tmed0 && row < pad) {
+      if (lm_px < LCD_W) ln[lm_px] = tick_med;
+      if (rm_px < LCD_W) ln[rm_px] = tick_med;
+    }
+
     if (half_hz > 0U && row >= pad && row < pad + fh) {
       uint16_t frow = row - pad;
-      LCD_LineStr(ln, 4U, frow, lbuf, &Font6x8, UI_SPEC_GRID, UI_BG);
-      LCD_LineStr(ln, (uint16_t)(LCD_W / 2U - Font6x8.width / 2U), frow,
-                  "0", &Font6x8, UI_SPEC_GRID, UI_BG);
-      LCD_LineStr(ln, rx_x, frow, rbuf, &Font6x8, UI_SPEC_GRID, UI_BG);
+      LCD_LineStr(ln, 4U,   frow, lbuf,  &Font6x8, UI_SMETER_TICK, UI_BG);
+      LCD_LineStr(ln, rx_x, frow, rbuf,  &Font6x8, UI_SMETER_TICK, UI_BG);
+      LCD_LineStr(ln, (uint16_t)(cx_px - Font6x8.width / 2U), frow,
+                  "0", &Font6x8, UI_STATUS_VAL, UI_BG);
+      if (show_mid) {
+        LCD_LineStr(ln, lm_lx, frow, lm_buf, &Font6x8, UI_SMETER_TICK, UI_BG);
+        LCD_LineStr(ln, rm_lx, frow, rm_buf, &Font6x8, UI_SMETER_TICK, UI_BG);
+      }
     }
+
     LCD_PushWindow(0U, (uint16_t)(FTR_Y + row),
                    (uint16_t)(LCD_W - 1U), (uint16_t)(FTR_Y + row),
                    ln, LCD_W);
@@ -670,6 +719,31 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
   uint16_t txt_y   = (uint16_t)((HDR_H - Font6x8.height) / 2U);
   const char *agc_str = ui->agc_fast ? "AGC-F" : "AGC-S";
 
+  /* ── Hardware warning: "! CODEC PLL" etc. centred between AGC and voltage ─ */
+  char     warn_str[32] = {0};
+  uint16_t warn_x       = 0U;
+  if (SelfTest_AnyFail()) {
+    uint8_t pos = 0U;
+    warn_str[pos++] = '!';
+    for (uint8_t i = 0U; i < SELFTEST_COUNT; i++) {
+      if (!g_selftest.items[i].ok) {
+        warn_str[pos++] = ' ';
+        for (const char *c = g_selftest.items[i].id;
+             *c && pos < (uint8_t)(sizeof(warn_str) - 1U); c++) {
+          warn_str[pos++] = *c;
+        }
+      }
+    }
+    warn_str[pos] = '\0';
+    /* Centre between right edge of AGC label and left edge of voltage */
+    uint16_t agc_end = (uint16_t)(4U + (uint16_t)(strlen(agc_str) * Font6x8.width) + 6U);
+    uint16_t warn_w  = (uint16_t)((uint16_t)strlen(warn_str) * Font5x8.width);
+    uint16_t avail   = (volt_x > agc_end) ? (uint16_t)(volt_x - agc_end) : 0U;
+    warn_x = (avail > warn_w)
+             ? (uint16_t)(agc_end + (avail - warn_w) / 2U)
+             : agc_end;
+  }
+
   for (uint16_t row = 0; row < HDR_H; row++) {
     uint16_t *ln = s_hdr_buf + (uint32_t)row * LCD_W;
     if (row == HDR_H - 1U) {
@@ -679,8 +753,11 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
     LCD_LineFill(ln, 0, LCD_W, UI_HDR_BG);
     if (row >= txt_y && row < txt_y + Font6x8.height) {
       uint16_t fr = row - txt_y;
-      LCD_LineStr(ln, 4U,     fr, agc_str, &Font6x8, UI_STATUS_LBL, UI_HDR_BG);
-      LCD_LineStr(ln, volt_x, fr, vstr,    &Font6x8, vcol,          UI_HDR_BG);
+      LCD_LineStr(ln, 4U,     fr, agc_str,  &Font6x8, UI_STATUS_LBL, UI_HDR_BG);
+      LCD_LineStr(ln, volt_x, fr, vstr,     &Font6x8, vcol,          UI_HDR_BG);
+      if (warn_str[0]) {
+        LCD_LineStr(ln, warn_x, fr, warn_str, &Font5x8, UI_STATUS_WARN, UI_HDR_BG);
+      }
     }
   }
 

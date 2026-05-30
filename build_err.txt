@@ -1,3 +1,0 @@
-Stm32cubeidec:
-An error has occurred. See the log file
-C:\ST\STM32CubeIDE_2.1.1\STM32CubeIDE\configuration\1779116267869.log.

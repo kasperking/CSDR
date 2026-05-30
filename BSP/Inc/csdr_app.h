@@ -102,8 +102,9 @@ typedef struct {
   int16_t     audio_gain_db;
   int16_t     mic_gain;   /*!< Voice TX drive 0-100 (default 50)            */
   int16_t     digi_gain;  /*!< DIGU/DIGL TX drive 0-100 (default 70)        */
-  uint8_t     tx_power;   /*!< TX output power 0-100% (default 100); PC cmd */
-  uint8_t     pa_watts;   /*!< PA hardware rating: 0=None, 20, 45, 100 W    */
+  uint8_t     tx_power;         /*!< TX output power 0-100% (default 100); PC cmd */
+  uint8_t     pa_watts;         /*!< PA hardware rating: 0=None, 20, 45, 100 W    */
+  uint8_t     pa_oc_limit_idx;  /*!< OC threshold index 0-4 → 2.0/2.5/3.0/3.5/4.0A */
   int16_t     smeter_offset_db;
   uint32_t    lo_offset_hz;
   /* Dual VFO */

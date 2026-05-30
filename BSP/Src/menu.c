@@ -27,7 +27,7 @@ static inline uint16_t sw16(uint16_t c)
 Menu_Handle_t g_menu;
 
 static int32_t _agc_val, _nb_val, _nr_val, _rit_val;
-static int32_t _vol_val, _mic_val, _sq_val, _step_val, _att_val;
+static int32_t _vol_val, _mic_val, _digi_val, _sq_val, _step_val, _att_val;
 static int32_t _band_val, _mode_val, _bl_val, _usb_val;
 static int32_t _zoom_val;
 
@@ -118,18 +118,19 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[2]  = (MenuItem_t){ "NR",       MENU_TYPE_ENUM, 0,0,0, &_nr_val,   onoff_strs,2U,  NULL };
   m->items[3]  = (MenuItem_t){ "RIT (Hz)", MENU_TYPE_INT, -999, 999, 1, &_rit_val, NULL, 0, NULL };
   m->items[4]  = (MenuItem_t){ "Volume",   MENU_TYPE_INT, 0, 100, 5, &_vol_val, NULL, 0, NULL };
-  m->items[5]  = (MenuItem_t){ "Mic Gain", MENU_TYPE_INT, 0, 100, 1, &_mic_val, NULL, 0, NULL };
-  m->items[6]  = (MenuItem_t){ "Squelch",  MENU_TYPE_INT, 0, 100, 1, &_sq_val,  NULL, 0, NULL };
-  m->items[7]  = (MenuItem_t){ "Step",     MENU_TYPE_ENUM, 0,0,0, &_step_val, step_strs, 6U,  NULL };
-  m->items[8]  = (MenuItem_t){ "ATT (dB)", MENU_TYPE_INT, 0,  31, 1, &_att_val, NULL, 0, NULL };
-  m->items[9]  = (MenuItem_t){ "Band",     MENU_TYPE_ENUM, 0,0,0, &_band_val, band_strs, 11U, NULL };
-  m->items[10] = (MenuItem_t){ "Mode",     MENU_TYPE_ENUM, 0,0,0, &_mode_val, mode_strs, 5U,  NULL };
-  m->items[11] = (MenuItem_t){ "Backlight",MENU_TYPE_INT, 0, 100,10, &_bl_val,  NULL, 0, NULL };
-  m->items[12] = (MenuItem_t){ "USB",      MENU_TYPE_ENUM, 0,0,0, &_usb_val,  usb_strs,  3U,  NULL };
-  m->items[13] = (MenuItem_t){ "Span",     MENU_TYPE_ENUM, 0,0,0, &_zoom_val, zoom_strs, 4U,  NULL };
-  m->items[14] = (MenuItem_t){ "Diagnostics",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
-  m->items[15] = (MenuItem_t){ "Calibration",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
-  m->items[16] = (MenuItem_t){ "SWR Scan",     MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
+  m->items[5]  = (MenuItem_t){ "Mic Gain",  MENU_TYPE_INT, 0, 100, 1, &_mic_val,  NULL, 0, NULL };
+  m->items[6]  = (MenuItem_t){ "Digi Drive",MENU_TYPE_INT, 0, 100, 1, &_digi_val, NULL, 0, NULL };
+  m->items[7]  = (MenuItem_t){ "Squelch",   MENU_TYPE_INT, 0, 100, 1, &_sq_val,   NULL, 0, NULL };
+  m->items[8]  = (MenuItem_t){ "Step",      MENU_TYPE_ENUM, 0,0,0, &_step_val, step_strs, 6U,  NULL };
+  m->items[9]  = (MenuItem_t){ "ATT (dB)",  MENU_TYPE_INT, 0,  31, 1, &_att_val,  NULL, 0, NULL };
+  m->items[10] = (MenuItem_t){ "Band",      MENU_TYPE_ENUM, 0,0,0, &_band_val, band_strs, 11U, NULL };
+  m->items[11] = (MenuItem_t){ "Mode",      MENU_TYPE_ENUM, 0,0,0, &_mode_val, mode_strs, 5U,  NULL };
+  m->items[12] = (MenuItem_t){ "Backlight", MENU_TYPE_INT, 0, 100,10, &_bl_val,  NULL, 0, NULL };
+  m->items[13] = (MenuItem_t){ "USB",       MENU_TYPE_ENUM, 0,0,0, &_usb_val,  usb_strs,  3U,  NULL };
+  m->items[14] = (MenuItem_t){ "Span",      MENU_TYPE_ENUM, 0,0,0, &_zoom_val, zoom_strs, 4U,  NULL };
+  m->items[15] = (MenuItem_t){ "Diagnostics",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
+  m->items[16] = (MenuItem_t){ "Calibration",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
+  m->items[17] = (MenuItem_t){ "SWR Scan",     MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
   /* USER CODE END Menu_Init_0 */
 }
 
@@ -257,7 +258,8 @@ void Menu_Render(Menu_Handle_t *m)
 /* ════ Load / Save SDR state ════ */
 void Menu_LoadFromSDR(Menu_Handle_t *m,
                        bool agc_fast, bool nb, bool nr, int16_t rit,
-                       uint8_t vol, uint8_t mic_gain, uint8_t sq, uint32_t step,
+                       uint8_t vol, uint8_t mic_gain, uint8_t digi_gain,
+                       uint8_t sq, uint32_t step,
                        uint8_t att, uint8_t band, uint8_t mode,
                        uint8_t usb_mode, uint8_t zoom, MenuApplyFn apply_cb)
 {
@@ -270,6 +272,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _rit_val  = (int32_t)rit;
   _vol_val  = (int32_t)vol;
   _mic_val  = (int32_t)mic_gain;
+  _digi_val = (int32_t)digi_gain;
   _sq_val   = (int32_t)sq;
   _step_val = 2;
   for (uint8_t i = 0; i < 6U; i++) if (step == sv[i]) { _step_val = (int32_t)i; break; }
@@ -284,20 +287,22 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
 
 void Menu_SaveToSDR(Menu_Handle_t *m,
                      bool *agc_fast, bool *nb, bool *nr, int16_t *rit,
-                     uint8_t *vol, uint8_t *mic_gain, uint8_t *sq, uint32_t *step,
+                     uint8_t *vol, uint8_t *mic_gain, uint8_t *digi_gain,
+                     uint8_t *sq, uint32_t *step,
                      uint8_t *att, uint8_t *band, uint8_t *mode,
                      uint8_t *usb_mode, uint8_t *zoom)
 {
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
   static const uint32_t sv[6] = {1,10,100,1000,10000,100000};
-  *agc_fast = (_agc_val != 0);
-  *nb       = (_nb_val  != 0);
-  *nr       = (_nr_val  != 0);
-  *rit      = (int16_t)_rit_val;
-  *vol      = (uint8_t)_vol_val;
-  *mic_gain = (uint8_t)_mic_val;
-  *sq       = (uint8_t)_sq_val;
+  *agc_fast  = (_agc_val  != 0);
+  *nb        = (_nb_val   != 0);
+  *nr        = (_nr_val   != 0);
+  *rit       = (int16_t)_rit_val;
+  *vol       = (uint8_t)_vol_val;
+  *mic_gain  = (uint8_t)_mic_val;
+  *digi_gain = (uint8_t)_digi_val;
+  *sq        = (uint8_t)_sq_val;
   *step     = sv[(_step_val >= 0 && _step_val < 6) ? _step_val : 2];
   *att      = (uint8_t)_att_val;
   *band     = (uint8_t)_band_val;

@@ -1,5 +1,0 @@
-In file included from BSP/Src/sdr_ui.c:27:
-H:/CSDR/BSP/Inc/runtime_diag.h:8:10: fatal error: stm32h7xx_hal.h: No such file or directory
-    8 | #include "stm32h7xx_hal.h"
-      |          ^~~~~~~~~~~~~~~~~
-compilation terminated.

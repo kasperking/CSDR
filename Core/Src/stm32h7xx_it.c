@@ -11,6 +11,7 @@
 /* USER CODE BEGIN Includes */
 #include "csdr_app.h"
 #include "lcd_dma.h"
+#include "pa_overcurrent.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -256,5 +257,19 @@ void OTG_FS_IRQHandler(void)
 void DMA2_Stream0_IRQHandler(void)
 {
   LCD_DMA_IRQHandler();
+}
+
+/**
+  * @brief  EXTI9_5 — PA overcurrent ALERT từ INA226 trên PC6.
+  *         Active LOW, falling edge.  PA_OC_AlertISR() chỉ đặt cờ; không gọi I2C.
+  *         Priority 5: thấp hơn audio DMA (0) và USB (2).
+  */
+void EXTI9_5_IRQHandler(void)
+{
+  if (__HAL_GPIO_EXTI_GET_IT(PA_OC_ALERT_GPIO_PIN)) {
+    PA_OC_AlertISR();
+    __HAL_GPIO_EXTI_CLEAR_IT(PA_OC_ALERT_GPIO_PIN);
+  }
+  HAL_GPIO_EXTI_IRQHandler(PA_OC_ALERT_GPIO_PIN);
 }
 /* USER CODE END 1 */

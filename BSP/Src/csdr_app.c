@@ -27,7 +27,10 @@
 #include "sdr_scan.h"
 #include "runtime_diag.h"
 #include "rf_agc.h"
+#include "pa_overcurrent.h"
+#include "pa_protect.h"
 #include "usb_flash_proto.h"
+#include "selftest.h"
 #include <string.h>
 #include <math.h>
 
@@ -258,6 +261,7 @@ static void csdr_save_settings(void)
   fs.digi_gain       = g_sdr.digi_gain;
   fs.tx_power        = g_sdr.tx_power;
   fs.pa_watts        = g_sdr.pa_watts;
+  fs.pa_oc_limit_idx = g_sdr.pa_oc_limit_idx;
   fs.audio_gain_db   = g_sdr.audio_gain_db;
 
   /* Calibration */
@@ -312,7 +316,8 @@ void CSDR_Init(void)
   __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, 800U);
 
   /* Flash: load settings */
-  if (W25Q_Init(&g_flash, &hspi3, FLASH_CS_GPIO_Port, FLASH_CS_Pin) == HAL_OK) {
+  bool boot_flash_ok = (W25Q_Init(&g_flash, &hspi3, FLASH_CS_GPIO_Port, FLASH_CS_Pin) == HAL_OK);
+  if (boot_flash_ok) {
     Flash_Settings_t fs;
     if (Flash_LoadSettings(&g_flash, &fs) == HAL_OK) {
       /* VFO A */
@@ -335,8 +340,9 @@ void CSDR_Init(void)
       /* TX / audio */
       g_sdr.mic_gain      = fs.mic_gain;
       g_sdr.digi_gain     = fs.digi_gain;
-      g_sdr.tx_power      = fs.tx_power ? fs.tx_power : 100U; /* default 100 for old EEPROM */
-      g_sdr.pa_watts      = fs.pa_watts;
+      g_sdr.tx_power        = fs.tx_power ? fs.tx_power : 100U; /* default 100 for old EEPROM */
+      g_sdr.pa_watts        = fs.pa_watts;
+      g_sdr.pa_oc_limit_idx = (fs.pa_oc_limit_idx <= 4U) ? fs.pa_oc_limit_idx : 3U;
       g_sdr.audio_gain_db = fs.audio_gain_db;
       /* Calibration */
       g_sdr.xtal_ppm         = fs.xtal_ppm;
@@ -394,6 +400,14 @@ void CSDR_Init(void)
   RFAGC_Init(&g_rfagc);
   g_rfagc.target_x2 = g_att.current_atten_x2;   /* no step-change on first update */
   RFAGC_SetEnabled(&g_rfagc, g_sdr.rf_agc_on, g_att.current_atten_x2);
+
+  /* PA overcurrent protection: INA226 trên I2C2, ALERT hardware-gate bias line */
+  PA_OC_Init(&hi2c2);
+  { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
+    PA_OC_SetCurrentLimit(oc_lut[g_sdr.pa_oc_limit_idx]); }
+
+  /* PA protection manager: centralized state machine (foldback, trip, cooldown) */
+  PA_Protect_Init();
 
   /* BPF + LPF */
   BPF_LPF_Init();
@@ -534,6 +548,18 @@ void CSDR_Init(void)
                              wm_activate, 2U, 100U);
   }
 
+  /* ── Self-test: record hardware presence, trigger top-bar warning if any fail ──
+   * Results come from init return values already captured above — no extra I/O.
+   * Boot continues normally regardless; no peripheral is disabled or retried. */
+  SelfTest_Run(
+    boot_flash_ok,
+    (dbg_wm8731_ok  == (uint32_t)HAL_OK),
+    g_sdr.si5351_ok,
+    g_pa_oc.ina_ok,
+    (dbg_sai_init_ret == (uint32_t)HAL_OK)
+  );
+  if (SelfTest_AnyFail()) g_sdr.display_dirty |= DIRTY_HDR;
+
   g_sdr.pwr_hold = true;
 }
 
@@ -636,6 +662,9 @@ void CSDR_Loop(void)
 {
   RuntimeDiag_MainLoopBeat();
 
+  /* PA overcurrent: xử lý fault từ EXTI ISR (tắt TX, báo lỗi UI, xóa INA226 latch) */
+  PA_OC_HandleFaultInLoop();
+
   csdr_process_audio_pending();
 
   /* Input: refresh PCA9555 once, then dispatch encoder + keys */
@@ -646,6 +675,7 @@ void CSDR_Loop(void)
   /* Timed tasks */
   static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0, t_spec=0, t_tx_spec=0;
   static uint32_t t_rfagc = 0U;
+  static uint32_t t_pa_prot = 0U;
   uint32_t now = HAL_GetTick();
 
   if (now - t_analog >= 100U) {
@@ -655,6 +685,14 @@ void CSDR_Loop(void)
   }
   if (now - t_fan    >= 1000U){ t_fan    = now; Fan_Update(g_analog.temp_c); }
   if (now - t_pwr    >= 100U) { t_pwr    = now; PWR_Poll(); }
+
+  /* PA protection manager: runs every 20 ms, independent of UI/audio rate.
+   * Evaluates IIR-filtered SWR + temperature + current, drives foldback/trip
+   * state machine, and applies power limits via request_gain_reapply(). */
+  if (now - t_pa_prot >= 20U) {
+    t_pa_prot = now;
+    PA_Protect_Update();
+  }
 
   /* RF AGC: update PE4302 attenuation from DSP signal level, RX only.
    * Runs at RFAGC_INTERVAL_MS (20 ms).  All SPI writes are bit-bang and
@@ -683,7 +721,10 @@ void CSDR_Loop(void)
       static uint32_t s_spec_overload_ms = 0U;
       bool spec_ring_pressure = g_usb_audio.rx_overrun_pending ||
                                 (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
-      if (spec_ring_pressure || RuntimeDiag_IsUiOverload()) {
+      /* Do NOT use RuntimeDiag_IsUiOverload() here: that flag reflects waterfall
+       * suppression state and creates a circular feedback loop that permanently
+       * kills spectrum whenever waterfall is suppressed (even spuriously). */
+      if (spec_ring_pressure) {
         s_spec_overload_ms = UI_OVERLOAD_DECAY_MS;
       } else if (s_spec_overload_ms > CSDR_UI_SPEC_RX_PERIOD_MS) {
         s_spec_overload_ms -= CSDR_UI_SPEC_RX_PERIOD_MS;
@@ -726,9 +767,7 @@ void CSDR_Loop(void)
      *
      * Trigger conditions:
      *  a) rx ring occupancy > 75% — main-loop audio falling behind (sustained)
-     *  b) UI render time consistently excessive (>15 ms)
-     *  c) loop stall >20 ms
-     *  d) sustained overrun/underrun rate ≥3/s (isolated events are ignored)
+     *  b) sustained overrun/underrun rate ≥3/s (isolated events are ignored)
      *
      * rx_overrun_pending is consumed here to prevent stale flag accumulation
      * but is NOT used as a direct suppression trigger (isolated overruns are
@@ -741,12 +780,14 @@ void CSDR_Loop(void)
       bool ring_pressure = (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
       if (g_usb_audio.rx_overrun_pending) g_usb_audio.rx_overrun_pending = false;
 
-      /* b+c+d: slow-path diagnostics; isolated overruns not sufficient */
+      /* b+c+d: slow-path diagnostics; isolated overruns not sufficient.
+       * Only rolling-window rates are used here — peak-hold values like
+       * max_ui_us / max_loop_stall_us permanently latch after any one spike
+       * (boot draw, USB enum, mode change) and would suppress the waterfall
+       * forever.  rx/tx _per_sec reset to 0 within 1 s when load clears. */
       RuntimeDiag_Snapshot_t snap;
       RuntimeDiag_GetSnapshot(&snap);
-      bool diag_pressure = (snap.max_ui_us > 15000U ||
-                            snap.max_loop_stall_us > 20000U ||
-                            snap.rx_overrun_per_sec >= 3U ||
+      bool diag_pressure = (snap.rx_overrun_per_sec >= 3U ||
                             snap.tx_underrun_per_sec >= 3U);
 
       if (ring_pressure || diag_pressure) {
@@ -1194,6 +1235,9 @@ static void csdr_handle_encoder(void)
             g_sdr.smeter_offset_db= cp.smeter_offset_db;
             g_sdr.lo_offset_hz    = cp.lo_offset_hz;
             g_sdr.pa_watts        = cp.pa_watts;
+            g_sdr.pa_oc_limit_idx = cp.pa_oc_limit_idx;
+            { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
+              PA_OC_SetCurrentLimit(oc_lut[cp.pa_oc_limit_idx]); }
             DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
             DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
             if (g_sdr.si5351_ok) {
@@ -1239,7 +1283,8 @@ static void csdr_handle_keys(void)
     if (!Menu_IsOpen(&g_menu))
       Menu_LoadFromSDR(&g_menu,
         g_sdr.agc_fast, g_sdr.nb_on, g_sdr.nr_on, g_sdr.rit_hz,
-        g_sdr.volume, (uint8_t)g_sdr.mic_gain, g_sdr.squelch, (uint32_t)g_sdr.step,
+        g_sdr.volume, (uint8_t)g_sdr.mic_gain, (uint8_t)g_sdr.digi_gain,
+        g_sdr.squelch, (uint32_t)g_sdr.step,
         g_sdr.att_db, g_sdr.band_idx, (uint8_t)g_sdr.mode,
         g_sdr.usb_mode, SDR_UI_GetSpecZoom(), menu_apply_cb);
     Menu_Toggle(&g_menu);
@@ -1301,6 +1346,9 @@ static void csdr_handle_keys(void)
             g_sdr.smeter_offset_db= cp.smeter_offset_db;
             g_sdr.lo_offset_hz    = cp.lo_offset_hz;
             g_sdr.pa_watts        = cp.pa_watts;
+            g_sdr.pa_oc_limit_idx = cp.pa_oc_limit_idx;
+            { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
+              PA_OC_SetCurrentLimit(oc_lut[cp.pa_oc_limit_idx]); }
             DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
             DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
             if (g_sdr.si5351_ok) {
@@ -1500,10 +1548,11 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m)
 static void menu_apply_cb(void)
 {
   bool agc, nb, nr; int16_t rit;
-  uint8_t vol, mic, sq, att, band, mode, usb, zoom; uint32_t step;
+  uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom; uint32_t step;
   Menu_SaveToSDR(&g_menu, &agc, &nb, &nr, &rit,
-                  &vol, &mic, &sq, &step, &att, &band, &mode, &usb, &zoom);
-  g_sdr.mic_gain = (int16_t)mic;
+                  &vol, &mic, &digi, &sq, &step, &att, &band, &mode, &usb, &zoom);
+  g_sdr.mic_gain  = (int16_t)mic;
+  g_sdr.digi_gain = (int16_t)digi;
   g_sdr.agc_fast = agc; g_sdr.nb_on = nb; g_sdr.nr_on = nr;
   AGC_SetMode(&g_dsp.agc, g_sdr.mode, agc, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, nb, g_sdr.nb_level);
@@ -1743,7 +1792,23 @@ static void csdr_apply_volume(uint8_t vol)
  * context (cat_tx_dirty path) or from the physical PTT key, never from an ISR. */
 static void csdr_apply_tx(void)
 {
+  /* PA protection gate: TRIP or COOLDOWN blocks TX regardless of how it was
+   * requested (PTT, CAT, or any other path).  Force back to RX and refresh
+   * UI so the fault state is visible immediately. */
+  if (g_sdr.tx_mode && !PA_Protect_IsTxAllowed()) {
+    g_sdr.tx_mode       = false;
+    g_sdr.display_dirty = 0xFFU;
+  }
+
   if (g_sdr.tx_mode) {
+    PA_Protect_OnTxStart();
+    /* Nạp ngưỡng INA226: base từ cài đặt, CW/DIGI thấp hơn 0.5/0.3A */
+    { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
+      float base = oc_lut[g_sdr.pa_oc_limit_idx];
+      float lim  = (g_sdr.mode == MODE_CW)                                ? base - 0.5f :
+                   (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL)  ? base - 0.3f : base;
+      if (lim < 1.0f) lim = 1.0f;
+      PA_OC_SetCurrentLimit(lim); }
     /* RX → TX: mute headphone first (TX IQ is not audio), then switch hardware. */
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, true);
     BPF_SetMode(RF_MODE_TX);
@@ -1752,6 +1817,7 @@ static void csdr_apply_tx(void)
       SI5351_SetQSDFrequency(&g_si5351, g_sdr.vfo_b.freq_hz + g_sdr.lo_offset_hz);
     HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_SET);
   } else {
+    PA_Protect_OnTxStop();
     /* TX → RX: open T/R relay first, then switch BPF bank back, then unmute codec. */
     HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
     BPF_SetMode(RF_MODE_RX);
@@ -1761,11 +1827,13 @@ static void csdr_apply_tx(void)
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
   }
   /* Select gain source: digi_gain for digital modes, mic_gain for voice.
-   * Scale by tx_power (0-100%) as master output level. Clamped to [0.01, 1.0]. */
+   * Scale by tx_power (0-100%) and PA protection drive limit (100/75/50/25/0 %).
+   * Clamped to [0.01, 1.0]. */
   {
     bool digi = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL);
     float g = (float)(digi ? g_sdr.digi_gain : g_sdr.mic_gain) * (1.0f / 100.0f)
-              * ((float)g_sdr.tx_power * (1.0f / 100.0f));
+              * ((float)g_sdr.tx_power        * (1.0f / 100.0f))
+              * ((float)PA_Protect_GetDriveLimit() * (1.0f / 100.0f));
     if (g < 0.01f) g = 0.01f;
     if (g > 1.0f)  g = 1.0f;
     g_dsp.tx.audio_gain = g;

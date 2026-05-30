@@ -112,6 +112,7 @@ static int32_t v_mic_gain;
 static int32_t v_smeter_off;
 static int32_t v_lo_offset;
 static int32_t v_pa_idx;
+static int32_t v_oc_idx;    /* 0=2.0A  1=2.5A  2=3.0A  3=3.5A  4=4.0A */
 
 /* ── Section item tables ────────────────────────────────────────────────── */
 static const CalItem_t items_freq[] = {
@@ -147,9 +148,11 @@ static const CalItem_t items_rf[] = {
 };
 
 static const char *const pa_choices[] = { "None", "20W", "45W", "100W" };
+static const char *const oc_choices[] = { "2.0A", "2.5A", "3.0A", "3.5A", "4.0A" };
 static const CalItem_t items_hw[] = {
-  { "PA Power",  CAL_T_ENUM, 0, 3, 1, &v_pa_idx, pa_choices },
-  { "Exit",      CAL_T_BACK, 0, 0, 0, NULL,       NULL       },
+  { "PA Power",   CAL_T_ENUM, 0, 3, 1, &v_pa_idx, pa_choices },
+  { "OC Limit",   CAL_T_ENUM, 0, 4, 1, &v_oc_idx, oc_choices },
+  { "Exit",       CAL_T_BACK, 0, 0, 0, NULL,       NULL       },
 };
 
 static const CalSection_t s_sections[] = {
@@ -158,7 +161,7 @@ static const CalSection_t s_sections[] = {
   { "DC Offset",       items_dc,    4U },
   { "Audio Cal",       items_audio, 3U },
   { "RF / Display Cal",items_rf,    3U },
-  { "PA Hardware",     items_hw,    2U },
+  { "PA Hardware",     items_hw,    3U },
 };
 #define SECTION_COUNT  6U
 
@@ -472,6 +475,7 @@ bool Cal_Run(Cal_Params_t *params)
   v_smeter_off = (int32_t)params->smeter_offset_db;
   v_lo_offset  = (int32_t)params->lo_offset_hz;
   v_pa_idx     = pa_watts_to_idx(params->pa_watts);
+  v_oc_idx     = (params->pa_oc_limit_idx <= 4U) ? (int32_t)params->pa_oc_limit_idx : 3;
 
   uint8_t cursor = 0U;
   uint8_t scroll = 0U;
@@ -511,6 +515,7 @@ bool Cal_Run(Cal_Params_t *params)
         params->smeter_offset_db= (int16_t)v_smeter_off;
         params->lo_offset_hz    = (uint32_t)v_lo_offset;
         params->pa_watts        = pa_idx_to_watts(v_pa_idx);
+        params->pa_oc_limit_idx = (uint8_t)v_oc_idx;
         return true;
 
       } else if (it->kind == TOP_LOAD) {
@@ -525,6 +530,7 @@ bool Cal_Run(Cal_Params_t *params)
         v_smeter_off = (int32_t)params->smeter_offset_db;
         v_lo_offset  = (int32_t)params->lo_offset_hz;
         v_pa_idx     = pa_watts_to_idx(params->pa_watts);
+        v_oc_idx     = (params->pa_oc_limit_idx <= 4U) ? (int32_t)params->pa_oc_limit_idx : 3;
         render_toplevel(cursor, scroll);
 
       } else if (it->kind == TOP_RESET) {
@@ -539,6 +545,7 @@ bool Cal_Run(Cal_Params_t *params)
         v_smeter_off = def.smeter_offset_db;
         v_lo_offset  = (int32_t)def.lo_offset_hz;
         v_pa_idx     = pa_watts_to_idx(def.pa_watts);
+        v_oc_idx     = 3;   /* default 3.5A */
         render_toplevel(cursor, scroll);
 
       } else { /* TOP_EXIT */
