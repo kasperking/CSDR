@@ -597,7 +597,9 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->cw_bfo_inc  = (uint32_t)(int64_t)(700.0 / (double)sample_rate * 4294967296.0);
   dsp->cw_phase_acc = 0U;
 
-  dsp->signal_power_db = -120.0f;
+  dsp->signal_power_db      = -120.0f;
+  dsp->squelch_threshold_db = -200.0f;
+  dsp->squelch_open         = true;
   /* USER CODE END DSP_Init_0 */
 }
 
@@ -609,6 +611,17 @@ void DSP_SetFrequency(DSP_State_t *dsp, uint32_t lo_offset_hz, uint32_t sample_r
    * (because NCO_Step applies exp(−j·ω·t)). */
   NCO_SetFrequency(&dsp->nco, -(int32_t)lo_offset_hz, sample_rate);
   /* USER CODE END DSP_SetFrequency_0 */
+}
+
+/* sq=0 → disabled; sq=1-100 → threshold -70 to 0 dBFS (S1 to clipping) */
+void DSP_SetSquelch(DSP_State_t *dsp, uint8_t sq)
+{
+  if (sq == 0U) {
+    dsp->squelch_threshold_db = -200.0f;
+    dsp->squelch_open         = true;
+  } else {
+    dsp->squelch_threshold_db = -70.0f + (float)(sq - 1U) * (70.0f / 99.0f);
+  }
 }
 
 void DSP_SetIFShift(DSP_State_t *dsp, int32_t if_shift_hz, uint32_t sample_rate)
@@ -910,6 +923,15 @@ void DSP_Process(DSP_State_t *dsp,
     float rms_db = 20.0f * log10f(sqrtf(power_acc / (float)len) + 1e-10f);
     dsp->signal_power_db = 0.9f * dsp->signal_power_db + 0.1f * rms_db;
   }
+
+  /* Squelch gate — 3 dB hysteresis to prevent chatter */
+  if (dsp->squelch_threshold_db > -199.0f) {
+    if      (dsp->signal_power_db >= dsp->squelch_threshold_db + 3.0f) dsp->squelch_open = true;
+    else if (dsp->signal_power_db <  dsp->squelch_threshold_db - 3.0f) dsp->squelch_open = false;
+    if (!dsp->squelch_open)
+      memset(audio_out, 0, len * 2U * sizeof(int32_t));
+  }
+
   dsp->sample_count += len;
   /* USER CODE END DSP_Process_0 */
 }

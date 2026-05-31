@@ -10,6 +10,7 @@
 /* USER CODE END Header */
 
 #include "input_scan.h"
+#include "hw_fault.h"
 #if HAS_PCA9555
 #include "pca9555.h"
 extern I2C_HandleTypeDef hi2c2;
@@ -25,6 +26,15 @@ uint32_t dbg_pca_read_attempts  = 0;
 uint32_t dbg_pca_write_attempts = 0;
 uint32_t dbg_pca_timeout_count  = 0;
 uint32_t dbg_pca_disabled_hits  = 0;
+
+/* ── I2C skip / retry state ──────────────────────────────────────────────── */
+#if HAS_PCA9555
+/* Khi s_pca.ok=false, Input_Scan() bỏ qua I2C để tránh 10ms stall mỗi vòng
+ * loop (5ms × 2 HAL call).  Retry sau PCA_RETRY_MS để bắt hot-plug. */
+#define PCA_RETRY_MS  5000U
+static uint32_t s_pca_retry_ms          = 0U;
+static uint8_t  s_pca_reinit_fail_count = 0U;  /* consecutive reinit failures */
+#endif
 
 /* ════════════════════════════════════════════════════════════════════════════
  *  Input_Init
@@ -56,10 +66,34 @@ void Input_Scan(void)
 {
 #if HAS_PCA9555
   dbg_pca_read_attempts++;
+
+  if (!s_pca.ok) {
+    /* Device absent or failed — skip I2C to avoid 10ms stall per loop.
+     * Retry every PCA_RETRY_MS: attempt re-init to catch hot-plug or
+     * transient I2C errors.  g_pca9555_raw stays 0xFFFF (all released). */
+    uint32_t now = HAL_GetTick();
+    if ((now - s_pca_retry_ms) < PCA_RETRY_MS) {
+      dbg_pca_timeout_count++;
+      return;
+    }
+    s_pca_retry_ms = now;
+    if (PCA9555_Init(&s_pca, s_pca.hi2c, s_pca.addr) != HAL_OK) {
+      dbg_pca_timeout_count++;
+#if HW_FAULT_WARN
+      if (++s_pca_reinit_fail_count >= 3U) HW_Fault_Set(HW_FAULT_KEYS);
+#endif
+      return;
+    }
+    s_pca_reinit_fail_count = 0U;
+    dbg_pca_init_attempts++;
+  }
+
   if (PCA9555_ReadInputs(&s_pca) == HAL_OK)
     g_pca9555_raw = s_pca.raw;
-  else
+  else {
     dbg_pca_timeout_count++;
+    s_pca_retry_ms = HAL_GetTick();   /* arm retry timer */
+  }
 #else
   dbg_pca_disabled_hits++;
 #endif

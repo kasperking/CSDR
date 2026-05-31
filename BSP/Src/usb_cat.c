@@ -1236,12 +1236,20 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* SQ — stub: squelch not in minimal CAT set */
+    /* SQ — squelch 0-100 */
     else if (cmd[0] == 'S' && cmd[1] == 'Q') {
         if (cmd[2] == '\0' || (cmd[2] == '0' && cmd[3] == '\0')) {
-            cat_copy(resp, "SQ0000;");
+            uint8_t sq = cat->cb.get_squelch ? cat->cb.get_squelch() : 0U;
+            resp[0]='S'; resp[1]='Q'; resp[2]='0';
+            resp[3]=(char)('0' + sq/100U);
+            resp[4]=(char)('0' + (sq%100U)/10U);
+            resp[5]=(char)('0' + sq%10U);
+            resp[6]=';'; resp[7]='\0';
+        } else if (cmd[2] == '0' && cmd[3] >= '0' && cmd[3] <= '9') {
+            uint8_t sq = (uint8_t)((cmd[3]-'0')*100 + (cmd[4]-'0')*10 + (cmd[5]-'0'));
+            if (sq > 100U) sq = 100U;
+            if (cat->cb.set_squelch) cat->cb.set_squelch(sq);
         }
-        /* SET SQ0nnn; — ACK-only stub */
     }
 
     /* SM */

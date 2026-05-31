@@ -469,7 +469,7 @@ uint8_t CAT_CatModeToSDR(uint8_t cat_mode);
 #define CAT_HAS_NB          0   /* NB stub: NB0; fixed — no DSP NB through CAT path     */
 #define CAT_HAS_VOLUME      1   /* AG real: live get/set_volume callbacks, 0-100 ↔ 0-255 */
 #define CAT_HAS_BW          1   /* FW/SH: live BW read/write via get_bw/set_bw callbacks */
-#define CAT_HAS_SQUELCH     0   /* SQ stub: SQ0000; fixed — squelch not in minimal set  */
+#define CAT_HAS_SQUELCH     1
 #define CAT_HAS_AGC_CTRL    0   /* GT stub: GT00; fixed — AGC speed not in minimal set  */
 
 #ifdef __cplusplus

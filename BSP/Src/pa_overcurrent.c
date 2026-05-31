@@ -8,6 +8,7 @@
 
 #include "pa_overcurrent.h"
 #include "csdr_app.h"   /* g_sdr.tx_mode, g_sdr.cat_tx_dirty, g_sdr.display_dirty */
+#include "hw_fault.h"
 #include <string.h>
 
 PA_OC_State_t g_pa_oc = { 0 };
@@ -60,6 +61,8 @@ void PA_OC_SetCurrentLimit(float current_a)
  * trong khi vẫn phát hiện được khi thiết bị được cắm vào hoặc bus phục hồi. */
 #define PA_OC_I2C_RETRY_MS  5000U
 
+static uint8_t s_ina_reinit_fail_count = 0U;
+
 float PA_OC_ReadCurrent(void)
 {
     uint32_t now = HAL_GetTick();
@@ -72,13 +75,17 @@ float PA_OC_ReadCurrent(void)
         /* Thử đọc một thanh ghi bất kỳ để kiểm tra bus */
         uint16_t dummy = 0;
         if (INA226_ReadReg(&g_pa_oc.ina, INA226_REG_CONFIG, &dummy) != HAL_OK) {
-            g_pa_oc.ina_retry_ms = now;   /* lưu timestamp fail để tính elapsed */
+            g_pa_oc.ina_retry_ms = now;
+#if HW_FAULT_WARN
+            if (++s_ina_reinit_fail_count >= 3U) HW_Fault_Set(HW_FAULT_INA226);
+#endif
             return 0.0f;
         }
         /* Khôi phục thành công — tái cấu hình chip */
         INA226_Configure(&g_pa_oc.ina, INA226_CFG_FASTEST, INA226_MASK_SOL_LATCH);
         INA226_SetAlertLimitAmps(&g_pa_oc.ina, g_pa_oc.limit_a);
         g_pa_oc.ina_ok = true;
+        s_ina_reinit_fail_count = 0U;
     }
 
     float val = INA226_ReadCurrentAmps(&g_pa_oc.ina);

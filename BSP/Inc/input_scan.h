@@ -23,7 +23,7 @@
 #define __INPUT_SCAN_H
 
 /* 0 = PCA9555 not installed; all expander I/O is disabled at compile time */
-#define HAS_PCA9555  0
+#define HAS_PCA9555  1
 
 #ifdef __cplusplus
 extern "C" {
@@ -59,6 +59,8 @@ extern "C" {
   *         Initialized to 0xFFFF (all released) before first scan.
   */
 extern uint16_t g_pca9555_raw;
+extern uint32_t dbg_pca_init_attempts;
+extern uint32_t dbg_pca_timeout_count;
 
 /* ── API ────────────────────────────────────────────────────────────────── */
 

@@ -31,6 +31,7 @@
 #include "pa_protect.h"
 #include "usb_flash_proto.h"
 #include "selftest.h"
+#include "hw_fault.h"
 #include <string.h>
 #include <math.h>
 
@@ -422,12 +423,21 @@ void CSDR_Init(void)
   DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
   AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, g_sdr.nb_on, g_sdr.nb_level);
+  DSP_SetSquelch(&g_dsp, g_sdr.squelch);
 
   /* Encoder – TIM3 quadrature (PB4/PB5), initialised as encoder in MX_TIM3_Init */
   Encoder_Init(&g_encoder, &htim3);
 
-  /* PCA9555 button expander – all function keys on I2C2 */
+  /* PCA9555 button expander – all function keys on I2C2. */
   Input_Init();
+  /* Selftest: when HAS_PCA9555=1 the init result is captured in the dbg counters;
+   * when HAS_PCA9555=0 the driver is a no-op so probe directly to detect presence. */
+#if HAS_PCA9555
+  bool boot_keys_ok = (dbg_pca_timeout_count == 0U && dbg_pca_init_attempts > 0U);
+#else
+  bool boot_keys_ok = (HAL_I2C_IsDeviceReady(&hi2c2,
+                           (uint16_t)INPUT_PCA9555_ADDR, 2U, 5U) == HAL_OK);
+#endif
   Key_InitPCA(&k_menu, &g_pca9555_raw, PCA_BIT_MENU);
   Key_InitPCA(&k_f1,   &g_pca9555_raw, PCA_BIT_F1);
   Key_InitPCA(&k_f2,   &g_pca9555_raw, PCA_BIT_F2);
@@ -553,11 +563,23 @@ void CSDR_Init(void)
    * Boot continues normally regardless; no peripheral is disabled or retried. */
   SelfTest_Run(
     boot_flash_ok,
-    (dbg_wm8731_ok  == (uint32_t)HAL_OK),
+    (dbg_wm8731_ok    == (uint32_t)HAL_OK),
     g_sdr.si5351_ok,
     g_pa_oc.ina_ok,
-    (dbg_sai_init_ret == (uint32_t)HAL_OK)
+    (dbg_sai_init_ret == (uint32_t)HAL_OK),
+    boot_keys_ok
   );
+#if HW_FAULT_WARN
+  /* Map every selftest failure to the hw_fault registry so the spectrum
+   * overlay lists all absent hardware from the very first render tick.
+   * Order matches SelfTest_Run parameter order: FLASH CODEC PLL INA SAI KEYS */
+  if (!g_selftest.items[0].ok) HW_Fault_Set(HW_FAULT_FLASH);
+  if (!g_selftest.items[1].ok) HW_Fault_Set(HW_FAULT_CODEC);
+  if (!g_selftest.items[2].ok) HW_Fault_Set(HW_FAULT_PLL);
+  if (!g_selftest.items[3].ok) HW_Fault_Set(HW_FAULT_INA226);
+  if (!g_selftest.items[4].ok) HW_Fault_Set(HW_FAULT_SAI);
+  if (!g_selftest.items[5].ok) HW_Fault_Set(HW_FAULT_KEYS);
+#endif
   if (SelfTest_AnyFail()) g_sdr.display_dirty |= DIRTY_HDR;
 
   g_sdr.pwr_hold = true;
@@ -658,6 +680,68 @@ void CSDR_ProcessAudioPending(void)
   csdr_process_audio_pending();
 }
 
+#if HW_FAULT_WARN
+/* Draw a one-shot hardware-missing warning covering the SPEC+WF zone.
+ * Builds the component list dynamically from g_hw_fault_mask so any
+ * combination of failures is shown correctly.  Subsequent calls are
+ * no-ops (s_drawn flag); display persists until reboot. */
+static void csdr_draw_hw_fault_warning(void)
+{
+  static bool s_drawn = false;
+  if (s_drawn) return;
+  s_drawn = true;
+
+  LCD_FillRect(SPEC_X, SPEC_Y,
+               (uint16_t)(SPEC_X + SPEC_W - 1U),
+               (uint16_t)(WF_Y  + WF_H  - 1U),
+               0x0000U);
+
+  /* Build "FLASH CODEC PLL INA226 SAI KEYS" from active fault bits */
+  char components[48] = "";
+  if (g_hw_fault_mask & HW_FAULT_FLASH)  { strcat(components, "FLASH ");  }
+  if (g_hw_fault_mask & HW_FAULT_CODEC)  { strcat(components, "CODEC ");  }
+  if (g_hw_fault_mask & HW_FAULT_PLL)    { strcat(components, "PLL ");    }
+  if (g_hw_fault_mask & HW_FAULT_INA226) { strcat(components, "INA226 "); }
+  if (g_hw_fault_mask & HW_FAULT_SAI)    { strcat(components, "SAI ");    }
+  if (g_hw_fault_mask & HW_FAULT_KEYS)   { strcat(components, "KEYS ");   }
+  /* trim trailing space */
+  size_t clen = strlen(components);
+  if (clen > 0U) components[clen - 1U] = '\0';
+
+  static uint16_t s_ln[LCD_W];
+  const uint16_t FG1 = SWAP16(0xF800U);   /* red        */
+  const uint16_t FG2 = SWAP16(0xF040U);   /* dark red   */
+  const uint16_t BG  = 0x0000U;
+
+  const char *line1 = "! HARDWARE NOT FOUND";
+  const char *line2 = components;
+
+  uint16_t tw1 = (uint16_t)(strlen(line1) * Font6x8.width);
+  uint16_t tw2 = (uint16_t)(strlen(line2) * Font5x8.width);
+  uint16_t x1  = tw1 < SPEC_W ? (uint16_t)((SPEC_W - tw1) / 2U) : 0U;
+  uint16_t x2  = tw2 < SPEC_W ? (uint16_t)((SPEC_W - tw2) / 2U) : 0U;
+
+  uint16_t total_h = Font6x8.height + 4U + Font5x8.height;
+  uint16_t y0 = (uint16_t)(SPEC_Y + (SPEC_H + WF_H - total_h) / 2U);
+  uint16_t y1 = y0 + Font6x8.height + 4U;
+
+  for (uint16_t r = 0U; r < Font6x8.height; r++) {
+    LCD_LineFill(s_ln, 0U, SPEC_W, BG);
+    LCD_LineStr(s_ln, x1, r, line1, &Font6x8, FG1, BG);
+    LCD_PushWindow(SPEC_X, y0 + r,
+                   (uint16_t)(SPEC_X + SPEC_W - 1U), y0 + r,
+                   s_ln, SPEC_W);
+  }
+  for (uint16_t r = 0U; r < Font5x8.height; r++) {
+    LCD_LineFill(s_ln, 0U, SPEC_W, BG);
+    LCD_LineStr(s_ln, x2, r, line2, &Font5x8, FG2, BG);
+    LCD_PushWindow(SPEC_X, y1 + r,
+                   (uint16_t)(SPEC_X + SPEC_W - 1U), y1 + r,
+                   s_ln, SPEC_W);
+  }
+}
+#endif /* HW_FAULT_WARN */
+
 void CSDR_Loop(void)
 {
   RuntimeDiag_MainLoopBeat();
@@ -717,6 +801,9 @@ void CSDR_Loop(void)
    * Hysteresis: once triggered, suppression holds for UI_OVERLOAD_DECAY_MS. */
   if (!g_sdr.tx_mode && (now - t_spec >= CSDR_UI_SPEC_RX_PERIOD_MS)) {
     t_spec = now;
+#if HW_FAULT_WARN
+    if (HW_Fault_Any()) { csdr_draw_hw_fault_warning(); } else
+#endif
     if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
       static uint32_t s_spec_overload_ms = 0U;
       bool spec_ring_pressure = g_usb_audio.rx_overrun_pending ||
@@ -759,38 +846,29 @@ void CSDR_Loop(void)
    * (8.06ms) competing with SAI TX DMA fill at WSJT-X audio deadlines. */
   if (!g_sdr.tx_mode && (now - t_wf >= CSDR_UI_WF_RX_PERIOD_MS)) {
     t_wf = now;
-    /* Adaptive waterfall skip: suppress FMC push only under sustained load.
+    /* Adaptive waterfall skip: suppress FMC push only under sustained ring load.
      *
-     * Entry requires 2 consecutive high-pressure ticks (≥150 ms) to avoid
-     * suppressing on isolated overruns that are harmless on FMC 480×72.
-     * Recovery is fast: 150 ms (2 ticks) after pressure clears.
+     * Sole trigger: rx ring occupancy > 75% (real-time, same 75 ms tick).
+     * Entry requires 2 consecutive high-pressure ticks (≥150 ms) to filter
+     * isolated spikes.  Recovery: 150 ms (2 ticks) after pressure clears.
      *
-     * Trigger conditions:
-     *  a) rx ring occupancy > 75% — main-loop audio falling behind (sustained)
-     *  b) sustained overrun/underrun rate ≥3/s (isolated events are ignored)
-     *
-     * rx_overrun_pending is consumed here to prevent stale flag accumulation
-     * but is NOT used as a direct suppression trigger (isolated overruns are
-     * harmless on FMC hardware and were falsely killing the waterfall). */
+     * rx_overrun_per_sec was removed: it updates once per second, so a brief
+     * burst causes up to 2 s of false suppression after the cause clears.
+     * rx_overrun_pending is consumed here only to drain the flag. */
     {
       static uint32_t s_wf_overload_ms   = 0U;
       static uint8_t  s_wf_overload_hits = 0U;  /* consecutive high-pressure ticks */
 
-      /* a: ring occupancy — sustained audio pressure */
+      /* Ring occupancy: sole suppression trigger.
+       * rx_overrun_per_sec was removed — it is updated once per second so
+       * even a brief overrun burst keeps waterfall suppressed for an entire
+       * second after the cause clears.  ring_pressure is instantaneous (same
+       * 75 ms tick) and the 2-hit hysteresis below already filters spikes.
+       * tx_underrun_per_sec is irrelevant: waterfall is frozen during TX. */
       bool ring_pressure = (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
       if (g_usb_audio.rx_overrun_pending) g_usb_audio.rx_overrun_pending = false;
 
-      /* b+c+d: slow-path diagnostics; isolated overruns not sufficient.
-       * Only rolling-window rates are used here — peak-hold values like
-       * max_ui_us / max_loop_stall_us permanently latch after any one spike
-       * (boot draw, USB enum, mode change) and would suppress the waterfall
-       * forever.  rx/tx _per_sec reset to 0 within 1 s when load clears. */
-      RuntimeDiag_Snapshot_t snap;
-      RuntimeDiag_GetSnapshot(&snap);
-      bool diag_pressure = (snap.rx_overrun_per_sec >= 3U ||
-                            snap.tx_underrun_per_sec >= 3U);
-
-      if (ring_pressure || diag_pressure) {
+      if (ring_pressure) {
         if (s_wf_overload_hits < 2U) s_wf_overload_hits++;
         if (s_wf_overload_hits >= 2U) {
           s_wf_overload_ms = UI_OVERLOAD_DECAY_MS;
@@ -810,6 +888,9 @@ void CSDR_Loop(void)
       SDR_UI_SetWaterfallSuppressed(wf_suppressed);
       RuntimeDiag_WfSkipReport(dbg_wf_skip_count, wf_suppressed);
     }
+#if HW_FAULT_WARN
+    if (!HW_Fault_Any())
+#endif
     if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
       csdr_process_audio_pending();
       RuntimeDiag_UiRenderBegin();
@@ -1558,7 +1639,7 @@ static void menu_apply_cb(void)
   DSP_NB_Set(&g_dsp, nb, g_sdr.nb_level);
   g_sdr.rit_hz = rit;
   g_sdr.cat_rit_dirty = true;  /* apply new RIT offset to nco_if via CSDR_Loop */
-  csdr_apply_volume(vol); g_sdr.squelch = sq;
+  csdr_apply_volume(vol); g_sdr.squelch = sq; DSP_SetSquelch(&g_dsp, sq);
   g_sdr.step = (FreqStep_t)step;
   if (att != g_sdr.att_db) {
     PE4302_SetAttn_dB(&g_att, att);
@@ -1896,7 +1977,7 @@ static void cat_set_bw(uint32_t hz)
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBR);
 }
 static void     cat_set_agc_fast(bool f)  { g_sdr.agc_fast = f; g_sdr.display_dirty |= DIRTY_SBL | DIRTY_HDR; }
-static void     cat_set_squelch(uint8_t s){ g_sdr.squelch = s; g_sdr.display_dirty |= DIRTY_SBL; }
+static void     cat_set_squelch(uint8_t s){ g_sdr.squelch = s; DSP_SetSquelch(&g_dsp, s); g_sdr.display_dirty |= DIRTY_SBL; }
 
 static uint32_t cat_get_freq(void)        { return g_sdr.freq_hz; }
 static uint8_t  cat_get_mode(void)        { return (uint8_t)g_sdr.mode; }

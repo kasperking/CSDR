@@ -11,13 +11,13 @@
 SelfTest_Result_t g_selftest = {0};
 
 static const char *const k_ids[SELFTEST_COUNT] = {
-    "FLASH", "CODEC", "PLL", "INA", "SAI"
+    "FLASH", "CODEC", "PLL", "INA", "SAI", "KEYS"
 };
 
 void SelfTest_Run(bool flash_ok, bool codec_ok, bool pll_ok,
-                  bool ina_ok,   bool sai_ok)
+                  bool ina_ok,   bool sai_ok,   bool keys_ok)
 {
-    const bool ok[SELFTEST_COUNT] = { flash_ok, codec_ok, pll_ok, ina_ok, sai_ok };
+    const bool ok[SELFTEST_COUNT] = { flash_ok, codec_ok, pll_ok, ina_ok, sai_ok, keys_ok };
 
     g_selftest.fail_count = 0U;
     for (uint8_t i = 0U; i < SELFTEST_COUNT; i++) {

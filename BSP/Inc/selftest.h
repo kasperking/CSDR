@@ -17,6 +17,7 @@
   *    PLL   — SI5351 oscillator   (VFO / LO synthesis)
   *    INA   — INA226 PA current   (overcurrent protection)
   *    SAI   — SAI DMA audio       (I2S hardware interface)
+  *    KEYS  — PCA9555 key expander (function keys, I2C2 probe)
   */
 /* USER CODE END Header */
 
@@ -30,11 +31,11 @@
 extern "C" {
 #endif
 
-#define SELFTEST_COUNT  5U
+#define SELFTEST_COUNT  6U
 
 typedef struct {
-    const char *id;   /*!< Short label: "FLASH", "CODEC", "PLL", "INA", "SAI" */
-    bool        ok;   /*!< true = detected and initialised correctly            */
+    const char *id;   /*!< Short label: "FLASH", "CODEC", "PLL", "INA", "SAI", "KEYS" */
+    bool        ok;   /*!< true = detected and initialised correctly                   */
 } SelfTest_Entry_t;
 
 typedef struct {
@@ -51,7 +52,7 @@ extern SelfTest_Result_t g_selftest;
   *         Boot continues normally regardless of result.
   */
 void SelfTest_Run(bool flash_ok, bool codec_ok, bool pll_ok,
-                  bool ina_ok,   bool sai_ok);
+                  bool ina_ok,   bool sai_ok,   bool keys_ok);
 
 /** @brief  true if at least one hardware item failed selftest. */
 bool SelfTest_AnyFail(void);

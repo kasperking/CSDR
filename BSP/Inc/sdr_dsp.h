@@ -152,6 +152,10 @@ typedef struct {
   float      signal_power_db;
   uint32_t   sample_count;
 
+  /* Squelch */
+  float      squelch_threshold_db;  /* -200 = disabled */
+  bool       squelch_open;          /* current gate state */
+
   /* CW BFO – RX demodulator */
   uint32_t   cw_phase_acc;   /*!< RX CW BFO phase accumulator */
   uint32_t   cw_bfo_inc;     /*!< RX CW BFO phase increment (sample-rate-derived) */
@@ -170,6 +174,7 @@ typedef struct {
 
 /* Exported functions prototypes ---------------------------------------------*/
 void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate);
+void DSP_SetSquelch(DSP_State_t *dsp, uint8_t sq);
 void DSP_SetFrequency(DSP_State_t *dsp, uint32_t lo_offset_hz, uint32_t sample_rate);
 void DSP_SetIFShift(DSP_State_t *dsp, int32_t if_shift_hz, uint32_t sample_rate);
 void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate);
