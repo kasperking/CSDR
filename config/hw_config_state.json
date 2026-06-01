@@ -1,5 +1,5 @@
 {
-  "lcd_controller": "ST7796",
+  "lcd_controller": "ST7789",
   "lcd_orientation": "LANDSCAPE_BGR",
   "fmc_bus_width": "8BIT",
   "gpio_speed": "MEDIUM",

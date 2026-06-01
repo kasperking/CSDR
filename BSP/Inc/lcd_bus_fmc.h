@@ -88,6 +88,7 @@ extern "C" {
  * use the same opcodes as ST7796S — LCD_SetWindow works unchanged.           */
 #define ST7789_SWRESET    0x01U
 #define ST7789_SLPOUT     0x11U
+#define ST7789_INVOFF     0x20U   /* Inversion off                            */
 #define ST7789_INVON      0x21U   /* Inversion on — required for normal mode  */
 #define ST7789_DISPON     0x29U
 #define ST7789_CASET      0x2AU

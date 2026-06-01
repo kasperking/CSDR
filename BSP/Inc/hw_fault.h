@@ -43,6 +43,14 @@ extern "C" {
 /* ── Global fault mask ──────────────────────────────────────────────── */
 extern volatile uint32_t g_hw_fault_mask;
 
+/* ── Critical fault mask ────────────────────────────────────────────── */
+/* Components whose absence makes the radio non-functional or unsafe.
+ * After one reinit attempt, CSDR_Loop halts audio/RF and shows the overlay.
+ *   CODEC — no audio decode/encode → DSP has no signal
+ *   PLL   — no LO synthesis → no receive or transmit
+ *   INA226 — no PA overcurrent protection → TX is unsafe */
+#define HW_FAULT_CRITICAL  (HW_FAULT_CODEC | HW_FAULT_PLL | HW_FAULT_INA226)
+
 /* ── Inline helpers ─────────────────────────────────────────────────── */
 
 /** @brief  Assert one or more fault bits (OR-assign, idempotent). */
@@ -50,6 +58,13 @@ static inline void HW_Fault_Set(uint32_t bits) { g_hw_fault_mask |= bits; }
 
 /** @brief  true when at least one hardware component is flagged faulty. */
 static inline bool HW_Fault_Any(void) { return g_hw_fault_mask != 0U; }
+
+/** @brief  true when a critical component (CODEC/PLL/INA226) is absent.
+ *          Checked unconditionally — does not require HW_FAULT_WARN = 1. */
+static inline bool HW_Fault_IsCritical(void)
+{
+    return (g_hw_fault_mask & HW_FAULT_CRITICAL) != 0U;
+}
 
 #ifdef __cplusplus
 }

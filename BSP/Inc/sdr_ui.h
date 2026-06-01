@@ -127,43 +127,107 @@ extern "C" {
 #define STS_Y2  FTR_Y
 
 #elif LCD_PANEL == LCD_PANEL_ST7789
-/* ── ST7789 240×320 compact layout (no sidebars) ────────────────────────── *
+/* ── ST7789: orientation-split layout ───────────────────────────────────── *
  *
- *  Total: 16+48+24+76+96+28+32 = 320 px ✓
+ *  Landscape (320x240): 12+44+20+56+60+24+24 = 240 px
+ *  Portrait  (240x320): 16+48+24+76+96+28+32 = 320 px
  *
- *  SBL/SBR are defined as zero-size so callers compile cleanly.
- *  DrawSidebarLeft renders the STATUS zone; DrawSidebarRight is a no-op.
+ *  SBL/SBR are zero-size on both orientations — DrawSidebarLeft renders the
+ *  STATUS bar; DrawSidebarRight is a no-op.
  */
+#if LCD_W > LCD_H
+/* ── ST7789 320×240 landscape ──────────────────────────────────────────── */
 
 #define HDR_Y    0U
-#define HDR_H   16U      /* compact header */
-#define HDR_Y2  16U
+#define HDR_H   12U
+#define HDR_Y2  12U
 
 #define SBL_X    0U
-#define SBL_W    0U      /* not rendered */
+#define SBL_W    0U
 #define SBL_H    0U
 #define SBL_Y   HDR_Y2
 #define SBL_Y2  HDR_Y2
 
-#define SBR_W    0U      /* not rendered */
-#define SBR_X   LCD_W    /* off-screen origin (unused) */
+#define SBR_W    0U
+#define SBR_X   LCD_W
 #define SBR_Y   HDR_Y2
 #define SBR_H    0U
 #define SBR_Y2  HDR_Y2
 
 #define VFO_X    0U
-#define VFO_W   LCD_W    /* full width — no sidebars */
+#define VFO_W   LCD_W
+#define VFO_Y   HDR_Y2   /* = 12 */
+#define VFO_H   44U
+#define VFO_Y2  56U
+
+#define MTR_X    0U
+#define MTR_W   LCD_W
+#define MTR_Y   VFO_Y2   /* = 56 */
+#define MTR_H   20U      /* TX value text omitted — no room; bar + scale fit */
+#define MTR_Y2  76U
+
+#define INFO_Y  MTR_Y2
+#define INFO_H    0U
+#define INFO_Y2 MTR_Y2
+
+#define SPEC_X    0U
+#define SPEC_W   LCD_W
+#define SPEC_Y   MTR_Y2  /* = 76 */
+#define SPEC_H   56U
+#define SPEC_Y2 132U
+
+#define WF_X     0U
+#define WF_W    LCD_W
+#define WF_Y    SPEC_Y2  /* = 132 */
+#define WF_H    60U
+#define WF_Y2  192U
+
+#define STS_Y   WF_Y2    /* = 192 */
+#define STS_H   24U
+#define STS_Y2 216U
+
+#define FTR_Y   STS_Y2   /* = 216 */
+#define FTR_H   24U
+#define FTR_Y2  LCD_H    /* = 240 */
+
+/* S-meter ruler (ST7789 landscape 20-row MTR zone):
+ *   rows  0– 9: scale labels + inline S-value (Font8x10)
+ *   rows 10–11: major ticks (2 px), row 11: minor ticks (1 px)
+ *   row  12:    top rail (1-px horizontal line)
+ *   rows 13–16: 4-px signal line (SM_LINE_R0..+SM_LINE_H-1)
+ *   row  18:    bottom rail; TX ALC/SWR text omitted (MTR too short) */
+
+#else
+/* ── ST7789 240×320 portrait ───────────────────────────────────────────── */
+
+#define HDR_Y    0U
+#define HDR_H   16U
+#define HDR_Y2  16U
+
+#define SBL_X    0U
+#define SBL_W    0U
+#define SBL_H    0U
+#define SBL_Y   HDR_Y2
+#define SBL_Y2  HDR_Y2
+
+#define SBR_W    0U
+#define SBR_X   LCD_W
+#define SBR_Y   HDR_Y2
+#define SBR_H    0U
+#define SBR_Y2  HDR_Y2
+
+#define VFO_X    0U
+#define VFO_W   LCD_W
 #define VFO_Y   HDR_Y2   /* = 16 */
 #define VFO_H   48U
-#define VFO_Y2  64U      /* HDR_Y2 + VFO_H */
+#define VFO_Y2  64U
 
 #define MTR_X    0U
 #define MTR_W   LCD_W
 #define MTR_Y   VFO_Y2   /* = 64 */
 #define MTR_H   24U
-#define MTR_Y2  88U      /* MTR_Y + MTR_H */
+#define MTR_Y2  88U
 
-/* No info strip on compact */
 #define INFO_Y  MTR_Y2
 #define INFO_H    0U
 #define INFO_Y2 MTR_Y2
@@ -172,29 +236,30 @@ extern "C" {
 #define SPEC_W   LCD_W
 #define SPEC_Y   MTR_Y2  /* = 88 */
 #define SPEC_H   76U
-#define SPEC_Y2 164U     /* SPEC_Y + SPEC_H */
+#define SPEC_Y2 164U
 
 #define WF_X     0U
 #define WF_W    LCD_W
 #define WF_Y    SPEC_Y2  /* = 164 */
 #define WF_H    96U
-#define WF_Y2  260U      /* WF_Y + WF_H */
+#define WF_Y2  260U
 
-/* Compact status bar — replaces sidebars (mode/vol/sq/bw/step/NR/NB) */
 #define STS_Y   WF_Y2    /* = 260 */
 #define STS_H   28U
-#define STS_Y2 288U      /* STS_Y + STS_H */
+#define STS_Y2 288U
 
 #define FTR_Y   STS_Y2   /* = 288 */
 #define FTR_H   32U
 #define FTR_Y2  LCD_H    /* = 320 */
 
-/* S-meter ruler (ST7789 24-row MTR zone):
- *   rows  1– 8: scale labels + inline S-value (Font5x8)
+/* S-meter ruler (ST7789 portrait 24-row MTR zone):
+ *   rows  0– 9: scale labels + inline S-value (Font8x10)
  *   rows 10–11: major ticks (2 px), row 11: minor ticks (1 px)
  *   row  12:    top rail (1-px horizontal line)
- *   rows 14–15: 2-px continuous signal line (SM_LINE_R0, SM_LINE_H)
+ *   rows 13–16: 4-px signal line (SM_LINE_R0..+SM_LINE_H-1)
  *   row  18:    bottom rail; rows 19+: TX meter / unused          */
+
+#endif /* LCD_W > LCD_H */
 
 #else
 #  error "Unknown LCD_PANEL in sdr_ui.h — check lcd_panel_config.h"

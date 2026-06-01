@@ -805,15 +805,22 @@ static void draw_compact_status(const SDR_UI_State_t *ui)
   char vol_str[8]; snprintf(vol_str, sizeof(vol_str), "VOL:%u",  ui->volume);
   char sql_str[8]; snprintf(sql_str, sizeof(sql_str), "SQL:%u",  ui->squelch);
 
-  char bw_str[10];
+  /* uint32_t = long unsigned int on this toolchain → %lu.
+   * Decimal branch avoids snprintf: two %lu would need a 26-byte buffer.
+   * Integer split used directly (same pattern as fmt_1dp / no-float rule). */
+  char bw_str[16];
   if (ui->bw_hz >= 10000U)
-    snprintf(bw_str, sizeof(bw_str), "BW:%luk", (unsigned long)(ui->bw_hz / 1000U));
-  else if (ui->bw_hz >= 1000U)
-    snprintf(bw_str, sizeof(bw_str), "BW:%lu.%luk",
-             (unsigned long)(ui->bw_hz / 1000U),
-             (unsigned long)((ui->bw_hz % 1000U) / 100U));
-  else
-    snprintf(bw_str, sizeof(bw_str), "BW:%luHz", (unsigned long)ui->bw_hz);
+    snprintf(bw_str, sizeof(bw_str), "BW:%luk",
+             (unsigned long)(ui->bw_hz / 1000U));
+  else if (ui->bw_hz >= 1000U) {
+    uint32_t k = ui->bw_hz / 1000U;           /* 1-9 */
+    uint32_t f = (ui->bw_hz % 1000U) / 100U;  /* 0-9 */
+    bw_str[0]='B'; bw_str[1]='W'; bw_str[2]=':';
+    bw_str[3]=(char)('0'+(int)k); bw_str[4]='.';
+    bw_str[5]=(char)('0'+(int)f); bw_str[6]='k'; bw_str[7]='\0';
+  } else
+    snprintf(bw_str, sizeof(bw_str), "BW:%luHz",
+             (unsigned long)ui->bw_hz);
 
   char step_str[12];
   uint32_t st = ui->step;
@@ -829,10 +836,16 @@ static void draw_compact_status(const SDR_UI_State_t *ui)
 
   buf_fill(s_sts_buf, (uint32_t)STS_H * LCD_W, UI_BG);
 
-  /* Vertical placement: two Font8x10 rows in STS_H=28 px.
-   * Content height: 10 + 4 + 10 = 24 px.  Top margin: 4, gap: 4. */
-  const uint16_t row0_y = 4U;          /* row 0: mode / vol / sql */
+  /* Vertical placement: two Font8x10 rows (height=10 each).
+   * Landscape STS_H=24: margin 2, gap 2 — row0 rows 2-11, row1 rows 14-23.
+   * Portrait  STS_H=28: margin 4, gap 4 — row0 rows 4-13, row1 rows 18-27. */
+#if LCD_W > LCD_H
+  const uint16_t row0_y = 2U;
+  const uint16_t row1_y = (uint16_t)(row0_y + Font8x10.height + 2U);  /* = 14 */
+#else
+  const uint16_t row0_y = 4U;
   const uint16_t row1_y = (uint16_t)(row0_y + Font8x10.height + 4U);  /* = 18 */
+#endif
 
   /* Thin top border */
   for (uint16_t x = 0U; x < LCD_W; x++)
@@ -1235,12 +1248,14 @@ void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
     }
   }
 
-  /* Passband graphic fills the zone below the 2 text rows */
+  /* Passband graphic fills the zone below the 2 text rows (ST7796 only) */
+#if LCD_PANEL == LCD_PANEL_ST7796
   {
     uint16_t pb_y0 = (uint16_t)(top_pad + 2U * row_h);
     uint16_t pb_h  = (uint16_t)(SBR_H - pb_y0);
     sbr_draw_passband(pb_y0, pb_h, ui->bw_hz, ui->rit_hz);
   }
+#endif /* LCD_PANEL_ST7796 */
 
   LCD_PushWindow(SBR_X, SBR_Y,
                  (uint16_t)(SBR_X + SBR_W - 1U), SBR_Y2 - 1U,
@@ -1305,10 +1320,15 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   const uint16_t freq_top = 2U;
   const uint16_t vfoi_y   = 1U;
 
-  /* Gap between primary and secondary VFO.  Secondary uses Font8x10 (8×10 px). */
-#if LCD_PANEL == LCD_PANEL_ST7789
-  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 12U);  /* row 38: 12-px gap, Font8x10 fills rows 38-47 */
-  const uint16_t div_y  = 0xFFFFU;  /* no room for divider on compact panel */
+  /* Gap between primary and secondary VFO.  Secondary uses Font8x10 (8x10 px). */
+#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
+  /* Landscape 320x240: VFO_H=44 — tighter gap keeps sub-line fully visible */
+  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 8U);   /* row 34: fits rows 34-43 in VFO_H=44 */
+  const uint16_t div_y  = 0xFFFFU;
+#elif LCD_PANEL == LCD_PANEL_ST7789
+  /* Portrait 240x320: VFO_H=48 */
+  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 12U);  /* row 38: fits rows 38-47 in VFO_H=48 */
+  const uint16_t div_y  = 0xFFFFU;
 #else
   const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 15U);  /* row 41: 15-px gap */
   const uint16_t div_y  = (uint16_t)(freq_top + BIG_H + 7U);   /* row 33, centred in gap */

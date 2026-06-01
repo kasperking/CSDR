@@ -1,8 +1,8 @@
 /* hw_config_active.h -- CSDR Hardware Configuration (auto-generated)
  * DO NOT EDIT -- regenerate with:  python tools/hw_config.py
  *
- * Generated  : 2026-05-29 10:59:36
- * Controller : ST7796
+ * Generated  : 2026-06-01 00:29:44
+ * Controller : ST7789
  * Orientation: Landscape BGR
  * FMC width  : 8-bit
  * GPIO speed : MEDIUM
@@ -20,13 +20,14 @@
  * HW_LCD_PANEL is read by lcd_panel_config.h to select the driver path.
  * LCD_W / LCD_H are provided here so portrait and landscape both resolve
  * correctly without editing lcd_panel_config.h.                          */
-#define HW_LCD_PANEL        1   /* ST7796 */
-#define LCD_W               480U
-#define LCD_H               320U
+#define HW_LCD_PANEL        2   /* ST7789 */
+#define LCD_W               320U
+#define LCD_H               240U
 
 /* -- MADCTL (register 0x36) ----------------------------------------------
- * MY|MX|MV|BGR  landscape, BGR filter                                 */
-#define HW_LCD_MADCTL       0xE8U
+ * MX|MV           landscape, RGB filter
+ * BGR=0: panel has RGB sub-pixels — BGR=1 was swapping R↔B incorrectly  */
+#define HW_LCD_MADCTL       0x60U
 
 /* -- FMC SRAM timing (AHB cycles, asynchronous mode A) ------------------
  * Limits per STM32H7 RM0433: ADDR_SETUP 0-15, ADDR_HOLD 1-15,

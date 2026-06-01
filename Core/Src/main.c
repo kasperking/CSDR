@@ -1048,6 +1048,7 @@ static void MX_FMC_Init(void)
    * Must follow LCD_Bus_Init() (needs FMC + MPU Region 1 already active).
    * Priority 5 ISR: below audio (0) and USB (2); clears one flag per TC. */
   LCD_DMA_Init();
+  /* Test: clear đỏ → rồi xanh → nếu thấy màu = FMC OK */
 
   /* ── USB DFU boot check ────────────────────────────────────────────────
    * GPIO and FMC/LCD are ready; USB stack has NOT started yet.

@@ -569,14 +569,61 @@ void CSDR_Init(void)
     (dbg_sai_init_ret == (uint32_t)HAL_OK),
     boot_keys_ok
   );
+  /* ── Critical fault reinit: one attempt for CODEC, PLL, INA ─────────────
+   * These three make the radio non-functional or unsafe without them.
+   * Runs unconditionally — independent of HW_FAULT_WARN.
+   * SAI DMA is already running; all reinits are pure I2C, no audio impact.
+   * On persistent failure HW_FAULT_* is set; CSDR_Loop will halt audio/RF. */
+  {
+    /* CODEC (WM8731) — audio codec */
+    if (!g_selftest.items[1].ok) {
+      uint8_t wm_vol2 = (g_sdr.volume == 0U) ? 0x2FU
+                        : (uint8_t)(90U + ((uint16_t)g_sdr.volume * 31U / 100U));
+      WM8731_Config_t wm2 = {
+        .hi2c = &hi2c1, .i2c_addr = WM8731_I2C_ADDR,
+        .sample_rate = CSDR_AUDIO_SAMPLE_RATE,
+        .input_volume = 23U, .output_volume = wm_vol2, .line_in = true
+      };
+      dbg_wm8731_ok = (uint32_t)WM8731_Init(&wm2);
+      if (dbg_wm8731_ok == HAL_OK) {
+        uint8_t act[2] = { 0x12U, 0x01U };
+        HAL_I2C_Master_Transmit(&hi2c1, WM8731_I2C_ADDR, act, 2U, 100U);
+        g_selftest.items[1].ok = true;
+      } else {
+        HW_Fault_Set(HW_FAULT_CODEC);
+      }
+    }
+
+    /* PLL (SI5351) — VFO / LO synthesis */
+    if (!g_selftest.items[2].ok) {
+      dbg_si5351_ok = (uint32_t)SI5351_Init(&g_si5351, &hi2c1,
+                                              SI5351_I2C_ADDR, SI5351_XTAL_HZ);
+      if (dbg_si5351_ok == HAL_OK) {
+        g_sdr.si5351_ok = true;
+        SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+        g_selftest.items[2].ok = true;
+      } else {
+        HW_Fault_Set(HW_FAULT_PLL);
+      }
+    }
+
+    /* INA226 — PA overcurrent protection */
+    if (!g_selftest.items[3].ok) {
+      PA_OC_Init(&hi2c2);
+      if (g_pa_oc.ina_ok) {
+        static const float oc_lut2[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
+        PA_OC_SetCurrentLimit(oc_lut2[g_sdr.pa_oc_limit_idx]);
+        g_selftest.items[3].ok = true;
+      } else {
+        HW_Fault_Set(HW_FAULT_INA226);
+      }
+    }
+  }
+
 #if HW_FAULT_WARN
-  /* Map every selftest failure to the hw_fault registry so the spectrum
-   * overlay lists all absent hardware from the very first render tick.
-   * Order matches SelfTest_Run parameter order: FLASH CODEC PLL INA SAI KEYS */
+  /* Non-critical faults: FLASH, SAI, KEYS — warning overlay only, no halt.
+   * CODEC/PLL/INA are handled unconditionally in the critical block above. */
   if (!g_selftest.items[0].ok) HW_Fault_Set(HW_FAULT_FLASH);
-  if (!g_selftest.items[1].ok) HW_Fault_Set(HW_FAULT_CODEC);
-  if (!g_selftest.items[2].ok) HW_Fault_Set(HW_FAULT_PLL);
-  if (!g_selftest.items[3].ok) HW_Fault_Set(HW_FAULT_INA226);
   if (!g_selftest.items[4].ok) HW_Fault_Set(HW_FAULT_SAI);
   if (!g_selftest.items[5].ok) HW_Fault_Set(HW_FAULT_KEYS);
 #endif
@@ -680,11 +727,14 @@ void CSDR_ProcessAudioPending(void)
   csdr_process_audio_pending();
 }
 
-#if HW_FAULT_WARN
 /* Draw a one-shot hardware-missing warning covering the SPEC+WF zone.
  * Builds the component list dynamically from g_hw_fault_mask so any
  * combination of failures is shown correctly.  Subsequent calls are
- * no-ops (s_drawn flag); display persists until reboot. */
+ * no-ops (s_drawn flag); display persists until reboot.
+ *
+ * Always compiled — called unconditionally from the critical-halt path in
+ * CSDR_Loop regardless of HW_FAULT_WARN.  The non-critical call site in the
+ * spectrum timer block is still gated by #if HW_FAULT_WARN. */
 static void csdr_draw_hw_fault_warning(void)
 {
   static bool s_drawn = false;
@@ -709,8 +759,11 @@ static void csdr_draw_hw_fault_warning(void)
   if (clen > 0U) components[clen - 1U] = '\0';
 
   static uint16_t s_ln[LCD_W];
-  const uint16_t FG1 = SWAP16(0xF800U);   /* red        */
-  const uint16_t FG2 = SWAP16(0xF040U);   /* dark red   */
+  /* Raw RGB565 — LCD_LineStr/LCD_LineFill apply SWAP16 internally.
+   * Do NOT pre-wrap with SWAP16 here; double-SWAP produces wrong colours
+   * on ST7789 where SWAP16 includes colour inversion (not pure byte-swap). */
+  const uint16_t FG1 = 0xF800U;   /* red      */
+  const uint16_t FG2 = 0xF040U;   /* dark red */
   const uint16_t BG  = 0x0000U;
 
   const char *line1 = "! HARDWARE NOT FOUND";
@@ -740,7 +793,6 @@ static void csdr_draw_hw_fault_warning(void)
                    s_ln, SPEC_W);
   }
 }
-#endif /* HW_FAULT_WARN */
 
 void CSDR_Loop(void)
 {
@@ -748,6 +800,23 @@ void CSDR_Loop(void)
 
   /* PA overcurrent: xử lý fault từ EXTI ISR (tắt TX, báo lỗi UI, xóa INA226 latch) */
   PA_OC_HandleFaultInLoop();
+
+  /* ── Critical hardware fault: CODEC / PLL / INA226 absent after reinit ──
+   * Audio and RF are non-functional or unsafe.  Skip the entire pipeline;
+   * only refresh the fault overlay, watchdog, and power management.
+   * SAI DMA continues in background outputting silence — no crash risk. */
+  if (HW_Fault_IsCritical()) {
+    static uint32_t s_crit_disp_ms = 0U;
+    uint32_t now_c = HAL_GetTick();
+    if ((now_c - s_crit_disp_ms) >= 500U) {
+      s_crit_disp_ms = now_c;
+      csdr_draw_hw_fault_warning();
+    }
+    RuntimeDiag_ServiceSlow(now_c);
+    RuntimeDiag_WatchdogRefreshIfHealthy(now_c);
+    PWR_Poll();
+    return;
+  }
 
   csdr_process_audio_pending();
 

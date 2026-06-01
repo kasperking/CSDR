@@ -135,12 +135,18 @@ void LCD_SetWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 void LCD_WritePixel(uint16_t x, uint16_t y, uint16_t color)
 {
     LCD_SetWindow(x, y, x, y);
+#if LCD_PANEL == LCD_PANEL_ST7789
+    color = (uint16_t)~color;
+#endif
     LCD_WriteData16(color);
 }
 
 void LCD_FillRect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t color)
 {
     uint32_t npix = (uint32_t)(x1 - x0 + 1U) * (uint32_t)(y1 - y0 + 1U);
+#if LCD_PANEL == LCD_PANEL_ST7789
+    color = (uint16_t)~color;   /* pre-invert: INVON hardware inverts displayed pixel */
+#endif
     uint8_t  hi   = (uint8_t)(color >> 8);
     uint8_t  lo   = (uint8_t)(color);
 
@@ -258,8 +264,7 @@ static void lcd_init_sequence(void)
     LCD_WriteCmd(ST7789_COLMOD);
     LCD_WriteData8(ST7789_COLMOD_16BIT);
 
-    /* Memory access control — value from hardware profile (HW_LCD_MADCTL).
-     * Default 0x08 = BGR portrait (no axis swap) for ST7789. */
+    /* Memory access control — value from hardware profile (HW_LCD_MADCTL) */
     LCD_WriteCmd(ST7789_MADCTL);
     LCD_WriteData8(HW_LCD_MADCTL);
 
