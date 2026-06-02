@@ -330,11 +330,12 @@ extern "C" {
 #define UI_SMETER_TICK    0xC618U   /* scale labels, ticks, rails — bright gray  */
 #define UI_SMETER_ACT     0x0720U   /* active signal line — RF green (≈231/255 G, classic meter) */
 
-#define UI_STATUS_LBL     0x3433U   /* dimmed: subdues sidebar labels vs. values */
+#define UI_STATUS_LBL     0x3433U   /* dimmed label — note: has slight blue tint (B>R) */
 #define UI_STATUS_VAL     0xFFFFU
 #define UI_STATUS_ON      0x07E0U
 #define UI_STATUS_OFF     0xF800U
-#define UI_STATUS_WARN    0xF800U   /* red  — hardware missing warning */
+#define UI_STATUS_WARN    0xFD00U   /* amber — hardware missing warning */
+#define UI_STATUS_HINT    0x5ACBU   /* neutral gray: R=11 G=22 B=11 → R≈G≈B≈89/255 */
 
 #define UI_TX_BG          0xF800U   /* TX = red                      */
 #define UI_TX_FG          0xFFFFU

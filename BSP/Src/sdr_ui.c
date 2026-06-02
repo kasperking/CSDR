@@ -655,23 +655,24 @@ static void draw_footer_rows(uint32_t half_hz)
   uint16_t pad   = (FTR_H - fh) / 2U;
   uint16_t cx_px = (uint16_t)(LCD_W / 2U);
 
-  /* Tick marks sit immediately above labels.
-   * Major (0 kHz): 4-row tall, bright.  Medium (±12k): 2-row tall, dimmer. */
-  uint16_t tmaj0    = (pad >= 4U) ? (uint16_t)(pad - 4U) : 0U;
-  uint16_t tmed0    = (pad >= 2U) ? (uint16_t)(pad - 2U) : 0U;
-  uint16_t tick_maj = SWAP16(UI_STATUS_VAL);   /* bright white */
-  uint16_t tick_med = SWAP16(UI_SMETER_TICK);  /* medium gray  */
+  /* Tick marks above labels — 2-row blank gap separates tick bottom from text.
+   * Major (0 kHz): 4-row tall, bright.  Medium (±12k): 2-row tall, dimmer.  */
+  uint16_t tick_end  = (pad >= 2U) ? (uint16_t)(pad - 2U) : 0U;  /* gap = 2 rows */
+  uint16_t tmaj0     = (tick_end >= 4U) ? (uint16_t)(tick_end - 4U) : 0U;
+  uint16_t tmed0     = (tick_end >= 2U) ? (uint16_t)(tick_end - 2U) : 0U;
+  uint16_t tick_maj  = SWAP16(UI_STATUS_VAL);   /* bright white */
+  uint16_t tick_med  = SWAP16(UI_SMETER_TICK);  /* medium gray  */
 
   for (uint16_t row = 0U; row < FTR_H; row++) {
     uint16_t *ln = LCD_GetLineBuf();
     LCD_LineFill(ln, 0U, LCD_W, UI_BG);
 
     /* 4-row center tick */
-    if (row >= tmaj0 && row < pad && cx_px < LCD_W)
+    if (row >= tmaj0 && row < tick_end && cx_px < LCD_W)
       ln[cx_px] = tick_maj;
 
     /* 2-row ±12k ticks */
-    if (show_mid && row >= tmed0 && row < pad) {
+    if (show_mid && row >= tmed0 && row < tick_end) {
       if (lm_px < LCD_W) ln[lm_px] = tick_med;
       if (rm_px < LCD_W) ln[rm_px] = tick_med;
     }
@@ -680,7 +681,7 @@ static void draw_footer_rows(uint32_t half_hz)
       uint16_t frow = row - pad;
       LCD_LineStr(ln, 4U,   frow, lbuf,  &Font6x8, UI_SMETER_TICK, UI_BG);
       LCD_LineStr(ln, rx_x, frow, rbuf,  &Font6x8, UI_SMETER_TICK, UI_BG);
-      LCD_LineStr(ln, (uint16_t)(cx_px - Font6x8.width / 2U), frow,
+      LCD_LineStr(ln, (uint16_t)(cx_px - Font6x8.width / 2U + 1U), frow,
                   "0", &Font6x8, UI_STATUS_VAL, UI_BG);
       if (show_mid) {
         LCD_LineStr(ln, lm_lx, frow, lm_buf, &Font6x8, UI_SMETER_TICK, UI_BG);

@@ -30,6 +30,20 @@ static uint16_t adc_read(ADC_HandleTypeDef *hadc)
   return 0U;
 }
 
+/* ── ADC single-shot with explicit channel select ────────── */
+static uint16_t adc_read_ch(ADC_HandleTypeDef *hadc, uint32_t channel)
+{
+  ADC_ChannelConfTypeDef cfg = {0};
+  cfg.Channel      = channel;
+  cfg.Rank         = ADC_REGULAR_RANK_1;
+  cfg.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  cfg.SingleDiff   = ADC_SINGLE_ENDED;
+  cfg.OffsetNumber = ADC_OFFSET_NONE;
+  cfg.Offset       = 0;
+  if (HAL_ADC_ConfigChannel(hadc, &cfg) != HAL_OK) return 0U;
+  return adc_read(hadc);
+}
+
 /* USER CODE END 0 */
 
 /* ══════════════════════════════════════════════════════════
@@ -108,14 +122,12 @@ void Analog_Init(void)
 
 uint16_t Analog_ReadNTC_Raw(void)
 {
-  return adc_read(&hadc1);   /* ADC1_INP10 = PC0 */
+  return adc_read_ch(&hadc1, ADC_CHANNEL_10);   /* PC0 */
 }
 
 uint16_t Analog_ReadVoltage_Raw(void)
 {
-  /* ADC1_INP15 = PA3 – cần switch channel trong ADC1
-   * Đơn giản: dùng polling từng channel thay vì scan mode */
-  return adc_read(&hadc1);  /* TODO: configure ADC1 với INP15 channel */
+  return adc_read_ch(&hadc1, ADC_CHANNEL_15);   /* PA3 */
 }
 
 uint16_t Analog_ReadALC_Raw(void)

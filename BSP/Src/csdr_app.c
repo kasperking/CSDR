@@ -768,15 +768,26 @@ static void csdr_draw_hw_fault_warning(void)
 
   const char *line1 = "! HARDWARE NOT FOUND";
   const char *line2 = components;
+  const char *line3 = "TRY REBOOT TO FIX";
+  const char *line4 = "IF NOT DONE CHECK HARDWARE";
 
   uint16_t tw1 = (uint16_t)(strlen(line1) * Font6x8.width);
   uint16_t tw2 = (uint16_t)(strlen(line2) * Font5x8.width);
+  uint16_t tw3 = (uint16_t)(strlen(line3) * Font5x8.width);
+  uint16_t tw4 = (uint16_t)(strlen(line4) * Font5x8.width);
   uint16_t x1  = tw1 < SPEC_W ? (uint16_t)((SPEC_W - tw1) / 2U) : 0U;
   uint16_t x2  = tw2 < SPEC_W ? (uint16_t)((SPEC_W - tw2) / 2U) : 0U;
+  uint16_t x3  = tw3 < SPEC_W ? (uint16_t)((SPEC_W - tw3) / 2U) : 0U;
+  uint16_t x4  = tw4 < SPEC_W ? (uint16_t)((SPEC_W - tw4) / 2U) : 0U;
 
-  uint16_t total_h = Font6x8.height + 4U + Font5x8.height;
+  uint16_t total_h = Font6x8.height + 4U
+                   + Font5x8.height + 4U
+                   + Font5x8.height + 4U
+                   + Font5x8.height;
   uint16_t y0 = (uint16_t)(SPEC_Y + (SPEC_H + WF_H - total_h) / 2U);
   uint16_t y1 = y0 + Font6x8.height + 4U;
+  uint16_t y2 = y1 + Font5x8.height + 4U;
+  uint16_t y3 = y2 + Font5x8.height + 4U;
 
   for (uint16_t r = 0U; r < Font6x8.height; r++) {
     LCD_LineFill(s_ln, 0U, SPEC_W, BG);
@@ -790,6 +801,20 @@ static void csdr_draw_hw_fault_warning(void)
     LCD_LineStr(s_ln, x2, r, line2, &Font5x8, FG2, BG);
     LCD_PushWindow(SPEC_X, y1 + r,
                    (uint16_t)(SPEC_X + SPEC_W - 1U), y1 + r,
+                   s_ln, SPEC_W);
+  }
+  for (uint16_t r = 0U; r < Font5x8.height; r++) {
+    LCD_LineFill(s_ln, 0U, SPEC_W, BG);
+    LCD_LineStr(s_ln, x3, r, line3, &Font5x8, UI_STATUS_LBL, BG);
+    LCD_PushWindow(SPEC_X, y2 + r,
+                   (uint16_t)(SPEC_X + SPEC_W - 1U), y2 + r,
+                   s_ln, SPEC_W);
+  }
+  for (uint16_t r = 0U; r < Font5x8.height; r++) {
+    LCD_LineFill(s_ln, 0U, SPEC_W, BG);
+    LCD_LineStr(s_ln, x4, r, line4, &Font5x8, UI_STATUS_LBL, BG);
+    LCD_PushWindow(SPEC_X, y3 + r,
+                   (uint16_t)(SPEC_X + SPEC_W - 1U), y3 + r,
                    s_ln, SPEC_W);
   }
 }

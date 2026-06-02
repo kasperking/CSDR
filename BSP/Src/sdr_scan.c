@@ -18,6 +18,7 @@
 #include "fsdr_analog.h"
 #include "sdr_ui.h"
 #include "bpf_lpf.h"
+#include "pa_protect.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -106,6 +107,7 @@ static void scan_tx_on(uint32_t freq_hz)
 {
     /* Switch BPF relay bank to TX (OE1=1, OE2=0) before closing T/R relay.
      * BPF_SetMode() includes the 2 ms relay-release gap internally. */
+    PA_Protect_OnTxStart();
     BPF_SetMode(RF_MODE_TX);
     if (g_sdr.si5351_ok)
         SI5351_SetQSDFrequency(&g_si5351, freq_hz);
@@ -324,6 +326,8 @@ static void scan_draw_zone(uint32_t start_hz, uint32_t stop_hz,
  * ════════════════════════════════════════════════ */
 void SWR_Scan_Run(void)
 {
+    if (!PA_Protect_IsTxAllowed()) return;
+
     uint32_t center_hz = g_sdr.freq_hz;
 
     /* Clamp scan range to valid frequency bounds */
