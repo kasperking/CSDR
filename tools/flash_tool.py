@@ -11,12 +11,16 @@ Usage examples:
   python flash_tool.py COM5 logo-upload  boot_logo.png --width 480 --height 320
   python flash_tool.py COM5 logo-download logo_out.png
   python flash_tool.py COM5 logo-download logo_out.png --width 480 --height 320
+  python flash_tool.py COM5 write-assets
+  python flash_tool.py COM5 write-assets --source-dir C:/path/to/CSDR
 
 Dependencies:
   pip install pyserial pillow
 """
 
 import argparse
+import os
+import re
 import struct
 import sys
 import time
@@ -68,12 +72,14 @@ FLASH_ADDR_FFT_BITREV  = 0x02E000
 
 # Asset geometry (mirrors spi_assets.h)
 FONT_GLYPH_COUNT  = 59          # ASCII 32..90
-FONT_F6X8_SIZE    = FONT_GLYPH_COUNT * 6       # 354 bytes
-FONT_F5X8_SIZE    = FONT_GLYPH_COUNT * 6       # 354 bytes
-FONT_F8X10_SIZE   = FONT_GLYPH_COUNT * 8 * 2  # 944 bytes  (uint16_t)
+FONT_F6X8_SIZE    = FONT_GLYPH_COUNT * 6        # 354 bytes
+FONT_F5X8_SIZE    = FONT_GLYPH_COUNT * 6        # 354 bytes
+FONT_F8X10_SIZE   = FONT_GLYPH_COUNT * 8 * 2   # 944 bytes  (uint16_t)
 FONT_BLOB_SIZE    = FONT_F6X8_SIZE + FONT_F5X8_SIZE + FONT_F8X10_SIZE  # 1652
-FFT_TWIDDLE_SIZE  = 1024 * 4   # 4096 bytes (float32)
-FFT_BITREV_SIZE   = 448  * 2   #  896 bytes (uint16)
+FFT_TWIDDLE_LEN   = 1024        # float32 entries
+FFT_BITREV_LEN    = 448         # uint16_t entries
+FFT_TWIDDLE_SIZE  = FFT_TWIDDLE_LEN * 4   # 4096 bytes
+FFT_BITREV_SIZE   = FFT_BITREV_LEN  * 2   #  896 bytes
 
 # Timeouts
 RESP_TIMEOUT_NORMAL = 2.0    # seconds — read / write / chip-id
@@ -97,7 +103,8 @@ class FlashTool:
     # -----------------------------------------------------------------------
     # Low-level frame I/O
     # -----------------------------------------------------------------------
-    def _send(self, cmd: int, addr: int, payload: bytes, timeout: float = RESP_TIMEOUT_NORMAL) -> tuple:
+    def _send(self, cmd: int, addr: int, payload: bytes,
+              timeout: float = RESP_TIMEOUT_NORMAL) -> tuple:
         """Send one request frame and return (status, response_data)."""
         dlen = len(payload)
         frame = bytes([
@@ -113,7 +120,8 @@ class FlashTool:
         # Response header: magic(1) status(1) rlen(2)
         hdr = self.ser.read(4)
         if len(hdr) < 4:
-            raise FlashProtoError(f"Timeout waiting for response (got {len(hdr)}/4 bytes)")
+            raise FlashProtoError(
+                f"Timeout waiting for response (got {len(hdr)}/4 bytes)")
         if hdr[0] != MAGIC:
             raise FlashProtoError(f"Bad magic in response: 0x{hdr[0]:02X}")
 
@@ -124,7 +132,8 @@ class FlashTool:
         if rlen > 0:
             data = self.ser.read(rlen)
             if len(data) < rlen:
-                raise FlashProtoError(f"Truncated response data ({len(data)}/{rlen})")
+                raise FlashProtoError(
+                    f"Truncated response data ({len(data)}/{rlen})")
 
         if status != STATUS_OK:
             name = STATUS_NAMES.get(status, f"0x{status:02X}")
@@ -147,7 +156,8 @@ class FlashTool:
             _, data = self._send(CMD_READ, addr,
                                  bytes([(chunk >> 8) & 0xFF, chunk & 0xFF]))
             if len(data) != chunk:
-                raise FlashProtoError(f"Short read: expected {chunk}, got {len(data)}")
+                raise FlashProtoError(
+                    f"Short read: expected {chunk}, got {len(data)}")
             result.extend(data)
             addr   += chunk
             length -= chunk
@@ -172,10 +182,8 @@ class FlashTool:
         self._send(CMD_WRITE, addr, data)
 
     def erase_range(self, addr: int, length: int, verbose: bool = True):
-        """
-        Erase all sectors covering [addr, addr+length).
-        Uses 64 KB block erase where possible for speed.
-        """
+        """Erase all sectors covering [addr, addr+length).
+        Uses 64 KB block erase where possible."""
         start = (addr // SECTOR_SIZE) * SECTOR_SIZE
         end   = ((addr + length - 1) // SECTOR_SIZE + 1) * SECTOR_SIZE
         pos   = start
@@ -203,10 +211,9 @@ class FlashTool:
 
     def write_binary(self, addr: int, data: bytes, verbose: bool = True):
         """Write binary blob at `addr` in page-sized chunks (no auto-erase)."""
-        total = len(data)
+        total  = len(data)
         offset = 0
         while offset < total:
-            # Align to page boundary
             page_off = (addr + offset) % MAX_PAGE
             chunk    = min(MAX_PAGE - page_off, total - offset)
             self.write_page(addr + offset, data[offset:offset + chunk])
@@ -235,7 +242,6 @@ class FlashTool:
             for x in range(width):
                 r, g, b = pixels[x, y]
                 rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-                # Little-endian
                 buf[idx]     = rgb565 & 0xFF
                 buf[idx + 1] = (rgb565 >> 8) & 0xFF
                 idx += 2
@@ -261,151 +267,25 @@ class FlashTool:
                 pixels[x, y] = (r, g, b)
         return img
 
-    def logo_upload(self, image_path: str, width: int, height: int, verbose: bool = True):
+    def logo_upload(self, image_path: str, width: int, height: int,
+                    verbose: bool = True):
         """Convert image and program it into the boot logo area."""
         total_bytes = width * height * 2
         if verbose:
             print(f"Converting {image_path} → {width}×{height} RGB565 "
                   f"({total_bytes} bytes)...")
         rgb565 = self.image_to_rgb565(image_path, width, height)
-
         if verbose:
-            print(f"Erasing logo area @ 0x{FLASH_ADDR_LOGO:06X} "
-                  f"({total_bytes} bytes)...")
+            print(f"Erasing logo area @ 0x{FLASH_ADDR_LOGO:06X} ...")
         self.erase_range(FLASH_ADDR_LOGO, total_bytes, verbose=verbose)
-
         if verbose:
-            print(f"Writing logo...")
+            print("Writing logo...")
         self.write_binary(FLASH_ADDR_LOGO, rgb565, verbose=verbose)
         if verbose:
             print("Logo upload complete.")
 
-    # -----------------------------------------------------------------------
-    # Asset extraction helpers
-    # -----------------------------------------------------------------------
-    @staticmethod
-    def _extract_c_uint8_array(c_source: str, array_name: str) -> bytes:
-        """Extract a static const uint8_t array from C source text."""
-        import re
-        pat = re.compile(
-            r'static\s+const\s+uint8_t\s+' + re.escape(array_name) +
-            r'\s*\[\s*\]\s*=\s*\{([^}]+)\}',
-            re.DOTALL)
-        m = pat.search(c_source)
-        if not m:
-            raise ValueError(f"Array '{array_name}' not found in source")
-        values = [int(v, 0) for v in re.findall(r'0x[0-9a-fA-F]+', m.group(1))]
-        return bytes(values)
-
-    @staticmethod
-    def _extract_c_uint16_array(c_source: str, array_name: str) -> bytes:
-        """Extract a static const uint16_t array from C source text, return as LE bytes."""
-        import re, struct
-        pat = re.compile(
-            r'static\s+const\s+uint16_t\s+' + re.escape(array_name) +
-            r'\s*\[\s*\]\s*=\s*\{([^}]+)\}',
-            re.DOTALL)
-        m = pat.search(c_source)
-        if not m:
-            raise ValueError(f"Array '{array_name}' not found in source")
-        values = [int(v, 0) for v in re.findall(r'0x[0-9a-fA-F]+', m.group(1))]
-        return struct.pack(f'<{len(values)}H', *values)
-
-    @staticmethod
-    def _extract_fft_twiddle(c_source: str) -> bytes:
-        """Extract twiddleCoef_512[1024] float32 array from arm_common_tables.c."""
-        import re, struct
-        # Find the twiddleCoef_512 array (float32_t, contains scientific notation)
-        pat = re.compile(
-            r'const\s+float32_t\s+twiddleCoef_512\s*\[\d+\]\s*=\s*\{([^;]+)\};',
-            re.DOTALL)
-        m = pat.search(c_source)
-        if not m:
-            raise ValueError("twiddleCoef_512 not found in source")
-        floats = [float(v.rstrip('Ff')) for v in re.findall(
-            r'[+-]?[\d.]+(?:[eE][+-]?\d+)?[Ff]?', m.group(1)) if v]
-        if len(floats) != 1024:
-            raise ValueError(f"Expected 1024 floats, got {len(floats)}")
-        return struct.pack(f'<{len(floats)}f', *floats)
-
-    @staticmethod
-    def _extract_fft_bitrev(c_source: str) -> bytes:
-        """Extract armBitRevIndexTable512[448] uint16_t array from arm_common_tables.c."""
-        import re, struct
-        pat = re.compile(
-            r'const\s+uint16_t\s+armBitRevIndexTable512\s*\[\w+\]\s*=\s*\{([^}]+)\}',
-            re.DOTALL)
-        m = pat.search(c_source)
-        if not m:
-            raise ValueError("armBitRevIndexTable512 not found in source")
-        values = [int(v, 0) for v in re.findall(r'0x[0-9a-fA-F]+', m.group(1))]
-        if len(values) != 448:
-            raise ValueError(f"Expected 448 entries, got {len(values)}")
-        return struct.pack(f'<{len(values)}H', *values)
-
-    def write_assets(self, source_dir: str, verbose: bool = True):
-        """Extract font + FFT assets from C sources and program them to SPI flash."""
-        import os
-
-        lcd_render_path = os.path.join(source_dir, "BSP", "Src", "lcd_render.c")
-        common_tables_path = os.path.join(
-            source_dir, "Middlewares", "ST", "ARM", "DSP", "Src", "arm_common_tables.c")
-
-        # ── Fonts ──────────────────────────────────────────────────────────
-        if verbose:
-            print(f"Reading font data from {lcd_render_path} ...")
-        with open(lcd_render_path, "r", encoding="utf-8") as f:
-            lcd_src = f.read()
-
-        f6x8  = self._extract_c_uint8_array(lcd_src, "s_f6x8")
-        f5x8  = self._extract_c_uint8_array(lcd_src, "s_f5x8")
-        f8x10 = self._extract_c_uint16_array(lcd_src, "s_f8x10")
-
-        if len(f6x8) != FONT_F6X8_SIZE:
-            raise ValueError(f"s_f6x8: expected {FONT_F6X8_SIZE} bytes, got {len(f6x8)}")
-        if len(f5x8) != FONT_F5X8_SIZE:
-            raise ValueError(f"s_f5x8: expected {FONT_F5X8_SIZE} bytes, got {len(f5x8)}")
-        if len(f8x10) != FONT_F8X10_SIZE:
-            raise ValueError(f"s_f8x10: expected {FONT_F8X10_SIZE} bytes, got {len(f8x10)}")
-
-        font_blob = f6x8 + f5x8 + f8x10
-        if verbose:
-            print(f"  Font blob: {len(font_blob)} bytes  "
-                  f"(6x8={len(f6x8)}, 5x8={len(f5x8)}, 8x10={len(f8x10)})")
-
-        if verbose:
-            print(f"Programming fonts @ 0x{FLASH_ADDR_FONT_DATA:06X} ...")
-        self.erase_range(FLASH_ADDR_FONT_DATA, len(font_blob), verbose=verbose)
-        self.write_binary(FLASH_ADDR_FONT_DATA, font_blob, verbose=verbose)
-
-        # ── FFT tables ─────────────────────────────────────────────────────
-        if verbose:
-            print(f"Reading FFT tables from {common_tables_path} ...")
-        with open(common_tables_path, "r", encoding="utf-8") as f:
-            tables_src = f.read()
-
-        twiddle = self._extract_fft_twiddle(tables_src)
-        bitrev  = self._extract_fft_bitrev(tables_src)
-        if verbose:
-            print(f"  Twiddle: {len(twiddle)} bytes,  BitRev: {len(bitrev)} bytes")
-
-        if verbose:
-            print(f"Programming FFT twiddle @ 0x{FLASH_ADDR_FFT_TWIDDLE:06X} ...")
-        self.erase_range(FLASH_ADDR_FFT_TWIDDLE, len(twiddle), verbose=verbose)
-        self.write_binary(FLASH_ADDR_FFT_TWIDDLE, twiddle, verbose=verbose)
-
-        if verbose:
-            print(f"Programming FFT bitrev  @ 0x{FLASH_ADDR_FFT_BITREV:06X} ...")
-        self.erase_range(FLASH_ADDR_FFT_BITREV, len(bitrev), verbose=verbose)
-        self.write_binary(FLASH_ADDR_FFT_BITREV, bitrev, verbose=verbose)
-
-        if verbose:
-            saved = len(font_blob) + len(twiddle) + len(bitrev)
-            print(f"\nwrite-assets complete — {saved} bytes programmed.")
-            print("Next step: set SPI_ASSETS_FONT_FALLBACK=0 and SPI_ASSETS_FFT_FALLBACK=0")
-            print("in BSP/Inc/spi_assets.h, then rebuild to reclaim ~6.7 KB of internal flash.")
-
-    def logo_download(self, output_path: str, width: int, height: int, verbose: bool = True):
+    def logo_download(self, output_path: str, width: int, height: int,
+                      verbose: bool = True):
         """Read the boot logo area and save as PNG."""
         total_bytes = width * height * 2
         if verbose:
@@ -419,40 +299,217 @@ class FlashTool:
         if verbose:
             print(f"Logo saved to {output_path}")
 
+    # -----------------------------------------------------------------------
+    # Asset source parsers (read directly from .c files — no build required)
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _strip_c_comments(text: str) -> str:
+        """Remove /* ... */ and // ... C comments."""
+        text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.DOTALL)
+        text = re.sub(r'//[^\n]*',  ' ', text)
+        return text
+
+    @staticmethod
+    def _extract_array_body(source: str, type_kw: str, name: str) -> str:
+        """
+        Locate  `[static] const <type_kw> <name>[...] = { ... };`  and return
+        the text between the braces.  Works even when the array is inside
+        a #if / #if 0 block (search is text-only, no preprocessor).
+        """
+        pat = re.compile(
+            r'(?:static\s+)?const\s+' + re.escape(type_kw) + r'\s+'
+            + re.escape(name) + r'\s*\[[^\]]*\]\s*=\s*\{',
+            re.DOTALL)
+        m = pat.search(source)
+        if not m:
+            raise ValueError(
+                f"Array 'const {type_kw} {name}[]' not found in source")
+
+        start = m.end()          # position just after opening '{'
+        depth = 1
+        i     = start
+        while i < len(source) and depth:
+            if source[i] == '{':
+                depth += 1
+            elif source[i] == '}':
+                depth -= 1
+            i += 1
+        if depth:
+            raise ValueError(f"Unmatched braces for array '{name}'")
+        return source[start:i - 1]   # body, without enclosing braces
+
+    @staticmethod
+    def _parse_uint8_body(body: str) -> bytes:
+        """Parse `0xHH, ...` hex byte literals from an array body."""
+        clean = re.sub(r'/\*.*?\*/', ' ', body, flags=re.DOTALL)
+        clean = re.sub(r'//[^\n]*',   ' ', clean)
+        values = [int(v, 16) for v in re.findall(r'0[xX]([0-9a-fA-F]{1,2})\b', clean)]
+        return bytes(values)
+
+    @staticmethod
+    def _parse_uint16_body(body: str) -> bytes:
+        """Parse `0xHHHH, ...` hex uint16 literals from an array body."""
+        clean = re.sub(r'/\*.*?\*/', ' ', body, flags=re.DOTALL)
+        clean = re.sub(r'//[^\n]*',   ' ', clean)
+        values = [int(v, 16) for v in re.findall(r'0[xX]([0-9a-fA-F]{3,4})\b', clean)]
+        return struct.pack(f'<{len(values)}H', *values)
+
+    @staticmethod
+    def _parse_float_body(body: str) -> bytes:
+        """
+        Parse C float literals (e.g. `1.000000000f`, `-0.012271538f`) from
+        an array body and return as little-endian IEEE-754 float32 bytes.
+        Handles both plain decimal and scientific-notation formats.
+        """
+        # Strip comments before scanning numbers
+        clean = re.sub(r'/\*.*?\*/', ' ', body, flags=re.DOTALL)
+        clean = re.sub(r'//[^\n]*',   ' ', clean)
+
+        # Match: optional sign, integer part, optional decimal, optional exponent, optional f/F
+        pat = re.compile(r'[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?[fF]?')
+        floats = []
+        for tok in pat.findall(clean):
+            tok = tok.rstrip('fF')
+            if tok in ('', '+', '-'):
+                continue
+            floats.append(float(tok))
+        return struct.pack(f'<{len(floats)}f', *floats)
+
+    @staticmethod
+    def _parse_uint16_decimal_body(body: str) -> bytes:
+        """
+        Parse plain decimal uint16 literals from an array body.
+        Used for armBitRevIndexTable512 which stores decimal values, not hex.
+        Strips C comments before scanning.
+        """
+        clean = re.sub(r'/\*.*?\*/', ' ', body, flags=re.DOTALL)
+        clean = re.sub(r'//[^\n]*',   ' ', clean)
+        values = [int(v) for v in re.findall(r'\b\d+\b', clean)]
+        return struct.pack(f'<{len(values)}H', *values)
+
+    # -----------------------------------------------------------------------
+    # write-assets: extract from source + program to SPI flash
+    # -----------------------------------------------------------------------
+    def write_assets(self, source_dir: str, verbose: bool = True):
+        """
+        Extract font bitmaps and FFT tables from C source files, then program
+        the three asset sectors to SPI flash.
+
+        Source files read:
+          BSP/Src/lcd_render.c                          (fonts)
+          Middlewares/ST/ARM/DSP/Src/arm_common_tables.c (FFT tables)
+        """
+        lcd_path    = os.path.join(source_dir, "BSP", "Src", "lcd_render.c")
+        tables_path = os.path.join(
+            source_dir, "Middlewares", "ST", "ARM", "DSP",
+            "Src", "arm_common_tables.c")
+
+        for path in (lcd_path, tables_path):
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"Source file not found: {path}")
+
+        # ── Font blob ──────────────────────────────────────────────────────
+        if verbose:
+            print(f"Parsing fonts from {lcd_path} ...")
+        with open(lcd_path, encoding="utf-8") as fh:
+            lcd_src = fh.read()
+
+        f6x8  = self._parse_uint8_body(
+            self._extract_array_body(lcd_src, "uint8_t",  "s_f6x8"))
+        f5x8  = self._parse_uint8_body(
+            self._extract_array_body(lcd_src, "uint8_t",  "s_f5x8"))
+        f8x10 = self._parse_uint16_body(
+            self._extract_array_body(lcd_src, "uint16_t", "s_f8x10"))
+
+        _check("s_f6x8",  len(f6x8),  FONT_F6X8_SIZE)
+        _check("s_f5x8",  len(f5x8),  FONT_F5X8_SIZE)
+        _check("s_f8x10", len(f8x10), FONT_F8X10_SIZE)
+
+        font_blob = f6x8 + f5x8 + f8x10
+        if verbose:
+            print(f"  Font blob: {len(font_blob)} bytes  "
+                  f"(6x8={len(f6x8)}, 5x8={len(f5x8)}, 8x10={len(f8x10)})")
+
+        # ── FFT tables ─────────────────────────────────────────────────────
+        if verbose:
+            print(f"Parsing FFT tables from {tables_path} ...")
+        with open(tables_path, encoding="utf-8") as fh:
+            tables_src = fh.read()
+
+        twiddle = self._parse_float_body(
+            self._extract_array_body(tables_src, "float32_t", "twiddleCoef_512"))
+        bitrev  = self._parse_uint16_decimal_body(
+            self._extract_array_body(tables_src, "uint16_t",
+                                     "armBitRevIndexTable512"))
+
+        _check("twiddleCoef_512",       len(twiddle), FFT_TWIDDLE_SIZE)
+        _check("armBitRevIndexTable512", len(bitrev),  FFT_BITREV_SIZE)
+
+        if verbose:
+            print(f"  Twiddle: {len(twiddle)} bytes  "
+                  f"({len(twiddle)//4} float32 entries)")
+            print(f"  BitRev:  {len(bitrev)}  bytes  "
+                  f"({len(bitrev)//2} uint16 entries)")
+
+        # ── Program to SPI flash ───────────────────────────────────────────
+        assets = [
+            ("fonts",       FLASH_ADDR_FONT_DATA,   font_blob),
+            ("FFT twiddle", FLASH_ADDR_FFT_TWIDDLE,  twiddle),
+            ("FFT bitrev",  FLASH_ADDR_FFT_BITREV,   bitrev),
+        ]
+        for label, addr, data in assets:
+            if verbose:
+                print(f"\nProgramming {label} @ 0x{addr:06X} "
+                      f"({len(data)} bytes) ...")
+            self.erase_range(addr, len(data), verbose=verbose)
+            self.write_binary(addr, data, verbose=verbose)
+
+        if verbose:
+            total = sum(len(d) for _, _, d in assets)
+            print(f"\nwrite-assets complete — {total} bytes programmed.")
+            print("Next: set SPI_ASSETS_FONT_FALLBACK=0 and SPI_ASSETS_FFT_FALLBACK=0")
+            print("in BSP/Inc/spi_assets.h, rebuild to reclaim ~6.7 KB internal flash.")
+
 
 # ---------------------------------------------------------------------------
-# CLI
+# Helpers
 # ---------------------------------------------------------------------------
+def _check(name: str, got: int, expected: int):
+    if got != expected:
+        raise ValueError(
+            f"{name}: expected {expected} bytes, got {got} — "
+            f"check source file format")
+
+
 def parse_addr(s: str) -> int:
     return int(s, 0)
 
 
+# ---------------------------------------------------------------------------
+# CLI command handlers
+# ---------------------------------------------------------------------------
 def cmd_chip_id(tool: FlashTool, _args):
     jedec = tool.chip_id()
     mfr   = (jedec >> 16) & 0xFF
     dev   = jedec & 0xFFFF
     print(f"JEDEC ID: 0x{jedec:06X}  (MFR=0x{mfr:02X}, DEV=0x{dev:04X})")
-    if mfr == 0xEF:
-        print("Manufacturer: Winbond")
-    elif mfr == 0xC8:
-        print("Manufacturer: GigaDevice")
-    elif mfr == 0x20:
-        print("Manufacturer: Micron/ST")
+    mfr_names = {0xEF: "Winbond", 0xC8: "GigaDevice", 0x20: "Micron/ST"}
+    if mfr in mfr_names:
+        print(f"Manufacturer: {mfr_names[mfr]}")
 
 
 def cmd_read(tool: FlashTool, args):
-    addr = parse_addr(args.addr)
+    addr   = parse_addr(args.addr)
     length = int(args.length, 0)
     print(f"Reading {length} bytes @ 0x{addr:06X}...")
     data = tool.read(addr, length)
     if args.output:
-        with open(args.output, "wb") as f:
-            f.write(data)
+        with open(args.output, "wb") as fh:
+            fh.write(data)
         print(f"Saved to {args.output}")
     else:
-        # Hex dump
         for i in range(0, len(data), 16):
-            chunk = data[i:i+16]
+            chunk    = data[i:i + 16]
             hex_part = " ".join(f"{b:02X}" for b in chunk)
             asc_part = "".join(chr(b) if 0x20 <= b < 0x7F else "." for b in chunk)
             print(f"  {addr+i:06X}:  {hex_part:<47}  {asc_part}")
@@ -460,8 +517,8 @@ def cmd_read(tool: FlashTool, args):
 
 def cmd_write(tool: FlashTool, args):
     addr = parse_addr(args.addr)
-    with open(args.input, "rb") as f:
-        data = f.read()
+    with open(args.input, "rb") as fh:
+        data = fh.read()
     print(f"Erasing {len(data)} bytes @ 0x{addr:06X}...")
     tool.erase_range(addr, len(data))
     print(f"Writing {len(data)} bytes...")
@@ -469,7 +526,7 @@ def cmd_write(tool: FlashTool, args):
 
 
 def cmd_erase(tool: FlashTool, args):
-    addr = parse_addr(args.addr)
+    addr   = parse_addr(args.addr)
     length = int(args.length, 0)
     print(f"Erasing {length} bytes @ 0x{addr:06X}...")
     tool.erase_range(addr, length)
@@ -487,6 +544,9 @@ def cmd_write_assets(tool: FlashTool, args):
     tool.write_assets(args.source_dir)
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
         description="CSDR NOR flash tool (binary protocol over USB CDC)")
@@ -494,44 +554,42 @@ def main():
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # chip-id
     sub.add_parser("chip-id", help="Read JEDEC chip ID")
 
-    # read
     p_read = sub.add_parser("read", help="Read bytes from flash")
     p_read.add_argument("addr",   help="Start address (hex: 0x003000)")
     p_read.add_argument("length", help="Byte count (dec or hex)")
-    p_read.add_argument("output", nargs="?", help="Output file (default: hex dump)")
+    p_read.add_argument("output", nargs="?",
+                        help="Output file (default: hex dump to stdout)")
 
-    # write
     p_write = sub.add_parser("write", help="Write binary file to flash (auto-erase)")
     p_write.add_argument("addr",  help="Start address")
     p_write.add_argument("input", help="Input binary file")
 
-    # erase
     p_erase = sub.add_parser("erase", help="Erase flash range")
     p_erase.add_argument("addr",   help="Start address")
     p_erase.add_argument("length", help="Byte count")
 
-    # logo-upload
     p_lu = sub.add_parser("logo-upload", help="Upload boot logo image")
     p_lu.add_argument("image", help="Source image (PNG/JPG/BMP)")
-    p_lu.add_argument("--width",  type=int, default=480, help="LCD width  (default 480)")
-    p_lu.add_argument("--height", type=int, default=320, help="LCD height (default 320)")
+    p_lu.add_argument("--width",  type=int, default=480,
+                      help="LCD width  (default 480)")
+    p_lu.add_argument("--height", type=int, default=320,
+                      help="LCD height (default 320)")
 
-    # logo-download
     p_ld = sub.add_parser("logo-download", help="Download boot logo as PNG")
     p_ld.add_argument("output", help="Output PNG file")
-    p_ld.add_argument("--width",  type=int, default=480, help="LCD width  (default 480)")
-    p_ld.add_argument("--height", type=int, default=320, help="LCD height (default 320)")
+    p_ld.add_argument("--width",  type=int, default=480,
+                      help="LCD width  (default 480)")
+    p_ld.add_argument("--height", type=int, default=320,
+                      help="LCD height (default 320)")
 
-    # write-assets
     p_wa = sub.add_parser(
         "write-assets",
         help="Extract font + FFT tables from C sources and program to SPI flash")
     p_wa.add_argument(
         "--source-dir", default=".",
-        help="Root of CSDR project (default: current directory)")
+        help="Root of CSDR project tree (default: current directory)")
 
     args = parser.parse_args()
 
@@ -556,7 +614,7 @@ def main():
     except FlashProtoError as e:
         print(f"Protocol error: {e}", file=sys.stderr)
         sys.exit(1)
-    except (ValueError, RuntimeError) as e:
+    except (ValueError, RuntimeError, FileNotFoundError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
