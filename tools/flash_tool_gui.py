@@ -13,14 +13,13 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-# Allow importing flash_tool from the same directory
 sys.path.insert(0, os.path.dirname(__file__))
 from flash_tool import (
     FlashTool, FlashProtoError,
     MAX_PAGE, SECTOR_SIZE, BLOCK64_SIZE,
     FLASH_ADDR_LOGO,
-    CMD_READ, CMD_WRITE, CMD_SECTOR_ERASE, CMD_CHIP_ID, CMD_BLOCK64_ERASE,
-    STATUS_OK,
+    FLASH_ADDR_FONT_DATA, FLASH_ADDR_FFT_TWIDDLE, FLASH_ADDR_FFT_BITREV,
+    FONT_BLOB_SIZE, FFT_TWIDDLE_SIZE, FFT_BITREV_SIZE,
 )
 
 try:
@@ -36,15 +35,20 @@ try:
 except ImportError:
     HAS_PIL = False
 
+# Total bytes programmed by write-assets (for unified progress tracking)
+_ASSETS_TOTAL_BYTES = FONT_BLOB_SIZE + FFT_TWIDDLE_SIZE + FFT_BITREV_SIZE
+
+
 # ---------------------------------------------------------------------------
 # GUIFlashTool — adds progress + log callbacks to FlashTool
 # ---------------------------------------------------------------------------
 class GUIFlashTool(FlashTool):
     def __init__(self, port: str, progress_cb=None, log_cb=None):
         super().__init__(port)
-        self._prog = progress_cb or (lambda done, total: None)
-        self._log  = log_cb  or (lambda msg: None)
+        self._prog   = progress_cb or (lambda done, total: None)
+        self._log_cb = log_cb      or (lambda msg: None)
 
+    # Override to drive the GUI progress bar and log panel
     def erase_range(self, addr: int, length: int, verbose: bool = True):
         start = (addr // SECTOR_SIZE) * SECTOR_SIZE
         end   = ((addr + length - 1) // SECTOR_SIZE + 1) * SECTOR_SIZE
@@ -53,17 +57,17 @@ class GUIFlashTool(FlashTool):
         done  = 0
         while pos < end:
             if pos % BLOCK64_SIZE == 0 and (end - pos) >= BLOCK64_SIZE:
-                self._log(f"  Erase 64K block @ 0x{pos:06X}")
+                self._log_cb(f"  Erase 64K block @ 0x{pos:06X}")
                 self.block64_erase(pos)
                 done += BLOCK64_SIZE
                 pos  += BLOCK64_SIZE
             else:
-                self._log(f"  Erase 4K sector @ 0x{pos:06X}")
+                self._log_cb(f"  Erase 4K sector @ 0x{pos:06X}")
                 self.sector_erase(pos)
                 done += SECTOR_SIZE
                 pos  += SECTOR_SIZE
             self._prog(done, total)
-        self._log(f"  Erase done ({total} bytes)")
+        self._log_cb(f"  Erase done ({total} bytes)")
 
     def write_binary(self, addr: int, data: bytes, verbose: bool = True):
         total  = len(data)
@@ -74,7 +78,98 @@ class GUIFlashTool(FlashTool):
             self.write_page(addr + offset, data[offset:offset + chunk])
             offset += chunk
             self._prog(offset, total)
-        self._log(f"  Write done ({total} bytes)")
+        self._log_cb(f"  Write done ({total} bytes @ 0x{addr:06X})")
+
+    def write_assets(self, source_dir: str, verbose: bool = True,
+                     log_fn=None):
+        """Override to route progress across all 3 assets cumulatively."""
+        # Patch progress to accumulate across all 3 erase+write cycles.
+        # We track bytes_done ourselves and scale against the total.
+        bytes_done = [0]
+
+        def _scoped_prog(done, total):
+            self._prog(bytes_done[0] + done, _ASSETS_TOTAL_BYTES)
+
+        orig_prog  = self._prog
+        self._prog = _scoped_prog
+
+        def _asset_log(msg):
+            self._log_cb(msg)
+
+        try:
+            # Call parent with our log function; erase/write use self._prog
+            # which is now our scoped version.
+            # We need to intercept byte boundaries between assets.
+            # Simplest: call parent write_assets which calls our overridden
+            # erase_range/write_binary (already scoped), but progress resets
+            # per-asset.  Instead, do it manually here.
+            lcd_path    = os.path.join(source_dir, "BSP", "Src", "lcd_render.c")
+            tables_path = os.path.join(
+                source_dir, "Middlewares", "ST", "ARM", "DSP",
+                "Src", "arm_common_tables.c")
+
+            for path in (lcd_path, tables_path):
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(f"Source file not found: {path}")
+
+            # Parse
+            _asset_log("Parsing fonts ...")
+            with open(lcd_path, encoding="utf-8") as fh:
+                lcd_src = fh.read()
+            f6x8  = self._parse_uint8_body(
+                self._extract_array_body(lcd_src, "uint8_t",  "s_f6x8"))
+            f5x8  = self._parse_uint8_body(
+                self._extract_array_body(lcd_src, "uint8_t",  "s_f5x8"))
+            f8x10 = self._parse_uint16_body(
+                self._extract_array_body(lcd_src, "uint16_t", "s_f8x10"))
+            font_blob = f6x8 + f5x8 + f8x10
+            _asset_log(f"  Font blob: {len(font_blob)} B "
+                       f"(6x8={len(f6x8)}, 5x8={len(f5x8)}, 8x10={len(f8x10)})")
+
+            _asset_log("Parsing FFT tables ...")
+            with open(tables_path, encoding="utf-8") as fh:
+                tables_src = fh.read()
+            twiddle = self._parse_float_body(
+                self._extract_array_body(tables_src, "float32_t",
+                                         "twiddleCoef_512"))
+            bitrev  = self._parse_uint16_decimal_body(
+                self._extract_array_body(tables_src, "uint16_t",
+                                         "armBitRevIndexTable512"))
+            _asset_log(f"  Twiddle: {len(twiddle)} B  BitRev: {len(bitrev)} B")
+
+            # Program each asset, advancing the cumulative progress offset
+            for label, addr, data in [
+                ("fonts",       FLASH_ADDR_FONT_DATA,   font_blob),
+                ("FFT twiddle", FLASH_ADDR_FFT_TWIDDLE,  twiddle),
+                ("FFT bitrev",  FLASH_ADDR_FFT_BITREV,   bitrev),
+            ]:
+                _asset_log(f"Programming {label} @ 0x{addr:06X} ({len(data)} B) ...")
+                # Erase phase: progress up to ~10% of asset size
+                erase_end = ((addr + len(data) - 1) // SECTOR_SIZE + 1) * SECTOR_SIZE
+                erase_len = erase_end - (addr // SECTOR_SIZE) * SECTOR_SIZE
+
+                def _erase_prog(done, total, _base=bytes_done[0],
+                                _el=erase_len, _dl=len(data)):
+                    partial = done * _dl // total if total else 0
+                    orig_prog(_base + partial, _ASSETS_TOTAL_BYTES)
+
+                self._prog = _erase_prog
+                self.erase_range(addr, len(data), verbose=False)
+
+                def _write_prog(done, total, _base=bytes_done[0],
+                                _dl=len(data)):
+                    orig_prog(_base + done, _ASSETS_TOTAL_BYTES)
+
+                self._prog = _write_prog
+                self.write_binary(addr, data, verbose=False)
+                bytes_done[0] += len(data)
+                orig_prog(bytes_done[0], _ASSETS_TOTAL_BYTES)
+                _asset_log(f"  {label}: done.")
+
+            _asset_log(f"write-assets complete — {bytes_done[0]} bytes programmed.")
+            _asset_log("Next: set FALLBACK=0 in BSP/Inc/spi_assets.h and rebuild.")
+        finally:
+            self._prog = orig_prog
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +180,7 @@ class App(tk.Tk):
         super().__init__()
         self.title("CSDR Flash Tool")
         self.resizable(True, True)
-        self.minsize(720, 580)
+        self.minsize(740, 600)
 
         self._tool: GUIFlashTool | None = None
         self._busy  = False
@@ -124,13 +219,16 @@ class App(tk.Tk):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=6, pady=4)
 
-        tab_flash = ttk.Frame(nb, padding=6)
-        tab_logo  = ttk.Frame(nb, padding=6)
-        nb.add(tab_flash, text="  Flash Operations  ")
-        nb.add(tab_logo,  text="  Logo  ")
+        tab_flash  = ttk.Frame(nb, padding=6)
+        tab_logo   = ttk.Frame(nb, padding=6)
+        tab_assets = ttk.Frame(nb, padding=6)
+        nb.add(tab_flash,  text="  Flash Operations  ")
+        nb.add(tab_logo,   text="  Logo  ")
+        nb.add(tab_assets, text="  Assets  ")
 
         self._build_flash_tab(tab_flash)
         self._build_logo_tab(tab_logo)
+        self._build_assets_tab(tab_assets)
 
         # ── Progress bar ────────────────────────────────────────────────────
         prog_frame = ttk.Frame(self, padding=(6, 2, 6, 2))
@@ -148,14 +246,14 @@ class App(tk.Tk):
         log_frame = ttk.LabelFrame(self, text="Log", padding=4)
         log_frame.pack(fill="both", expand=False, padx=6, pady=(0, 6))
 
-        self._log = tk.Text(log_frame, height=8, font=("Consolas", 9),
-                             bg="#1e1e1e", fg="#d4d4d4",
-                             insertbackground="white", state="disabled",
-                             wrap="word")
-        scroll = ttk.Scrollbar(log_frame, command=self._log.yview)
-        self._log.configure(yscrollcommand=scroll.set)
+        self._log_text = tk.Text(
+            log_frame, height=8, font=("Consolas", 9),
+            bg="#1e1e1e", fg="#d4d4d4",
+            insertbackground="white", state="disabled", wrap="word")
+        scroll = ttk.Scrollbar(log_frame, command=self._log_text.yview)
+        self._log_text.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
-        self._log.pack(fill="both", expand=True)
+        self._log_text.pack(fill="both", expand=True)
 
         btn_row = ttk.Frame(self, padding=(6, 0, 6, 6))
         btn_row.pack(fill="x")
@@ -163,30 +261,25 @@ class App(tk.Tk):
                    command=self._clear_log).pack(side="right")
 
     def _build_flash_tab(self, parent):
-        # Columns: 0=label  1=entry(flex)  2=label  3=entry(flex)  4=Browse  5=action
-        # No rowspan anywhere — each button occupies exactly one cell.
-
         # ── READ ──────────────────────────────────────────────────────────
         rf = ttk.LabelFrame(parent, text="Read", padding=6)
         rf.pack(fill="x", pady=4)
         rf.columnconfigure(1, weight=1)
         rf.columnconfigure(3, weight=1)
 
-        # Row 0 — address + length
         ttk.Label(rf, text="Address:").grid(row=0, column=0, sticky="w")
         self._r_addr = ttk.Entry(rf, width=12)
         self._r_addr.insert(0, "0x000000")
         self._r_addr.grid(row=0, column=1, sticky="ew", padx=4)
 
-        ttk.Label(rf, text="Length:").grid(row=0, column=2, sticky="w", padx=(8, 0))
+        ttk.Label(rf, text="Length:").grid(row=0, column=2, sticky="w",
+                                            padx=(8, 0))
         self._r_len = ttk.Entry(rf, width=10)
         self._r_len.insert(0, "256")
         self._r_len.grid(row=0, column=3, sticky="ew", padx=4)
 
-        # Row 1 — output file + Browse + Read (Browse & Read always adjacent)
-        # File entry spans col 1-3 (same width as addr+length above).
-        # Browse=col4, Read=col5 — both outside the weighted columns.
-        ttk.Label(rf, text="Output:").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(rf, text="Output:").grid(row=1, column=0, sticky="w",
+                                            pady=(4, 0))
         self._r_file = ttk.Entry(rf)
         self._r_file.grid(row=1, column=1, columnspan=3, sticky="ew",
                           padx=4, pady=(4, 0))
@@ -194,30 +287,28 @@ class App(tk.Tk):
                    command=lambda: self._browse_save(self._r_file, "bin")
                    ).grid(row=1, column=4, padx=(2, 2), pady=(4, 0))
         ttk.Button(rf, text="Read →",
-                   command=self._do_read).grid(row=1, column=5, padx=(0, 0),
-                                               pady=(4, 0))
+                   command=self._do_read).grid(row=1, column=5, pady=(4, 0))
 
         # ── WRITE ─────────────────────────────────────────────────────────
         wf = ttk.LabelFrame(parent, text="Write  (auto-erase)", padding=6)
         wf.pack(fill="x", pady=4)
         wf.columnconfigure(1, weight=1)
 
-        # Row 0 — address
         ttk.Label(wf, text="Address:").grid(row=0, column=0, sticky="w")
         self._w_addr = ttk.Entry(wf, width=12)
         self._w_addr.insert(0, "0x000000")
         self._w_addr.grid(row=0, column=1, sticky="ew", padx=4)
 
-        # Row 1 — input file + Browse + Write (all on the same row)
-        ttk.Label(wf, text="Input:").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(wf, text="Input:").grid(row=1, column=0, sticky="w",
+                                           pady=(4, 0))
         self._w_file = ttk.Entry(wf)
         self._w_file.grid(row=1, column=1, sticky="ew", padx=4, pady=(4, 0))
         ttk.Button(wf, text="Browse…",
                    command=lambda: self._browse_open(self._w_file)
                    ).grid(row=1, column=2, padx=2, pady=(4, 0))
         ttk.Button(wf, text="Write →",
-                   command=self._do_write).grid(row=1, column=3, padx=(6, 0),
-                                                pady=(4, 0))
+                   command=self._do_write).grid(row=1, column=3,
+                                                padx=(6, 0), pady=(4, 0))
 
         # ── ERASE ─────────────────────────────────────────────────────────
         ef = ttk.LabelFrame(parent, text="Erase", padding=6)
@@ -225,13 +316,13 @@ class App(tk.Tk):
         ef.columnconfigure(1, weight=1)
         ef.columnconfigure(3, weight=1)
 
-        # Row 0 — address + length + Erase (all on the same row)
         ttk.Label(ef, text="Address:").grid(row=0, column=0, sticky="w")
         self._e_addr = ttk.Entry(ef, width=12)
         self._e_addr.insert(0, "0x000000")
         self._e_addr.grid(row=0, column=1, sticky="ew", padx=4)
 
-        ttk.Label(ef, text="Length:").grid(row=0, column=2, sticky="w", padx=(8, 0))
+        ttk.Label(ef, text="Length:").grid(row=0, column=2, sticky="w",
+                                            padx=(8, 0))
         self._e_len = ttk.Entry(ef, width=10)
         self._e_len.insert(0, "4096")
         self._e_len.grid(row=0, column=3, sticky="ew", padx=4)
@@ -311,17 +402,120 @@ class App(tk.Tk):
                    command=self._do_logo_download).grid(row=4, column=0,
                                                          columnspan=3, pady=4)
 
+    def _build_assets_tab(self, parent):
+        parent.columnconfigure(0, weight=1)
+
+        # ── Source directory ───────────────────────────────────────────────
+        src_frame = ttk.LabelFrame(parent, text="Project source directory",
+                                   padding=8)
+        src_frame.pack(fill="x", pady=(0, 8))
+        src_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(src_frame, text="Source dir:").grid(row=0, column=0,
+                                                        sticky="w")
+        self._asset_dir = ttk.Entry(src_frame)
+        # Default to the parent of the tools/ folder
+        default_dir = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), ".."))
+        self._asset_dir.insert(0, default_dir)
+        self._asset_dir.grid(row=0, column=1, sticky="ew", padx=4)
+        ttk.Button(src_frame, text="Browse…",
+                   command=self._browse_asset_dir
+                   ).grid(row=0, column=2)
+
+        hint = ("Reads BSP/Src/lcd_render.c  and  "
+                "Middlewares/ST/ARM/DSP/Src/arm_common_tables.c")
+        ttk.Label(src_frame, text=hint, foreground="#666666",
+                  font=("TkDefaultFont", 8)).grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+        # ── Asset list ─────────────────────────────────────────────────────
+        info_frame = ttk.LabelFrame(parent, text="Assets to program",
+                                    padding=8)
+        info_frame.pack(fill="x", pady=(0, 8))
+
+        assets_info = [
+            ("Font bitmaps",
+             "Font6x8 + Font5x8 + Font8x10",
+             f"0x{FLASH_ADDR_FONT_DATA:06X}",
+             f"{FONT_BLOB_SIZE} B"),
+            ("FFT twiddle",
+             "twiddleCoef_512[1024] float32",
+             f"0x{FLASH_ADDR_FFT_TWIDDLE:06X}",
+             f"{FFT_TWIDDLE_SIZE} B"),
+            ("FFT bitrev",
+             "armBitRevIndexTable512[448] uint16",
+             f"0x{FLASH_ADDR_FFT_BITREV:06X}",
+             f"{FFT_BITREV_SIZE} B"),
+        ]
+
+        hdr_font = ("TkDefaultFont", 9, "bold")
+        for col, (hdr, w) in enumerate(
+                [("Asset", 16), ("Contents", 30), ("Address", 10), ("Size", 8)]):
+            ttk.Label(info_frame, text=hdr, font=hdr_font, width=w,
+                      anchor="w").grid(row=0, column=col, sticky="w",
+                                       padx=(0, 8))
+
+        ttk.Separator(info_frame, orient="horizontal").grid(
+            row=1, column=0, columnspan=4, sticky="ew", pady=4)
+
+        self._asset_status = {}
+        for i, (name, contents, addr, size) in enumerate(assets_info):
+            row = i + 2
+            ttk.Label(info_frame, text=name,     anchor="w", width=16
+                      ).grid(row=row, column=0, sticky="w", padx=(0, 8))
+            ttk.Label(info_frame, text=contents, anchor="w", width=30,
+                      foreground="#555555"
+                      ).grid(row=row, column=1, sticky="w", padx=(0, 8))
+            ttk.Label(info_frame, text=addr,     anchor="w", width=10,
+                      font=("Consolas", 9)
+                      ).grid(row=row, column=2, sticky="w", padx=(0, 8))
+            ttk.Label(info_frame, text=size,     anchor="e", width=8,
+                      font=("Consolas", 9)
+                      ).grid(row=row, column=3, sticky="w")
+            status_lbl = ttk.Label(info_frame, text="—", width=10,
+                                    anchor="center")
+            status_lbl.grid(row=row, column=4, sticky="w", padx=(12, 0))
+            self._asset_status[name] = status_lbl
+
+        total_row = len(assets_info) + 2
+        ttk.Separator(info_frame, orient="horizontal").grid(
+            row=total_row, column=0, columnspan=5, sticky="ew", pady=4)
+        ttk.Label(info_frame, text="Total:", font=hdr_font
+                  ).grid(row=total_row + 1, column=0, sticky="w")
+        ttk.Label(info_frame,
+                  text=f"{_ASSETS_TOTAL_BYTES} B",
+                  font=("Consolas", 9, "bold")
+                  ).grid(row=total_row + 1, column=3, sticky="w")
+
+        # ── Action button ──────────────────────────────────────────────────
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(pady=8)
+        self._assets_btn = ttk.Button(
+            btn_frame, text="⬆  Write Assets to Flash",
+            command=self._do_write_assets)
+        self._assets_btn.pack(ipadx=12, ipady=4)
+
+        # ── Reminder ──────────────────────────────────────────────────────
+        note = ttk.LabelFrame(parent, text="After programming", padding=6)
+        note.pack(fill="x", pady=(0, 4))
+        note_txt = (
+            "Set  SPI_ASSETS_FONT_FALLBACK = 0  and  SPI_ASSETS_FFT_FALLBACK = 0\n"
+            "in  BSP/Inc/spi_assets.h,  then rebuild to reclaim ~6.7 KB of internal flash."
+        )
+        ttk.Label(note, text=note_txt, foreground="#555555",
+                  font=("TkDefaultFont", 8), justify="left").pack(anchor="w")
+
     # -----------------------------------------------------------------------
     # Helper: preview
     # -----------------------------------------------------------------------
     def _show_preview(self, label_widget, attr_name: str, img: "Image.Image"):
-        """Resize and display a PIL image in a label widget."""
         if not HAS_PIL:
             return
         thumb = img.copy()
         thumb.thumbnail((200, 140), Image.LANCZOS)
         tk_img = ImageTk.PhotoImage(thumb)
-        setattr(self, attr_name, tk_img)  # keep reference
+        setattr(self, attr_name, tk_img)
         label_widget.configure(image=tk_img, text="")
 
     def _update_upload_preview(self):
@@ -335,7 +529,7 @@ class App(tk.Tk):
             pass
 
     # -----------------------------------------------------------------------
-    # Helper: file dialogs
+    # Helper: file/dir dialogs
     # -----------------------------------------------------------------------
     def _browse_open(self, entry: ttk.Entry):
         path = filedialog.askopenfilename()
@@ -345,7 +539,8 @@ class App(tk.Tk):
 
     def _browse_image(self, entry: ttk.Entry):
         path = filedialog.askopenfilename(
-            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.gif"), ("All", "*.*")])
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.gif"),
+                       ("All", "*.*")])
         if path:
             entry.delete(0, "end")
             entry.insert(0, path)
@@ -358,6 +553,12 @@ class App(tk.Tk):
         if path:
             entry.delete(0, "end")
             entry.insert(0, path)
+
+    def _browse_asset_dir(self):
+        d = filedialog.askdirectory(initialdir=self._asset_dir.get())
+        if d:
+            self._asset_dir.delete(0, "end")
+            self._asset_dir.insert(0, d)
 
     # -----------------------------------------------------------------------
     # Port management
@@ -396,18 +597,18 @@ class App(tk.Tk):
         self._queue.put(("progress", pct))
 
     def _append_log(self, msg: str):
-        self._log.configure(state="normal")
-        self._log.insert("end", msg + "\n")
-        self._log.see("end")
-        self._log.configure(state="disabled")
+        self._log_text.configure(state="normal")
+        self._log_text.insert("end", msg + "\n")
+        self._log_text.see("end")
+        self._log_text.configure(state="disabled")
 
     def _clear_log(self):
-        self._log.configure(state="normal")
-        self._log.delete("1.0", "end")
-        self._log.configure(state="disabled")
+        self._log_text.configure(state="normal")
+        self._log_text.delete("1.0", "end")
+        self._log_text.configure(state="disabled")
 
     # -----------------------------------------------------------------------
-    # Queue polling (runs on main thread via after())
+    # Queue polling (main thread via after())
     # -----------------------------------------------------------------------
     def _poll_queue(self):
         try:
@@ -440,8 +641,13 @@ class App(tk.Tk):
                         self._id_lbl.configure(text=txt)
                         self._append_log(f"Chip ID: {txt}  DEV=0x{dev:04X}")
                     elif key == "dl_preview":
-                        img = value
-                        self._show_preview(self._dl_preview, "_dl_tk_img", img)
+                        self._show_preview(self._dl_preview,
+                                           "_dl_tk_img", value)
+                    elif key == "asset_status":
+                        name, status, color = value
+                        if name in self._asset_status:
+                            self._asset_status[name].configure(
+                                text=status, foreground=color)
         except queue.Empty:
             pass
         self.after(50, self._poll_queue)
@@ -491,15 +697,16 @@ class App(tk.Tk):
                 data = tool.read(addr, length)
                 tool.close()
                 if path:
-                    with open(path, "wb") as f:
-                        f.write(data)
+                    with open(path, "wb") as fh:
+                        fh.write(data)
                     self._queue_log(f"Saved to {path}")
                 else:
                     lines = []
                     for i in range(0, len(data), 16):
                         chunk = data[i:i+16]
                         h = " ".join(f"{b:02X}" for b in chunk)
-                        a = "".join(chr(b) if 0x20 <= b < 0x7F else "." for b in chunk)
+                        a = "".join(
+                            chr(b) if 0x20 <= b < 0x7F else "." for b in chunk)
                         lines.append(f"  {addr+i:06X}:  {h:<47}  {a}")
                     self._queue_log("\n".join(lines))
                 self._queue_done("Read complete.")
@@ -513,8 +720,8 @@ class App(tk.Tk):
             path = self._w_file.get().strip()
             if not path:
                 raise ValueError("No input file")
-            with open(path, "rb") as f:
-                data = f.read()
+            with open(path, "rb") as fh:
+                data = fh.read()
         except (ValueError, OSError) as e:
             messagebox.showerror("Input error", str(e))
             return
@@ -522,7 +729,8 @@ class App(tk.Tk):
         def _task():
             try:
                 tool = self._get_tool()
-                self._queue_log(f"Erasing {len(data)} bytes @ 0x{addr:06X}…")
+                self._queue_log(
+                    f"Erasing {len(data)} bytes @ 0x{addr:06X}…")
                 tool.erase_range(addr, len(data))
                 self._queue_log(f"Writing {len(data)} bytes…")
                 tool.write_binary(addr, data)
@@ -563,16 +771,20 @@ class App(tk.Tk):
             messagebox.showerror("Input error", "Select a valid image file")
             return
         if not HAS_PIL:
-            messagebox.showerror("Missing dependency", "Run: pip install pillow")
+            messagebox.showerror("Missing dependency",
+                                 "Run: pip install pillow")
             return
 
         def _task():
             try:
                 tool = self._get_tool()
                 total_bytes = w * h * 2
-                self._queue_log(f"Converting {os.path.basename(path)} → {w}×{h} RGB565 ({total_bytes} B)…")
+                self._queue_log(
+                    f"Converting {os.path.basename(path)} → "
+                    f"{w}×{h} RGB565 ({total_bytes} B)…")
                 rgb565 = FlashTool.image_to_rgb565(path, w, h)
-                self._queue_log(f"Erasing logo area @ 0x{FLASH_ADDR_LOGO:06X}…")
+                self._queue_log(
+                    f"Erasing logo area @ 0x{FLASH_ADDR_LOGO:06X}…")
                 tool.erase_range(FLASH_ADDR_LOGO, total_bytes)
                 self._queue_log("Writing logo…")
                 tool.write_binary(FLASH_ADDR_LOGO, rgb565)
@@ -594,14 +806,17 @@ class App(tk.Tk):
             messagebox.showerror("Input error", "Set an output file path")
             return
         if not HAS_PIL:
-            messagebox.showerror("Missing dependency", "Run: pip install pillow")
+            messagebox.showerror("Missing dependency",
+                                 "Run: pip install pillow")
             return
 
         def _task():
             try:
                 tool = self._get_tool()
                 total_bytes = w * h * 2
-                self._queue_log(f"Reading logo ({w}×{h}, {total_bytes} B) @ 0x{FLASH_ADDR_LOGO:06X}…")
+                self._queue_log(
+                    f"Reading logo ({w}×{h}, {total_bytes} B) @ "
+                    f"0x{FLASH_ADDR_LOGO:06X}…")
                 raw = tool.read(FLASH_ADDR_LOGO, total_bytes)
                 tool.close()
                 self._queue_log("Converting to image…")
@@ -612,6 +827,53 @@ class App(tk.Tk):
                 self._queue_done("Logo downloaded.")
             except Exception as e:
                 self._queue_error(str(e))
+        self._run(_task)
+
+    def _do_write_assets(self):
+        source_dir = self._asset_dir.get().strip()
+        if not source_dir or not os.path.isdir(source_dir):
+            messagebox.showerror("Input error",
+                                 "Select a valid project source directory")
+            return
+
+        # Reset status indicators
+        for lbl in self._asset_status.values():
+            lbl.configure(text="—", foreground="black")
+
+        asset_names = list(self._asset_status.keys())
+
+        def _task():
+            try:
+                tool = self._get_tool()
+                self._queue_log(
+                    f"write-assets from {source_dir} ...")
+
+                # Signal each asset start/done via result queue
+                orig_write_assets = tool.write_assets
+
+                def _patched_log(msg):
+                    self._queue_log(msg)
+                    # Detect "done" lines to update status indicators
+                    for name in asset_names:
+                        key = name.lower().split()[0]
+                        if key in msg.lower() and "done" in msg.lower():
+                            self._queue_result(
+                                "asset_status", (name, "✓ done", "#007700"))
+
+                tool.write_assets(source_dir, verbose=True,
+                                  log_fn=_patched_log)
+                tool.close()
+                # Mark any remaining as done
+                for name in asset_names:
+                    self._queue_result(
+                        "asset_status", (name, "✓ done", "#007700"))
+                self._queue_done("write-assets complete.")
+            except Exception as e:
+                for name in asset_names:
+                    self._queue_result(
+                        "asset_status", (name, "error", "#cc0000"))
+                self._queue_error(str(e))
+
         self._run(_task)
 
 

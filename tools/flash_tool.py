@@ -390,7 +390,8 @@ class FlashTool:
     # -----------------------------------------------------------------------
     # write-assets: extract from source + program to SPI flash
     # -----------------------------------------------------------------------
-    def write_assets(self, source_dir: str, verbose: bool = True):
+    def write_assets(self, source_dir: str, verbose: bool = True,
+                     log_fn=None):
         """
         Extract font bitmaps and FFT tables from C source files, then program
         the three asset sectors to SPI flash.
@@ -398,7 +399,12 @@ class FlashTool:
         Source files read:
           BSP/Src/lcd_render.c                          (fonts)
           Middlewares/ST/ARM/DSP/Src/arm_common_tables.c (FFT tables)
+
+        log_fn: callable(str) used for status messages.  Defaults to print().
         """
+        if log_fn is None:
+            log_fn = print
+
         lcd_path    = os.path.join(source_dir, "BSP", "Src", "lcd_render.c")
         tables_path = os.path.join(
             source_dir, "Middlewares", "ST", "ARM", "DSP",
@@ -410,7 +416,7 @@ class FlashTool:
 
         # ── Font blob ──────────────────────────────────────────────────────
         if verbose:
-            print(f"Parsing fonts from {lcd_path} ...")
+            log_fn(f"Parsing fonts from {lcd_path} ...")
         with open(lcd_path, encoding="utf-8") as fh:
             lcd_src = fh.read()
 
@@ -427,12 +433,12 @@ class FlashTool:
 
         font_blob = f6x8 + f5x8 + f8x10
         if verbose:
-            print(f"  Font blob: {len(font_blob)} bytes  "
-                  f"(6x8={len(f6x8)}, 5x8={len(f5x8)}, 8x10={len(f8x10)})")
+            log_fn(f"  Font blob: {len(font_blob)} bytes  "
+                   f"(6x8={len(f6x8)}, 5x8={len(f5x8)}, 8x10={len(f8x10)})")
 
         # ── FFT tables ─────────────────────────────────────────────────────
         if verbose:
-            print(f"Parsing FFT tables from {tables_path} ...")
+            log_fn(f"Parsing FFT tables from {tables_path} ...")
         with open(tables_path, encoding="utf-8") as fh:
             tables_src = fh.read()
 
@@ -442,14 +448,14 @@ class FlashTool:
             self._extract_array_body(tables_src, "uint16_t",
                                      "armBitRevIndexTable512"))
 
-        _check("twiddleCoef_512",       len(twiddle), FFT_TWIDDLE_SIZE)
-        _check("armBitRevIndexTable512", len(bitrev),  FFT_BITREV_SIZE)
+        _check("twiddleCoef_512",        len(twiddle), FFT_TWIDDLE_SIZE)
+        _check("armBitRevIndexTable512",  len(bitrev),  FFT_BITREV_SIZE)
 
         if verbose:
-            print(f"  Twiddle: {len(twiddle)} bytes  "
-                  f"({len(twiddle)//4} float32 entries)")
-            print(f"  BitRev:  {len(bitrev)}  bytes  "
-                  f"({len(bitrev)//2} uint16 entries)")
+            log_fn(f"  Twiddle: {len(twiddle)} bytes "
+                   f"({len(twiddle)//4} float32)")
+            log_fn(f"  BitRev:  {len(bitrev)} bytes "
+                   f"({len(bitrev)//2} uint16)")
 
         # ── Program to SPI flash ───────────────────────────────────────────
         assets = [
@@ -459,16 +465,18 @@ class FlashTool:
         ]
         for label, addr, data in assets:
             if verbose:
-                print(f"\nProgramming {label} @ 0x{addr:06X} "
-                      f"({len(data)} bytes) ...")
-            self.erase_range(addr, len(data), verbose=verbose)
-            self.write_binary(addr, data, verbose=verbose)
+                log_fn(f"Programming {label} @ 0x{addr:06X} ({len(data)} B) ...")
+            self.erase_range(addr, len(data), verbose=False)
+            self.write_binary(addr, data, verbose=False)
+            if verbose:
+                log_fn(f"  {label}: done.")
 
         if verbose:
             total = sum(len(d) for _, _, d in assets)
-            print(f"\nwrite-assets complete — {total} bytes programmed.")
-            print("Next: set SPI_ASSETS_FONT_FALLBACK=0 and SPI_ASSETS_FFT_FALLBACK=0")
-            print("in BSP/Inc/spi_assets.h, rebuild to reclaim ~6.7 KB internal flash.")
+            log_fn(f"write-assets complete — {total} bytes programmed.")
+            log_fn("Next: set SPI_ASSETS_FONT_FALLBACK=0 and "
+                   "SPI_ASSETS_FFT_FALLBACK=0 in BSP/Inc/spi_assets.h, "
+                   "then rebuild to reclaim ~6.7 KB internal flash.")
 
 
 # ---------------------------------------------------------------------------
