@@ -22,7 +22,6 @@
 #include "usb_cat.h"
 #include "usb_audio.h"
 #include "menu.h"
-#include "diag.h"
 #include "cal.h"
 #include "sdr_scan.h"
 #include "runtime_diag.h"
@@ -32,6 +31,7 @@
 #include "usb_flash_proto.h"
 #include "selftest.h"
 #include "hw_fault.h"
+#include "spi_assets.h"
 #include <string.h>
 #include <math.h>
 
@@ -363,7 +363,9 @@ void CSDR_Init(void)
       g_sdr.vfo_b.if_shift_hz = fs.vfo_b_if_shift_hz;
       g_sdr.active_vfo        = fs.active_vfo;
     }
+    SPI_Assets_LoadAll(&g_flash);
   }
+  LCD_Render_Init();
   SDR_UI_Init();
   SDR_UI_DrawFrame(CSDR_AUDIO_SAMPLE_RATE, DSP_FFT_SIZE);
 
@@ -898,7 +900,7 @@ void CSDR_Loop(void)
 #if HW_FAULT_WARN
     if (HW_Fault_Any()) { csdr_draw_hw_fault_warning(); } else
 #endif
-    if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
+    if (!dbg_disable_lcd_dma) {
       static uint32_t s_spec_overload_ms = 0U;
       bool spec_ring_pressure = g_usb_audio.rx_overrun_pending ||
                                 (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
@@ -927,7 +929,7 @@ void CSDR_Loop(void)
     t_spec = now;  /* keep RX timer from firing immediately on TX→RX */
     if (now - t_tx_spec >= CSDR_UI_TX_SPEC_PERIOD_MS) {
       t_tx_spec = now;
-      if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
+      if (!dbg_disable_lcd_dma) {
         csdr_process_audio_pending();
         RuntimeDiag_UiRenderBegin();
         csdr_update_tx_spectrum();
@@ -985,7 +987,7 @@ void CSDR_Loop(void)
 #if HW_FAULT_WARN
     if (!HW_Fault_Any())
 #endif
-    if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
+    if (!dbg_disable_lcd_dma) {
       csdr_process_audio_pending();
       RuntimeDiag_UiRenderBegin();
       csdr_update_waterfall();
@@ -1005,7 +1007,7 @@ void CSDR_Loop(void)
   }
   if (disp_due || dirty_due) {
     t_disp = now;
-    if (!dbg_disable_lcd_dma && !Diag_IsActive()) {
+    if (!dbg_disable_lcd_dma) {
       csdr_process_audio_pending();
       RuntimeDiag_UiRenderBegin();
       csdr_refresh_display();
@@ -1155,7 +1157,6 @@ void CSDR_Loop(void)
   }
 
   RuntimeDiag_ServiceSlow(now);
-  Diag_Process();
   RuntimeDiag_WatchdogRefreshIfHealthy(now);
 
   if (now - t_cat    >= 10U) {
@@ -1378,15 +1379,13 @@ static void csdr_handle_encoder(void)
   }
   if (Encoder_GetButton(&g_encoder)) {
     if (Menu_IsOpen(&g_menu)) {
-      /* Check if selected item is ACTION type (e.g. Diagnostics) */
+      /* Check if selected item is ACTION type (Calibration or SWR Scan) */
       if (g_menu.cursor < g_menu.item_count &&
           g_menu.items[g_menu.cursor].type == MENU_TYPE_ACTION) {
         const char *name = g_menu.items[g_menu.cursor].label;
         Menu_Toggle(&g_menu);
         g_sdr.display_dirty |= DIRTY_ALL;
-        if (strcmp(name, "Diagnostics") == 0) {
-          Diag_Run();
-        } else if (strcmp(name, "Calibration") == 0) {
+        if (strcmp(name, "Calibration") == 0) {
           Cal_Params_t cp = {
             .xtal_ppm        = g_sdr.xtal_ppm,
             .iq_gain         = g_sdr.iq_gain,
@@ -1453,7 +1452,6 @@ static void csdr_handle_keys(void)
   Key_Poll(&k_f4);   Key_Poll(&k_band); Key_Poll(&k_mode); Key_Poll(&k_ptt);
 
   if (Key_Press(&k_menu)) {
-    if (Diag_IsActive()) { Diag_Run(); return; }
     g_sdr.display_dirty = 0U;  /* prevent status panel overwriting menu */
     if (!Menu_IsOpen(&g_menu))
       Menu_LoadFromSDR(&g_menu,
@@ -1466,11 +1464,9 @@ static void csdr_handle_keys(void)
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
   }
 
-  /* F1: reset diag peaks (DIAG active) / menu UP / Volume Down */
+  /* F1: menu UP / Volume Down */
   if (Key_PressOrRepeat(&k_f1)) {
-    if (Diag_IsActive()) {
-      Diag_ResetPeaks();
-    } else if (Menu_IsOpen(&g_menu)) {
+    if (Menu_IsOpen(&g_menu)) {
       Menu_Up(&g_menu);
     } else {
       uint8_t v = (g_sdr.volume >= 2U) ? (g_sdr.volume - 2U) : 0U;
@@ -1495,9 +1491,7 @@ static void csdr_handle_keys(void)
         const char *name = g_menu.items[g_menu.cursor].label;
         Menu_Toggle(&g_menu);
         g_sdr.display_dirty |= DIRTY_ALL;
-        if (strcmp(name, "Diagnostics") == 0) {
-          Diag_Run();
-        } else if (strcmp(name, "Calibration") == 0) {
+        if (strcmp(name, "Calibration") == 0) {
           Cal_Params_t cp = {
             .xtal_ppm        = g_sdr.xtal_ppm,
             .iq_gain         = g_sdr.iq_gain,
@@ -1545,9 +1539,8 @@ static void csdr_handle_keys(void)
     }
   }
 
-  /* F4: Exit DIAG  –or–  Back / Exit menu  –or–  copy active VFO to inactive */
+  /* F4: Back / Exit menu  –or–  copy active VFO to inactive */
   if (Key_Press(&k_f4)) {
-    if (Diag_IsActive()) { Diag_Run(); return; }
     if (Menu_IsOpen(&g_menu)) {
       Menu_Back(&g_menu);
       if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;

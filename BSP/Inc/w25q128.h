@@ -70,6 +70,9 @@ extern "C" {
 #define FLASH_ADDR_BAND_CAL      0x001000UL   /* 4KB: band / SI5351 cal */
 #define FLASH_ADDR_LOGO          0x003000UL   /* 153600B: boot logo      */
 #define FLASH_ADDR_FREE          0x02C000UL   /* Free area               */
+#define FLASH_ADDR_FONT_DATA    0x02C000UL   /* 4KB : font bitmaps blob (~1652 B) */
+#define FLASH_ADDR_FFT_TWIDDLE  0x02D000UL   /* 4KB : twiddleCoef_512[1024] float32 */
+#define FLASH_ADDR_FFT_BITREV   0x02E000UL   /* 1KB : armBitRevIndexTable512[448] uint16 */
 
 /* Timeouts */
 #define W25Q_TIMEOUT_SECTOR_MS   400U

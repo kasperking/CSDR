@@ -59,9 +59,21 @@ BLOCK64_SIZE   = 65536        # bytes
 FLASH_SIZE     = 16 * 1024 * 1024
 
 # Flash layout (mirrors w25q128.h)
-FLASH_ADDR_SETTINGS = 0x000000
-FLASH_ADDR_BAND_CAL = 0x001000
-FLASH_ADDR_LOGO     = 0x003000
+FLASH_ADDR_SETTINGS    = 0x000000
+FLASH_ADDR_BAND_CAL    = 0x001000
+FLASH_ADDR_LOGO        = 0x003000
+FLASH_ADDR_FONT_DATA   = 0x02C000
+FLASH_ADDR_FFT_TWIDDLE = 0x02D000
+FLASH_ADDR_FFT_BITREV  = 0x02E000
+
+# Asset geometry (mirrors spi_assets.h)
+FONT_GLYPH_COUNT  = 59          # ASCII 32..90
+FONT_F6X8_SIZE    = FONT_GLYPH_COUNT * 6       # 354 bytes
+FONT_F5X8_SIZE    = FONT_GLYPH_COUNT * 6       # 354 bytes
+FONT_F8X10_SIZE   = FONT_GLYPH_COUNT * 8 * 2  # 944 bytes  (uint16_t)
+FONT_BLOB_SIZE    = FONT_F6X8_SIZE + FONT_F5X8_SIZE + FONT_F8X10_SIZE  # 1652
+FFT_TWIDDLE_SIZE  = 1024 * 4   # 4096 bytes (float32)
+FFT_BITREV_SIZE   = 448  * 2   #  896 bytes (uint16)
 
 # Timeouts
 RESP_TIMEOUT_NORMAL = 2.0    # seconds — read / write / chip-id
@@ -268,6 +280,131 @@ class FlashTool:
         if verbose:
             print("Logo upload complete.")
 
+    # -----------------------------------------------------------------------
+    # Asset extraction helpers
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _extract_c_uint8_array(c_source: str, array_name: str) -> bytes:
+        """Extract a static const uint8_t array from C source text."""
+        import re
+        pat = re.compile(
+            r'static\s+const\s+uint8_t\s+' + re.escape(array_name) +
+            r'\s*\[\s*\]\s*=\s*\{([^}]+)\}',
+            re.DOTALL)
+        m = pat.search(c_source)
+        if not m:
+            raise ValueError(f"Array '{array_name}' not found in source")
+        values = [int(v, 0) for v in re.findall(r'0x[0-9a-fA-F]+', m.group(1))]
+        return bytes(values)
+
+    @staticmethod
+    def _extract_c_uint16_array(c_source: str, array_name: str) -> bytes:
+        """Extract a static const uint16_t array from C source text, return as LE bytes."""
+        import re, struct
+        pat = re.compile(
+            r'static\s+const\s+uint16_t\s+' + re.escape(array_name) +
+            r'\s*\[\s*\]\s*=\s*\{([^}]+)\}',
+            re.DOTALL)
+        m = pat.search(c_source)
+        if not m:
+            raise ValueError(f"Array '{array_name}' not found in source")
+        values = [int(v, 0) for v in re.findall(r'0x[0-9a-fA-F]+', m.group(1))]
+        return struct.pack(f'<{len(values)}H', *values)
+
+    @staticmethod
+    def _extract_fft_twiddle(c_source: str) -> bytes:
+        """Extract twiddleCoef_512[1024] float32 array from arm_common_tables.c."""
+        import re, struct
+        # Find the twiddleCoef_512 array (float32_t, contains scientific notation)
+        pat = re.compile(
+            r'const\s+float32_t\s+twiddleCoef_512\s*\[\d+\]\s*=\s*\{([^;]+)\};',
+            re.DOTALL)
+        m = pat.search(c_source)
+        if not m:
+            raise ValueError("twiddleCoef_512 not found in source")
+        floats = [float(v.rstrip('Ff')) for v in re.findall(
+            r'[+-]?[\d.]+(?:[eE][+-]?\d+)?[Ff]?', m.group(1)) if v]
+        if len(floats) != 1024:
+            raise ValueError(f"Expected 1024 floats, got {len(floats)}")
+        return struct.pack(f'<{len(floats)}f', *floats)
+
+    @staticmethod
+    def _extract_fft_bitrev(c_source: str) -> bytes:
+        """Extract armBitRevIndexTable512[448] uint16_t array from arm_common_tables.c."""
+        import re, struct
+        pat = re.compile(
+            r'const\s+uint16_t\s+armBitRevIndexTable512\s*\[\w+\]\s*=\s*\{([^}]+)\}',
+            re.DOTALL)
+        m = pat.search(c_source)
+        if not m:
+            raise ValueError("armBitRevIndexTable512 not found in source")
+        values = [int(v, 0) for v in re.findall(r'0x[0-9a-fA-F]+', m.group(1))]
+        if len(values) != 448:
+            raise ValueError(f"Expected 448 entries, got {len(values)}")
+        return struct.pack(f'<{len(values)}H', *values)
+
+    def write_assets(self, source_dir: str, verbose: bool = True):
+        """Extract font + FFT assets from C sources and program them to SPI flash."""
+        import os
+
+        lcd_render_path = os.path.join(source_dir, "BSP", "Src", "lcd_render.c")
+        common_tables_path = os.path.join(
+            source_dir, "Middlewares", "ST", "ARM", "DSP", "Src", "arm_common_tables.c")
+
+        # ── Fonts ──────────────────────────────────────────────────────────
+        if verbose:
+            print(f"Reading font data from {lcd_render_path} ...")
+        with open(lcd_render_path, "r", encoding="utf-8") as f:
+            lcd_src = f.read()
+
+        f6x8  = self._extract_c_uint8_array(lcd_src, "s_f6x8")
+        f5x8  = self._extract_c_uint8_array(lcd_src, "s_f5x8")
+        f8x10 = self._extract_c_uint16_array(lcd_src, "s_f8x10")
+
+        if len(f6x8) != FONT_F6X8_SIZE:
+            raise ValueError(f"s_f6x8: expected {FONT_F6X8_SIZE} bytes, got {len(f6x8)}")
+        if len(f5x8) != FONT_F5X8_SIZE:
+            raise ValueError(f"s_f5x8: expected {FONT_F5X8_SIZE} bytes, got {len(f5x8)}")
+        if len(f8x10) != FONT_F8X10_SIZE:
+            raise ValueError(f"s_f8x10: expected {FONT_F8X10_SIZE} bytes, got {len(f8x10)}")
+
+        font_blob = f6x8 + f5x8 + f8x10
+        if verbose:
+            print(f"  Font blob: {len(font_blob)} bytes  "
+                  f"(6x8={len(f6x8)}, 5x8={len(f5x8)}, 8x10={len(f8x10)})")
+
+        if verbose:
+            print(f"Programming fonts @ 0x{FLASH_ADDR_FONT_DATA:06X} ...")
+        self.erase_range(FLASH_ADDR_FONT_DATA, len(font_blob), verbose=verbose)
+        self.write_binary(FLASH_ADDR_FONT_DATA, font_blob, verbose=verbose)
+
+        # ── FFT tables ─────────────────────────────────────────────────────
+        if verbose:
+            print(f"Reading FFT tables from {common_tables_path} ...")
+        with open(common_tables_path, "r", encoding="utf-8") as f:
+            tables_src = f.read()
+
+        twiddle = self._extract_fft_twiddle(tables_src)
+        bitrev  = self._extract_fft_bitrev(tables_src)
+        if verbose:
+            print(f"  Twiddle: {len(twiddle)} bytes,  BitRev: {len(bitrev)} bytes")
+
+        if verbose:
+            print(f"Programming FFT twiddle @ 0x{FLASH_ADDR_FFT_TWIDDLE:06X} ...")
+        self.erase_range(FLASH_ADDR_FFT_TWIDDLE, len(twiddle), verbose=verbose)
+        self.write_binary(FLASH_ADDR_FFT_TWIDDLE, twiddle, verbose=verbose)
+
+        if verbose:
+            print(f"Programming FFT bitrev  @ 0x{FLASH_ADDR_FFT_BITREV:06X} ...")
+        self.erase_range(FLASH_ADDR_FFT_BITREV, len(bitrev), verbose=verbose)
+        self.write_binary(FLASH_ADDR_FFT_BITREV, bitrev, verbose=verbose)
+
+        if verbose:
+            saved = len(font_blob) + len(twiddle) + len(bitrev)
+            print(f"\nwrite-assets complete — {saved} bytes programmed.")
+            print("Next step: set SPI_ASSETS_FONT_FALLBACK=0 and SPI_ASSETS_FFT_FALLBACK=0")
+            print("in BSP/Inc/spi_assets.h, then rebuild to reclaim ~6.7 KB of internal flash.")
+
     def logo_download(self, output_path: str, width: int, height: int, verbose: bool = True):
         """Read the boot logo area and save as PNG."""
         total_bytes = width * height * 2
@@ -346,6 +483,10 @@ def cmd_logo_download(tool: FlashTool, args):
     tool.logo_download(args.output, args.width, args.height)
 
 
+def cmd_write_assets(tool: FlashTool, args):
+    tool.write_assets(args.source_dir)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CSDR NOR flash tool (binary protocol over USB CDC)")
@@ -384,6 +525,14 @@ def main():
     p_ld.add_argument("--width",  type=int, default=480, help="LCD width  (default 480)")
     p_ld.add_argument("--height", type=int, default=320, help="LCD height (default 320)")
 
+    # write-assets
+    p_wa = sub.add_parser(
+        "write-assets",
+        help="Extract font + FFT tables from C sources and program to SPI flash")
+    p_wa.add_argument(
+        "--source-dir", default=".",
+        help="Root of CSDR project (default: current directory)")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -393,6 +542,7 @@ def main():
         "erase":         cmd_erase,
         "logo-upload":   cmd_logo_upload,
         "logo-download": cmd_logo_download,
+        "write-assets":  cmd_write_assets,
     }
 
     try:

@@ -13,6 +13,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "lcd_render.h"
+#include "spi_assets.h"
 #include "runtime_diag.h"
 
 /* ── DMA Buffers ─────────────────────────────────────────────────────────── */
@@ -23,6 +24,13 @@ static uint16_t s_line[LCD_W]
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
+
+/* ── Font fallback data ─────────────────────────────────────────────────── *
+ * Kept in internal flash while SPI assets may not yet be programmed.       *
+ * Set SPI_ASSETS_FONT_FALLBACK=0 in spi_assets.h after running             *
+ * `flash_tool.py <port> write-assets` to reclaim ~1.7 KB of internal flash.*
+ *                                                                           */
+#if SPI_ASSETS_FONT_FALLBACK
 
 /* Font 6×8 ASCII 32-90, column-major, LSB=top */
 static const uint8_t s_f6x8[] = {
@@ -57,8 +65,6 @@ static const uint8_t s_f6x8[] = {
   0x63,0x14,0x08,0x14,0x63,0x00,0x07,0x08,0x70,0x08,0x07,0x00,
   0x61,0x51,0x49,0x45,0x43,0x00,
 };
-
-/* USER CODE END PV */
 
 /* Font 5×8 ASCII 32-90, column-major, LSB=top, 5 bytes/glyph (no spacer column).
  * Derived from Font6x8 with the trailing zero spacer removed.
@@ -164,10 +170,14 @@ static const uint16_t s_f8x10[] = {
   /* 'Z'  */ 0x0000,0x00C2,0x00A2,0x0092,0x008A,0x0086,0x0000,0x0000,
 };
 
-/* Exported variables --------------------------------------------------------*/
-const Font_t   Font6x8  = { s_f6x8,  6U, 8U  };
-const Font_t   Font5x8  = { s_f5x8,  6U, 8U  };
-const Font16_t Font8x10 = { s_f8x10, 8U, 10U };
+#endif /* SPI_ASSETS_FONT_FALLBACK */
+
+/* USER CODE END PV */
+
+/* Exported variables — data pointers set by LCD_Render_Init() --------------*/
+Font_t   Font6x8  = { NULL, 6U, 8U  };
+Font_t   Font5x8  = { NULL, 6U, 8U  };
+Font16_t Font8x10 = { NULL, 8U, 10U };
 
 /* USER CODE BEGIN 0 */
 
@@ -222,6 +232,24 @@ void LCD_LineStrW(uint16_t *ln, uint16_t x, uint16_t frow,
   RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_TEXT); }
 
 /* USER CODE END 0 */
+
+/* ── Asset init ── */
+void LCD_Render_Init(void)
+{
+  if (SPI_Assets_IsLoaded(SPI_ASSET_FONTS)) {
+    const uint8_t *blob = (const uint8_t *)SPI_Assets_GetBuf(SPI_ASSET_FONTS);
+    Font6x8.data  = blob + SPI_FONT_F6X8_OFFSET;
+    Font5x8.data  = blob + SPI_FONT_F5X8_OFFSET;
+    Font8x10.data = (const uint16_t *)(blob + SPI_FONT_F8X10_OFFSET);
+  }
+#if SPI_ASSETS_FONT_FALLBACK
+  else {
+    Font6x8.data  = s_f6x8;
+    Font5x8.data  = s_f5x8;
+    Font8x10.data = s_f8x10;
+  }
+#endif
+}
 
 /* ── Line buffer ── */
 uint16_t *LCD_GetLineBuf(void)               { return s_line; }

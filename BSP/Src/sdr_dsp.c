@@ -30,6 +30,7 @@
 #include <math.h>
 #include <string.h>
 #include "runtime_diag.h"
+#include "spi_assets.h"
 /* USER CODE END Includes */
 
 /* ── FFT backend selection ──────────────────────────────────────────────────
@@ -57,6 +58,7 @@
 #include "arm_math.h"
 #include "arm_const_structs.h"
 static const arm_cfft_instance_f32 *s_cfft_inst;
+static arm_cfft_instance_f32        s_cfft_ram_inst; /* filled from SPI flash tables */
 #endif /* SDR_USE_CMSIS_FFT */
 
 /* USER CODE BEGIN PD */
@@ -74,12 +76,14 @@ static const arm_cfft_instance_f32 *s_cfft_inst;
 static float   s_nco_sin_lut[NCO_LUT_SIZE];
 static uint8_t s_nco_lut_init = 0U;
 
-/* Precomputed FFT twiddle factors for N=DSP_FFT_SIZE.
- * W_N^k = exp(-j2πk/N): cos(-2πk/N) and sin(-2πk/N) for k=0..N/2-1.
- * Built once in DSP_Init; eliminates repeated cosf/sinf inside the FFT loop. */
+/* Custom twiddle factors — only needed by the fallback radix-2 path.
+ * When CMSIS FFT is active these arrays are never read; guard them to
+ * recover 2 KB of BSS. */
+#ifndef SDR_USE_CMSIS_FFT
 static float   s_fft_tw_cos[DSP_FFT_SIZE / 2U];
 static float   s_fft_tw_sin[DSP_FFT_SIZE / 2U];
 static uint8_t s_fft_tw_init = 0U;
+#endif
 
 /* USER CODE END PV */
 
@@ -149,11 +153,10 @@ static void FFT_Precomp(Complex_f *buf, uint16_t n)
 void NCO_SetFrequency(NCO_t *nco, int32_t freq_hz, uint32_t sample_rate)
 {
   /* USER CODE BEGIN NCO_SetFrequency_0 */
-  /* Use signed 64-bit intermediate: casting a negative double directly to
-   * uint32_t is undefined behaviour.  int64_t conversion is defined, and the
-   * subsequent truncation to uint32_t gives the correct two's-complement
-   * phase increment for negative frequencies. */
-  int64_t inc64 = (int64_t)((double)freq_hz / (double)sample_rate * 4294967296.0);
+  /* Multiply-before-divide avoids double precision: freq_hz*2^32 stays within
+   * int64_t for any freq_hz within Nyquist (max ~24000 * 4294967296 ≈ 1e14).
+   * int64_t intermediate gives correct two's-complement for negative frequencies. */
+  int64_t inc64 = (int64_t)freq_hz * (int64_t)4294967296LL / (int64_t)sample_rate;
   nco->phase_inc = (uint32_t)inc64;
   nco->phase_acc = 0U;
   nco->cos_val   = 1.0f;
@@ -528,9 +531,7 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
     s_nco_lut_init = 1U;
   }
 
-  /* Build FFT twiddle table once: W_N^k = exp(-j2πk/N) for k=0..N/2-1.
-   * Used by the custom twiddle-LUT path.  Also built when CMSIS FFT is active
-   * so the fallback path is always available for debugging. */
+#ifndef SDR_USE_CMSIS_FFT
   if (!s_fft_tw_init) {
     for (uint16_t k = 0U; k < (DSP_FFT_SIZE / 2U); k++) {
       float ang = -DSP_TWO_PI * (float)k / (float)DSP_FFT_SIZE;
@@ -539,12 +540,24 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
     }
     s_fft_tw_init = 1U;
   }
+#endif
 
 #ifdef SDR_USE_CMSIS_FFT
-  /* Point to the CMSIS pre-computed instance for N=512.
-   * arm_cfft_sR_f32_len512 is a const struct in arm_const_structs.c
-   * (part of CMSIS-DSP).  No dynamic initialisation needed. */
-  s_cfft_inst = &arm_cfft_sR_f32_len512;
+  /* Use twiddle/bitrev tables loaded from SPI flash into RAM when available.
+   * This makes arm_cfft_sR_f32_len512 (and its ~5 KB of rodata) unreferenced
+   * once SPI_ASSETS_FFT_FALLBACK is set to 0 in spi_assets.h. */
+  if (SPI_Assets_IsLoaded(SPI_ASSET_FFT_TWIDDLE) &&
+      SPI_Assets_IsLoaded(SPI_ASSET_FFT_BITREV)) {
+    s_cfft_ram_inst.fftLen       = DSP_FFT_SIZE;
+    s_cfft_ram_inst.pTwiddle     = (const float32_t *)SPI_Assets_GetBuf(SPI_ASSET_FFT_TWIDDLE);
+    s_cfft_ram_inst.pBitRevTable = (const uint16_t  *)SPI_Assets_GetBuf(SPI_ASSET_FFT_BITREV);
+    s_cfft_ram_inst.bitRevLength  = SPI_FFT_BITREV_LEN;
+    s_cfft_inst = &s_cfft_ram_inst;
+  } else {
+#if SPI_ASSETS_FFT_FALLBACK
+    s_cfft_inst = &arm_cfft_sR_f32_len512;
+#endif
+  }
 #endif
 
   NCO_SetFrequency(&dsp->nco,    0, sample_rate);
@@ -594,7 +607,7 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->tx.comp_decay  = expf(-1.0f / (0.050f * (float)sample_rate)); /* 50 ms */
 
   /* CW BFO phase increment: 700 Hz, sample-rate-derived */
-  dsp->cw_bfo_inc  = (uint32_t)(int64_t)(700.0 / (double)sample_rate * 4294967296.0);
+  dsp->cw_bfo_inc  = (uint32_t)((int64_t)700 * (int64_t)4294967296LL / (int64_t)sample_rate);
   dsp->cw_phase_acc = 0U;
 
   dsp->signal_power_db      = -120.0f;
@@ -696,7 +709,7 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   dsp->agc.hang_timer = 0U;
 
   /* Recompute CW BFO increment for the current sample rate */
-  dsp->cw_bfo_inc = (uint32_t)(int64_t)(700.0 / (double)sample_rate * 4294967296.0);
+  dsp->cw_bfo_inc = (uint32_t)((int64_t)700 * (int64_t)4294967296LL / (int64_t)sample_rate);
   /* USER CODE END DSP_SetMode_0 */
 }
 

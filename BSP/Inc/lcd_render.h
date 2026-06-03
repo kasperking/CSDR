@@ -54,9 +54,9 @@ typedef struct {
   uint8_t         height;
 } Font16_t;
 
-extern const Font_t   Font6x8;
-extern const Font_t   Font5x8;   /* compact 5×8 RF-panel label font */
-extern const Font16_t Font8x10;  /* 8×10 RF label font — padded from Font6x8 glyphs */
+extern Font_t   Font6x8;
+extern Font_t   Font5x8;   /* compact 5×8 RF-panel label font */
+extern Font16_t Font8x10;  /* 8×10 RF label font — padded from Font6x8 glyphs */
 
 /* ── Line-buffer render helpers ─────────────────────── */
 void LCD_LineFill(uint16_t *ln, uint16_t x0, uint16_t w, uint16_t color);
@@ -71,6 +71,9 @@ void LCD_LineStrW(uint16_t *ln, uint16_t x, uint16_t frow,
 void LCD_LineRect(uint16_t *ln, uint16_t x0, uint16_t w,
                   uint16_t row, uint16_t total_h, uint16_t border,
                   uint16_t fill, uint16_t border_color);
+
+/* ── Asset init ─────────────────────────────────────── */
+void LCD_Render_Init(void);
 
 /* ── Line buffer (LCD_W px, DMA_SRAM) ───────────────── */
 uint16_t *LCD_GetLineBuf(void);
