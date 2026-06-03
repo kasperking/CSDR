@@ -19,7 +19,7 @@ from flash_tool import (
     MAX_PAGE, SECTOR_SIZE, BLOCK64_SIZE,
     FLASH_ADDR_LOGO,
     FLASH_ADDR_FONT_DATA, FLASH_ADDR_FFT_TWIDDLE, FLASH_ADDR_FFT_BITREV,
-    FONT_BLOB_SIZE, FFT_TWIDDLE_SIZE, FFT_BITREV_SIZE,
+    FONT_BLOB_SIZE, FFT_TWIDDLE_SIZE, FFT_BITREV_SIZE, ASSETS_TOTAL_SIZE,
 )
 
 try:
@@ -35,8 +35,6 @@ try:
 except ImportError:
     HAS_PIL = False
 
-# Total bytes programmed by write-assets (for unified progress tracking)
-_ASSETS_TOTAL_BYTES = FONT_BLOB_SIZE + FFT_TWIDDLE_SIZE + FFT_BITREV_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +86,7 @@ class GUIFlashTool(FlashTool):
         bytes_done = [0]
 
         def _scoped_prog(done, total):
-            self._prog(bytes_done[0] + done, _ASSETS_TOTAL_BYTES)
+            self._prog(bytes_done[0] + done, ASSETS_TOTAL_SIZE)
 
         orig_prog  = self._prog
         self._prog = _scoped_prog
@@ -151,19 +149,19 @@ class GUIFlashTool(FlashTool):
                 def _erase_prog(done, total, _base=bytes_done[0],
                                 _el=erase_len, _dl=len(data)):
                     partial = done * _dl // total if total else 0
-                    orig_prog(_base + partial, _ASSETS_TOTAL_BYTES)
+                    orig_prog(_base + partial, ASSETS_TOTAL_SIZE)
 
                 self._prog = _erase_prog
                 self.erase_range(addr, len(data), verbose=False)
 
                 def _write_prog(done, total, _base=bytes_done[0],
                                 _dl=len(data)):
-                    orig_prog(_base + done, _ASSETS_TOTAL_BYTES)
+                    orig_prog(_base + done, ASSETS_TOTAL_SIZE)
 
                 self._prog = _write_prog
                 self.write_binary(addr, data, verbose=False)
                 bytes_done[0] += len(data)
-                orig_prog(bytes_done[0], _ASSETS_TOTAL_BYTES)
+                orig_prog(bytes_done[0], ASSETS_TOTAL_SIZE)
                 _asset_log(f"  {label}: done.")
 
             _asset_log(f"write-assets complete — {bytes_done[0]} bytes programmed.")
@@ -484,27 +482,32 @@ class App(tk.Tk):
         ttk.Label(info_frame, text="Total:", font=hdr_font
                   ).grid(row=total_row + 1, column=0, sticky="w")
         ttk.Label(info_frame,
-                  text=f"{_ASSETS_TOTAL_BYTES} B",
+                  text=f"{ASSETS_TOTAL_SIZE} B",
                   font=("Consolas", 9, "bold")
                   ).grid(row=total_row + 1, column=3, sticky="w")
 
+        # ── Disable-fallback checkbox ──────────────────────────────────────
+        self._disable_fallback_var = tk.BooleanVar(value=False)
+        cb_frame = ttk.Frame(parent)
+        cb_frame.pack(fill="x", pady=(0, 4))
+        ttk.Checkbutton(
+            cb_frame,
+            text="Disable fallback in BSP/Inc/spi_assets.h after programming",
+            variable=self._disable_fallback_var,
+        ).pack(side="left")
+        ttk.Label(
+            cb_frame,
+            text="(sets FALLBACK flags to 0 — requires rebuild)",
+            foreground="#888888", font=("TkDefaultFont", 8),
+        ).pack(side="left", padx=4)
+
         # ── Action button ──────────────────────────────────────────────────
         btn_frame = ttk.Frame(parent)
-        btn_frame.pack(pady=8)
+        btn_frame.pack(pady=6)
         self._assets_btn = ttk.Button(
             btn_frame, text="⬆  Write Assets to Flash",
             command=self._do_write_assets)
         self._assets_btn.pack(ipadx=12, ipady=4)
-
-        # ── Reminder ──────────────────────────────────────────────────────
-        note = ttk.LabelFrame(parent, text="After programming", padding=6)
-        note.pack(fill="x", pady=(0, 4))
-        note_txt = (
-            "Set  SPI_ASSETS_FONT_FALLBACK = 0  and  SPI_ASSETS_FFT_FALLBACK = 0\n"
-            "in  BSP/Inc/spi_assets.h,  then rebuild to reclaim ~6.7 KB of internal flash."
-        )
-        ttk.Label(note, text=note_txt, foreground="#555555",
-                  font=("TkDefaultFont", 8), justify="left").pack(anchor="w")
 
     # -----------------------------------------------------------------------
     # Helper: preview
@@ -648,6 +651,12 @@ class App(tk.Tk):
                         if name in self._asset_status:
                             self._asset_status[name].configure(
                                 text=status, foreground=color)
+                    elif key == "fallback_patched":
+                        # Uncheck the checkbox — already done, no need to run again
+                        self._disable_fallback_var.set(False)
+                        self._append_log(
+                            "spi_assets.h patched — rebuild firmware "
+                            "to reclaim ~6.7 KB of internal flash.")
         except queue.Empty:
             pass
         self.after(50, self._poll_queue)
@@ -830,7 +839,9 @@ class App(tk.Tk):
         self._run(_task)
 
     def _do_write_assets(self):
-        source_dir = self._asset_dir.get().strip()
+        source_dir        = self._asset_dir.get().strip()
+        disable_fallback  = self._disable_fallback_var.get()
+
         if not source_dir or not os.path.isdir(source_dir):
             messagebox.showerror("Input error",
                                  "Select a valid project source directory")
@@ -845,15 +856,10 @@ class App(tk.Tk):
         def _task():
             try:
                 tool = self._get_tool()
-                self._queue_log(
-                    f"write-assets from {source_dir} ...")
-
-                # Signal each asset start/done via result queue
-                orig_write_assets = tool.write_assets
+                self._queue_log(f"write-assets from {source_dir} ...")
 
                 def _patched_log(msg):
                     self._queue_log(msg)
-                    # Detect "done" lines to update status indicators
                     for name in asset_names:
                         key = name.lower().split()[0]
                         if key in msg.lower() and "done" in msg.lower():
@@ -863,10 +869,18 @@ class App(tk.Tk):
                 tool.write_assets(source_dir, verbose=True,
                                   log_fn=_patched_log)
                 tool.close()
-                # Mark any remaining as done
+
                 for name in asset_names:
                     self._queue_result(
                         "asset_status", (name, "✓ done", "#007700"))
+
+                if disable_fallback:
+                    self._queue_log("Patching spi_assets.h ...")
+                    patched = FlashTool.patch_fallback(
+                        source_dir, log_fn=self._queue_log)
+                    if patched:
+                        self._queue_result("fallback_patched", True)
+
                 self._queue_done("write-assets complete.")
             except Exception as e:
                 for name in asset_names:

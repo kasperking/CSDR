@@ -80,6 +80,7 @@ FFT_TWIDDLE_LEN   = 1024        # float32 entries
 FFT_BITREV_LEN    = 448         # uint16_t entries
 FFT_TWIDDLE_SIZE  = FFT_TWIDDLE_LEN * 4   # 4096 bytes
 FFT_BITREV_SIZE   = FFT_BITREV_LEN  * 2   #  896 bytes
+ASSETS_TOTAL_SIZE = FONT_BLOB_SIZE + FFT_TWIDDLE_SIZE + FFT_BITREV_SIZE  # 6644 bytes
 
 # Timeouts
 RESP_TIMEOUT_NORMAL = 2.0    # seconds — read / write / chip-id
@@ -474,9 +475,46 @@ class FlashTool:
         if verbose:
             total = sum(len(d) for _, _, d in assets)
             log_fn(f"write-assets complete — {total} bytes programmed.")
-            log_fn("Next: set SPI_ASSETS_FONT_FALLBACK=0 and "
-                   "SPI_ASSETS_FFT_FALLBACK=0 in BSP/Inc/spi_assets.h, "
-                   "then rebuild to reclaim ~6.7 KB internal flash.")
+
+    @staticmethod
+    def patch_fallback(source_dir: str, log_fn=None) -> bool:
+        """
+        Set SPI_ASSETS_FONT_FALLBACK and SPI_ASSETS_FFT_FALLBACK to 0 in
+        BSP/Inc/spi_assets.h so the compiler drops the embedded fallback
+        tables and reclaims ~6.7 KB of internal flash.
+
+        Returns True if the file was modified, False if already at 0.
+        Raises FileNotFoundError if spi_assets.h is not found.
+        """
+        if log_fn is None:
+            log_fn = print
+
+        header = os.path.join(source_dir, "BSP", "Inc", "spi_assets.h")
+        if not os.path.isfile(header):
+            raise FileNotFoundError(f"Not found: {header}")
+
+        with open(header, encoding="utf-8") as fh:
+            text = fh.read()
+
+        new_text = re.sub(
+            r'(#\s*define\s+SPI_ASSETS_(?:FONT|FFT)_FALLBACK\s+)1\b',
+            r'\g<1>0',
+            text)
+
+        if new_text == text:
+            log_fn("spi_assets.h: fallback flags already 0, no change.")
+            return False
+
+        with open(header, "w", encoding="utf-8") as fh:
+            fh.write(new_text)
+
+        changed = re.findall(
+            r'#\s*define\s+(SPI_ASSETS_\w+_FALLBACK)\s+0', new_text)
+        for name in changed:
+            log_fn(f"  {name} = 0  (was 1)")
+        log_fn("spi_assets.h patched — rebuild firmware to reclaim "
+               "~6.7 KB of internal flash.")
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +588,8 @@ def cmd_logo_download(tool: FlashTool, args):
 
 def cmd_write_assets(tool: FlashTool, args):
     tool.write_assets(args.source_dir)
+    if args.disable_fallback:
+        FlashTool.patch_fallback(args.source_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +638,9 @@ def main():
     p_wa.add_argument(
         "--source-dir", default=".",
         help="Root of CSDR project tree (default: current directory)")
+    p_wa.add_argument(
+        "--disable-fallback", action="store_true",
+        help="After programming, set FALLBACK flags to 0 in spi_assets.h")
 
     args = parser.parse_args()
 
