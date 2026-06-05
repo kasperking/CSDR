@@ -42,6 +42,8 @@ CMD_WRITE         = 0x02
 CMD_SECTOR_ERASE  = 0x03
 CMD_CHIP_ID       = 0x04
 CMD_BLOCK64_ERASE = 0x05
+CMD_READ_SR1      = 0x06
+CMD_WRITE_SR1     = 0x07
 
 STATUS_OK         = 0x00
 STATUS_ERR_FLASH  = 0x01
@@ -105,9 +107,14 @@ class FlashTool:
     # Low-level frame I/O
     # -----------------------------------------------------------------------
     def _send(self, cmd: int, addr: int, payload: bytes,
-              timeout: float = RESP_TIMEOUT_NORMAL) -> tuple:
-        """Send one request frame and return (status, response_data)."""
-        dlen = len(payload)
+              timeout: float = RESP_TIMEOUT_NORMAL,
+              wire_dlen: int = -1) -> tuple:
+        """Send one request frame and return (status, response_data).
+
+        wire_dlen: if >= 0, overrides the DLEN header field.  Used for READ
+        where DLEN encodes the requested byte count (no payload).
+        """
+        dlen = wire_dlen if wire_dlen >= 0 else len(payload)
         frame = bytes([
             MAGIC, cmd,
             (addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF,
@@ -150,12 +157,14 @@ class FlashTool:
         return struct.unpack(">I", data)[0]
 
     def read(self, addr: int, length: int) -> bytes:
-        """Read `length` bytes starting at `addr` (handles chunking)."""
+        """Read `length` bytes starting at `addr` (handles chunking).
+
+        READ frame: DLEN in the header encodes bytes to return; no payload.
+        """
         result = bytearray()
         while length > 0:
             chunk = min(length, MAX_PAGE)
-            _, data = self._send(CMD_READ, addr,
-                                 bytes([(chunk >> 8) & 0xFF, chunk & 0xFF]))
+            _, data = self._send(CMD_READ, addr, b"", wire_dlen=chunk)
             if len(data) != chunk:
                 raise FlashProtoError(
                     f"Short read: expected {chunk}, got {len(data)}")
@@ -267,6 +276,15 @@ class FlashTool:
                 b = (rgb565 << 3) & 0xF8
                 pixels[x, y] = (r, g, b)
         return img
+
+    def read_sr1(self) -> int:
+        """Read STATUS1 register (1 byte)."""
+        _, data = self._send(CMD_READ_SR1, 0, b"")
+        return data[0]
+
+    def write_sr1(self, value: int):
+        """Write STATUS1 register — clears write protection BP bits."""
+        self._send(CMD_WRITE_SR1, 0, bytes([value & 0xFF]))
 
     def logo_upload(self, image_path: str, width: int, height: int,
                     verbose: bool = True):
@@ -578,6 +596,29 @@ def cmd_erase(tool: FlashTool, args):
     tool.erase_range(addr, length)
 
 
+def cmd_read_sr1(tool: FlashTool, _args):
+    sr = tool.read_sr1()
+    busy = (sr >> 0) & 1
+    wel  = (sr >> 1) & 1
+    bp   = (sr >> 2) & 0x0F   # BP0-BP3
+    tb   = (sr >> 5) & 1      # Top/Bottom (some chips: bit 5)
+    srp  = (sr >> 7) & 1
+    print(f"STATUS1 = 0x{sr:02X}  "
+          f"(BUSY={busy} WEL={wel} BP[3:0]={bp:04b} SRP={srp})")
+    if bp:
+        print("  *** Write protection ACTIVE — run write-sr 0x00 to clear ***")
+    else:
+        print("  Write protection: none")
+
+
+def cmd_write_sr1(tool: FlashTool, args):
+    val = int(args.value, 0)
+    print(f"Writing SR1 = 0x{val:02X} ...")
+    tool.write_sr1(val)
+    sr = tool.read_sr1()
+    print(f"  SR1 after write: 0x{sr:02X}")
+
+
 def cmd_logo_upload(tool: FlashTool, args):
     tool.logo_upload(args.image, args.width, args.height)
 
@@ -632,6 +673,11 @@ def main():
     p_ld.add_argument("--height", type=int, default=320,
                       help="LCD height (default 320)")
 
+    sub.add_parser("read-sr", help="Read STATUS1 register (shows write-protect bits)")
+
+    p_wsr = sub.add_parser("write-sr", help="Write STATUS1 register (e.g. 0x00 to clear protection)")
+    p_wsr.add_argument("value", help="New SR1 value (e.g. 0x00)")
+
     p_wa = sub.add_parser(
         "write-assets",
         help="Extract font + FFT tables from C sources and program to SPI flash")
@@ -649,6 +695,8 @@ def main():
         "read":          cmd_read,
         "write":         cmd_write,
         "erase":         cmd_erase,
+        "read-sr":       cmd_read_sr1,
+        "write-sr":      cmd_write_sr1,
         "logo-upload":   cmd_logo_upload,
         "logo-download": cmd_logo_download,
         "write-assets":  cmd_write_assets,

@@ -31,6 +31,7 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32h7xx_hal.h"
+#include "hw_config_active.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -63,7 +64,11 @@ extern "C" {
 #define W25Q_SECTOR_SIZE         4096U
 #define W25Q_BLOCK32_SIZE        32768U
 #define W25Q_BLOCK64_SIZE        65536U
-#define W25Q_TOTAL_SIZE          (16U * 1024U * 1024U)   /* 16MB */
+#ifdef HW_W25Q_CAPACITY_BYTES
+#  define W25Q_TOTAL_SIZE        HW_W25Q_CAPACITY_BYTES  /* from hw_config */
+#else
+#  define W25Q_TOTAL_SIZE        (16U * 1024U * 1024U)   /* fallback 16MB */
+#endif
 
 /* Flash layout addresses */
 #define FLASH_ADDR_SETTINGS      0x000000UL   /* 4KB: cài đặt hệ thống */
@@ -155,8 +160,10 @@ typedef struct {
   /* ── SI5351 per-band calibration (future) ───────────────────── */
   uint8_t    si5351_cal[32];
 
+  /* ── Extended flags (carved from reserved; same struct size) ─── */
+  uint8_t    ext_alc_on;         /* External ALC enable: 0=off 1=on      */
   /* ── Reserved / padding to align crc32 to 4-byte boundary ───── */
-  uint8_t    reserved[12];       /* crc32 lands at offset 128    */
+  uint8_t    reserved[11];       /* crc32 lands at offset 128    */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;
@@ -181,6 +188,8 @@ HAL_StatusTypeDef W25Q_ChipErase(W25Q_Handle_t *dev);
 HAL_StatusTypeDef W25Q_Write(W25Q_Handle_t *dev, uint32_t addr,
                               const uint8_t *buf, uint32_t len);
 HAL_StatusTypeDef W25Q_WaitBusy(W25Q_Handle_t *dev, uint32_t timeout_ms);
+HAL_StatusTypeDef W25Q_ReadSR1(W25Q_Handle_t *dev, uint8_t *sr);
+HAL_StatusTypeDef W25Q_WriteSR1(W25Q_Handle_t *dev, uint8_t new_sr);
 
 /* Settings API */
 HAL_StatusTypeDef Flash_SaveSettings(W25Q_Handle_t *dev,

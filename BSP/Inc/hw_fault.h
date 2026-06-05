@@ -44,12 +44,16 @@ extern "C" {
 extern volatile uint32_t g_hw_fault_mask;
 
 /* ── Critical fault mask ────────────────────────────────────────────── */
-/* Components whose absence makes the radio non-functional or unsafe.
- * After one reinit attempt, CSDR_Loop halts audio/RF and shows the overlay.
- *   CODEC — no audio decode/encode → DSP has no signal
- *   PLL   — no LO synthesis → no receive or transmit
- *   INA226 — no PA overcurrent protection → TX is unsafe */
-#define HW_FAULT_CRITICAL  (HW_FAULT_CODEC | HW_FAULT_PLL | HW_FAULT_INA226)
+/* Components whose absence makes RX non-functional → halt entire device.
+ *   CODEC — no audio decode → no RX audio
+ *   PLL   — no LO synthesis → no downconversion
+ *   SAI   — no DMA audio stream → no RX samples at all
+ * PA-sensor faults (INA226, NTC) are NOT here: RX still works without them. */
+#define HW_FAULT_CRITICAL  (HW_FAULT_CODEC | HW_FAULT_PLL | HW_FAULT_SAI)
+
+/* ── PA sensor fault mask ───────────────────────────────────────────── */
+/* PA protection sensors whose absence allows RX but blocks TX. */
+#define HW_FAULT_PA_SENSOR (HW_FAULT_INA226)
 
 /* ── Inline helpers ─────────────────────────────────────────────────── */
 
@@ -59,11 +63,17 @@ static inline void HW_Fault_Set(uint32_t bits) { g_hw_fault_mask |= bits; }
 /** @brief  true when at least one hardware component is flagged faulty. */
 static inline bool HW_Fault_Any(void) { return g_hw_fault_mask != 0U; }
 
-/** @brief  true when a critical component (CODEC/PLL/INA226) is absent.
+/** @brief  true when a critical component (CODEC/PLL) is absent.
  *          Checked unconditionally — does not require HW_FAULT_WARN = 1. */
 static inline bool HW_Fault_IsCritical(void)
 {
     return (g_hw_fault_mask & HW_FAULT_CRITICAL) != 0U;
+}
+
+/** @brief  true when a PA sensor (INA226, NTC) is absent → TX must be blocked. */
+static inline bool HW_Fault_PASensorMissing(void)
+{
+    return (g_hw_fault_mask & HW_FAULT_PA_SENSOR) != 0U;
 }
 
 #ifdef __cplusplus

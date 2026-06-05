@@ -256,6 +256,7 @@ static void csdr_save_settings(void)
   fs.nr_on           = g_sdr.nr_on;
   fs.nb_level        = g_sdr.nb_level;
   fs.rf_agc_on       = g_sdr.rf_agc_on;
+  fs.ext_alc_on      = g_sdr.ext_alc_on;
 
   /* TX / audio */
   fs.mic_gain        = g_sdr.mic_gain;
@@ -338,6 +339,7 @@ void CSDR_Init(void)
       g_sdr.nr_on         = fs.nr_on;
       g_sdr.nb_level      = fs.nb_level;
       g_sdr.rf_agc_on     = fs.rf_agc_on;
+      g_sdr.ext_alc_on    = fs.ext_alc_on;
       /* TX / audio */
       g_sdr.mic_gain      = fs.mic_gain;
       g_sdr.digi_gain     = fs.digi_gain;
@@ -367,6 +369,30 @@ void CSDR_Init(void)
   }
   LCD_Render_Init();
   SDR_UI_Init();
+
+  /* Boot logo — read from SPI flash, center on display, hold 1.5 s.
+   * Skipped if flash failed or sector is erased (first pixel == 0xFFFF). */
+  if (boot_flash_ok) {
+    static uint16_t s_logo_raw[320];
+    if (Flash_ReadLogoScanline(&g_flash, 0U, s_logo_raw) == HAL_OK
+        && s_logo_raw[0] != 0xFFFFU) {
+      uint16_t *ln        = LCD_GetLineBuf();
+      const uint16_t lx0  = (uint16_t)((LCD_W - 320U) / 2U);
+      const uint16_t ly0  = (uint16_t)((LCD_H - 240U) / 2U);
+      LCD_Clear(0x0000U);
+      for (uint16_t y = 0U; y < 240U; y++) {
+        if (y > 0U && Flash_ReadLogoScanline(&g_flash, y, s_logo_raw) != HAL_OK) break;
+        LCD_LineFill(ln, 0U, lx0, 0x0000U);
+        for (uint16_t x = 0U; x < 320U; x++) ln[lx0 + x] = SWAP16(s_logo_raw[x]);
+        if (lx0 + 320U < LCD_W)
+          LCD_LineFill(ln, (uint16_t)(lx0 + 320U), (uint16_t)(LCD_W - lx0 - 320U), 0x0000U);
+        LCD_PushWindow(0U, (uint16_t)(ly0 + y), (uint16_t)(LCD_W - 1U),
+                       (uint16_t)(ly0 + y), ln, LCD_W);
+      }
+      HAL_Delay(1500U);
+    }
+  }
+
   SDR_UI_DrawFrame(CSDR_AUDIO_SAMPLE_RATE, DSP_FFT_SIZE);
 
   /* Delay nhỏ trước I2C để bus settle sau power-on */
@@ -609,25 +635,20 @@ void CSDR_Init(void)
       }
     }
 
-    /* INA226 — PA overcurrent protection */
-    if (!g_selftest.items[3].ok) {
-      PA_OC_Init(&hi2c2);
-      if (g_pa_oc.ina_ok) {
-        static const float oc_lut2[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
-        PA_OC_SetCurrentLimit(oc_lut2[g_sdr.pa_oc_limit_idx]);
-        g_selftest.items[3].ok = true;
-      } else {
-        HW_Fault_Set(HW_FAULT_INA226);
-      }
-    }
   }
 
-#if HW_FAULT_WARN
-  /* Non-critical faults: FLASH, SAI, KEYS — warning overlay only, no halt.
-   * CODEC/PLL/INA are handled unconditionally in the critical block above. */
-  if (!g_selftest.items[0].ok) HW_Fault_Set(HW_FAULT_FLASH);
+  /* SAI absent → no DMA audio stream → RX non-functional: treat as critical.
+   * Set unconditionally so HW_Fault_IsCritical() always catches it. */
   if (!g_selftest.items[4].ok) HW_Fault_Set(HW_FAULT_SAI);
-  if (!g_selftest.items[5].ok) HW_Fault_Set(HW_FAULT_KEYS);
+
+  /* INA226 absent → RX OK, TX blocked via PA_Protect_IsTxAllowed().
+   * Set unconditionally so the TX guard fires regardless of HW_FAULT_WARN. */
+  if (!g_selftest.items[3].ok) HW_Fault_Set(HW_FAULT_INA226);
+
+#if HW_FAULT_WARN
+  /* Truly non-critical: RX unaffected, warning header only. */
+  if (!g_selftest.items[0].ok) HW_Fault_Set(HW_FAULT_FLASH);   /* FLASH */
+  if (!g_selftest.items[5].ok) HW_Fault_Set(HW_FAULT_KEYS);    /* KEYS  */
 #endif
   if (SelfTest_AnyFail()) g_sdr.display_dirty |= DIRTY_HDR;
 
@@ -821,6 +842,46 @@ static void csdr_draw_hw_fault_warning(void)
   }
 }
 
+void CSDR_PrepareShutdown(void)
+{
+  csdr_save_settings();
+
+  LCD_Clear(0x0000U);
+
+  static uint16_t s_ln[LCD_W];
+  const uint16_t FG  = 0xF800U;   /* red */
+  const uint16_t DIM = 0x4A49U;   /* dim grey */
+  const uint16_t BG  = 0x0000U;
+
+  const char *title = "POWERING OFF";
+  uint16_t tw = (uint16_t)(strlen(title) * Font6x8.width);
+  uint16_t x0 = tw < LCD_W ? (uint16_t)((LCD_W - tw) / 2U) : 0U;
+
+  uint16_t total_h = Font6x8.height + 8U + Font6x8.height;
+  uint16_t y0 = (uint16_t)((LCD_H - total_h) / 2U);
+  uint16_t y1 = y0 + Font6x8.height + 8U;
+
+  for (uint16_t r = 0U; r < Font6x8.height; r++) {
+    LCD_LineFill(s_ln, 0U, LCD_W, BG);
+    LCD_LineStr(s_ln, x0, r, title, &Font6x8, FG, BG);
+    LCD_PushWindow(0U, y0 + r, (uint16_t)(LCD_W - 1U), y0 + r, s_ln, LCD_W);
+  }
+
+  static const char *const dots[] = { "...", "..", "." };
+  for (uint8_t i = 0U; i < 3U; i++) {
+    uint16_t dw = (uint16_t)(strlen(dots[i]) * Font6x8.width);
+    uint16_t xd = dw < LCD_W ? (uint16_t)((LCD_W - dw) / 2U) : 0U;
+    for (uint16_t r = 0U; r < Font6x8.height; r++) {
+      LCD_LineFill(s_ln, 0U, LCD_W, BG);
+      LCD_LineStr(s_ln, xd, r, dots[i], &Font6x8, DIM, BG);
+      LCD_PushWindow(0U, y1 + r, (uint16_t)(LCD_W - 1U), y1 + r, s_ln, LCD_W);
+    }
+    HAL_Delay(270U);
+  }
+
+  PWR_Shutdown();
+}
+
 void CSDR_Loop(void)
 {
   RuntimeDiag_MainLoopBeat();
@@ -828,12 +889,13 @@ void CSDR_Loop(void)
   /* PA overcurrent: xử lý fault từ EXTI ISR (tắt TX, báo lỗi UI, xóa INA226 latch) */
   PA_OC_HandleFaultInLoop();
 
-  /* ── Critical hardware fault: CODEC / PLL / INA226 absent after reinit ──
-   * Audio and RF are non-functional or unsafe.  Skip the entire pipeline;
-   * only refresh the fault overlay, watchdog, and power management.
-   * SAI DMA continues in background outputting silence — no crash risk. */
+  /* ── Critical hardware fault: CODEC / PLL / SAI absent after reinit ──
+   * Audio and RF are non-functional.  Skip the DSP/audio/RF pipeline;
+   * keep fault overlay, watchdog, power management, and CAT/CDC alive so
+   * the flash tool and remote diagnostics still work over USB. */
   if (HW_Fault_IsCritical()) {
     static uint32_t s_crit_disp_ms = 0U;
+    static uint32_t s_crit_cat_ms  = 0U;
     uint32_t now_c = HAL_GetTick();
     if ((now_c - s_crit_disp_ms) >= 500U) {
       s_crit_disp_ms = now_c;
@@ -842,6 +904,12 @@ void CSDR_Loop(void)
     RuntimeDiag_ServiceSlow(now_c);
     RuntimeDiag_WatchdogRefreshIfHealthy(now_c);
     PWR_Poll();
+    FlashProto_Process();
+    if ((now_c - s_crit_cat_ms) >= 10U) {
+      s_crit_cat_ms = now_c;
+      CAT_Process(&g_cat);
+    }
+    CAT_FlushTX(&g_cat);
     return;
   }
 
@@ -1459,7 +1527,8 @@ static void csdr_handle_keys(void)
         g_sdr.volume, (uint8_t)g_sdr.mic_gain, (uint8_t)g_sdr.digi_gain,
         g_sdr.squelch, (uint32_t)g_sdr.step,
         g_sdr.att_db, g_sdr.band_idx, (uint8_t)g_sdr.mode,
-        g_sdr.usb_mode, SDR_UI_GetSpecZoom(), menu_apply_cb);
+        g_sdr.usb_mode, SDR_UI_GetSpecZoom(),
+        g_sdr.ext_alc_on, g_sdr.tx_power, g_sdr.pa_watts, menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
   }
@@ -1715,10 +1784,17 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m)
 
 static void menu_apply_cb(void)
 {
-  bool agc, nb, nr; int16_t rit;
-  uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom; uint32_t step;
+  bool agc, nb, nr, ext_alc; int16_t rit;
+  uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr; uint32_t step;
   Menu_SaveToSDR(&g_menu, &agc, &nb, &nr, &rit,
-                  &vol, &mic, &digi, &sq, &step, &att, &band, &mode, &usb, &zoom);
+                  &vol, &mic, &digi, &sq, &step, &att, &band, &mode, &usb, &zoom,
+                  &ext_alc, &rfpwr);
+  g_sdr.ext_alc_on = ext_alc;
+  if (rfpwr != g_sdr.tx_power) {
+    g_sdr.tx_power = rfpwr;
+    g_sdr.display_dirty |= DIRTY_SBR;
+    if (g_sdr.tx_mode) g_sdr.cat_tx_dirty = true;
+  }
   g_sdr.mic_gain  = (int16_t)mic;
   g_sdr.digi_gain = (int16_t)digi;
   g_sdr.agc_fast = agc; g_sdr.nb_on = nb; g_sdr.nr_on = nr;
@@ -1995,13 +2071,15 @@ static void csdr_apply_tx(void)
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
   }
   /* Select gain source: digi_gain for digital modes, mic_gain for voice.
-   * Scale by tx_power (0-100%) and PA protection drive limit (100/75/50/25/0 %).
+   * Scale by tx_power (0-100%), PA protection stepped foldback (100/75/50/25/0 %),
+   * and external ALC continuous multiplier (30-100% when ext_alc_on).
    * Clamped to [0.01, 1.0]. */
   {
     bool digi = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL);
     float g = (float)(digi ? g_sdr.digi_gain : g_sdr.mic_gain) * (1.0f / 100.0f)
-              * ((float)g_sdr.tx_power        * (1.0f / 100.0f))
-              * ((float)PA_Protect_GetDriveLimit() * (1.0f / 100.0f));
+              * ((float)g_sdr.tx_power            * (1.0f / 100.0f))
+              * ((float)PA_Protect_GetDriveLimit() * (1.0f / 100.0f))
+              * ((float)PA_Protect_GetALCDrive()   * (1.0f / 100.0f));
     if (g < 0.01f) g = 0.01f;
     if (g > 1.0f)  g = 1.0f;
     g_dsp.tx.audio_gain = g;

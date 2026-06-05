@@ -12,13 +12,23 @@
   *      → Power policy     (drive_limit 100/75/50/25/0 %)
   *      → TX drive control (multiplied into g_dsp.tx.audio_gain via csdr_apply_tx)
   *
+  *  External ALC (PC1 / ADC2_INP11 — PA feedback voltage):
+  *      fast-attack / slow-release envelope detector
+  *      → continuous proportional reduction above 70% input
+  *      → PA_Protect_GetALCDrive() 0-100 multiplier (independent of stepped foldback)
+  *      → enabled by g_sdr.ext_alc_on; characteristics fixed (professional style):
+  *        Attack  τ ≈ 28 ms  (α=0.5,  20 ms tick)
+  *        Release τ ≈ 490 ms (α=0.04, 20 ms tick)
+  *        Threshold: 70% input  →  drive starts reducing
+  *        Maximum reduction:    →  30% minimum drive
+  *
   *  This module owns the protection decision only.
   *  It does NOT touch hardware directly — it sets flags consumed by csdr_apply_tx().
   *
   *  Integration checklist:
   *    1. PA_Protect_Init()     — call once in CSDR_Init(), after PA_OC_Init().
   *    2. PA_Protect_Update()   — call every 20 ms in CSDR_Loop (dedicated timer).
-  *    3. csdr_apply_tx()       — guard + PA_Protect_OnTxStart/Stop + drive limit.
+  *    3. csdr_apply_tx()       — guard + PA_Protect_OnTxStart/Stop + drive limits.
   *
   *  Protection does NOT depend on UI refresh rate.
   ******************************************************************************
@@ -102,11 +112,19 @@ void PA_Protect_OnTxStop(void);
 bool PA_Protect_IsTxAllowed(void);
 
 /**
-  * @brief Current drive limit percentage to apply to audio gain.
+  * @brief Stepped drive limit from PA-protect state machine.
   *        Returns 100 in NORMAL, 75/50/25 in FOLDBACK/LIMIT, 0 in TRIP/COOLDOWN.
   *        Multiply this into the computed audio_gain in csdr_apply_tx().
   */
 uint8_t PA_Protect_GetDriveLimit(void);
+
+/**
+  * @brief Continuous ALC drive limit from external PA feedback (PC1/ADC2_INP11).
+  *        Returns 100 when g_sdr.ext_alc_on=false or ALC input < 70% threshold.
+  *        Returns 30..100 proportional reduction when input exceeds threshold.
+  *        Multiply independently into csdr_apply_tx() alongside GetDriveLimit().
+  */
+uint8_t PA_Protect_GetALCDrive(void);
 
 /** @brief Current protection state (for UI display). */
 PA_State_t PA_Protect_GetState(void);

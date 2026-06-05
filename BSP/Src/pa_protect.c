@@ -26,9 +26,20 @@
 /* USER CODE END Header */
 
 #include "pa_protect.h"
-#include "pa_overcurrent.h"   /* PA_OC_ReadCurrent()                           */
+#include "pa_overcurrent.h"   /* PA_OC_ReadCurrent(), g_pa_oc.ina_ok           */
 #include "fsdr_analog.h"      /* g_analog: swr_x100 (SWR×100), temp_c (°C×10) */
 #include "csdr_app.h"         /* g_sdr: tx_mode, cat_tx_dirty, display_dirty   */
+#include "hw_fault.h"         /* HW_Fault_PASensorMissing()                    */
+
+/* ─── External ALC constants (fixed, professional-radio style) ──────────── */
+/* PC1 / ADC2_INP11: external PA feedback voltage, 0-100% of ADC range.
+ * Attack τ ≈ 28 ms  (α=0.5,  one 20 ms tick).
+ * Release τ ≈ 490 ms (α=0.04, one 20 ms tick).
+ * Reduction is proportional: threshold..100% input → 100..min_drive output. */
+#define ALC_THRESHOLD_PCT  70U    /* above 70% input → begin reducing drive   */
+#define ALC_MIN_DRIVE_PCT  30U    /* maximum reduction floor (30% drive left)  */
+#define ALC_ALPHA_ATK      0.5f   /* fast attack                               */
+#define ALC_ALPHA_REL      0.04f  /* slow release                              */
 
 /* ─── Default threshold configuration ───────────────────────────────────── */
 
@@ -62,6 +73,10 @@ static float s_filt_swr  = 100.0f;   /* swr_x100 units; 100 = SWR 1.00    */
 static float s_filt_temp = 200.0f;   /* temp_c (°C×10); 200 = 20.0°C      */
 static float s_filt_curr = 0.0f;     /* amperes                            */
 
+/* External ALC state */
+static float   s_alc_env       = 0.0f;   /* fast-attack / slow-release envelope (%) */
+static uint8_t s_alc_drive_pct = 100U;   /* computed continuous drive multiplier     */
+
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Internal helpers
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -87,6 +102,15 @@ static void update_filters(void)
      * in pa_overcurrent.c (< 140 µs response), so this filter can afford
      * to be slightly slower while still catching sustained overload. */
     s_filt_curr = s_filt_curr * 0.7f + new_curr  * 0.3f;
+
+    /* External ALC: fast-attack / slow-release envelope detector.
+     * Runs unconditionally so the envelope is accurate when TX starts.
+     * When ext_alc_on=false the envelope slowly decays to zero. */
+    {
+        float new_alc = g_sdr.ext_alc_on ? (float)g_analog.alc_percent : 0.0f;
+        float alpha   = (new_alc > s_alc_env) ? ALC_ALPHA_ATK : ALC_ALPHA_REL;
+        s_alc_env     = s_alc_env + alpha * (new_alc - s_alc_env);
+    }
 }
 
 /* Re-apply audio gain without toggling the T/R relay.
@@ -141,6 +165,10 @@ void PA_Protect_OnTxStart(void)
 
     /* Clamp seeded SWR (RX measurement may legitimately be 9999) */
     if (s_filt_swr > 2000.0f) s_filt_swr = 2000.0f;
+
+    /* Seed ALC envelope from current PA feedback so there is no step-change
+     * in drive at TX onset when ALC conditions are already non-zero. */
+    s_alc_env = (float)g_analog.alc_percent;
 }
 
 void PA_Protect_OnTxStop(void)
@@ -181,6 +209,26 @@ void PA_Protect_Update(void)
     /* Filters run unconditionally — keeps thermal/SWR state warm during RX
      * so values are accurate the instant TX starts. */
     update_filters();
+
+    /* ── External ALC: compute continuous drive multiplier ──────────────── */
+    /* Runs regardless of TX/RX state so the gain is correct the instant
+     * csdr_apply_tx() is called after a TX start. */
+    {
+        uint8_t new_alc_drive;
+        if (g_sdr.ext_alc_on && s_alc_env >= (float)ALC_THRESHOLD_PCT) {
+            float range    = (float)(100U - ALC_THRESHOLD_PCT);
+            float excess   = (s_alc_env - (float)ALC_THRESHOLD_PCT) / range;
+            if (excess > 1.0f) excess = 1.0f;
+            float drive    = 100.0f - excess * (float)(100U - ALC_MIN_DRIVE_PCT);
+            new_alc_drive  = (uint8_t)drive;
+        } else {
+            new_alc_drive = 100U;
+        }
+        if (new_alc_drive != s_alc_drive_pct) {
+            s_alc_drive_pct = new_alc_drive;
+            request_gain_reapply();   /* triggers csdr_apply_tx() gain recompute */
+        }
+    }
 
     /* ── COOLDOWN: checked regardless of TX state ───────────────────────── */
     if (s_state == PA_STATE_COOLDOWN) {
@@ -308,11 +356,16 @@ void PA_Protect_Update(void)
 
 /* ─── Accessors ─────────────────────────────────────────────────────────── */
 
-PA_State_t PA_Protect_GetState(void)      { return s_state;     }
-PA_Fault_t PA_Protect_GetFault(void)      { return s_fault;     }
-uint8_t    PA_Protect_GetDriveLimit(void) { return s_drive_pct; }
+PA_State_t PA_Protect_GetState(void)      { return s_state;         }
+PA_Fault_t PA_Protect_GetFault(void)      { return s_fault;         }
+uint8_t    PA_Protect_GetDriveLimit(void) { return s_drive_pct;     }
+uint8_t    PA_Protect_GetALCDrive(void)   { return s_alc_drive_pct; }
 
 bool PA_Protect_IsTxAllowed(void)
 {
+    /* Block TX if any PA protection sensor is absent: operating without
+     * overcurrent or thermal protection risks hardware damage. */
+    if (HW_Fault_PASensorMissing()) return false;
+
     return s_state != PA_STATE_TRIP && s_state != PA_STATE_COOLDOWN;
 }

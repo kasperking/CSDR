@@ -1,6 +1,6 @@
 {
   "lcd_controller": "ST7789",
-  "lcd_orientation": "LANDSCAPE_BGR",
+  "lcd_orientation": "LANDSCAPE_RGB",
   "fmc_bus_width": "8BIT",
   "gpio_speed": "MEDIUM",
   "board_type": "TEST",
@@ -8,5 +8,6 @@
   "hse_source": "CRYSTAL",
   "hse_freq_hz": "25000000",
   "storage_type": "W25Q_NOR",
-  "w25q_model": "W25Q128"
+  "w25q_model": "W25Q64",
+  "spi_flash_mode": "MODE3"
 }

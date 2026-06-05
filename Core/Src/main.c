@@ -753,8 +753,8 @@ static void MX_SPI3_Init(void)
   hspi3.Init.Mode = SPI_MODE_MASTER;
   hspi3.Init.Direction = SPI_DIRECTION_2LINES;
   hspi3.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi3.Init.CLKPolarity = SPI_POLARITY_HIGH;  /* W25Q MODE3 (hw_config) */
+  hspi3.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi3.Init.NSS = SPI_NSS_SOFT;
   hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
   hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
@@ -1159,10 +1159,14 @@ static void MX_GPIO_Init(void)
   HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PA1, SYSCFG_SWITCH_PA1_CLOSE);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-  /* PW_HOLD must be driven HIGH immediately after GPIO init.
-   * CubeMX defaults outputs to LOW; a brief LOW on PW_HOLD before
-   * PWR_Init() runs could drop the soft-power latch. */
+  /* PW_HOLD (PB1): CubeMX nhóm nhầm vào block INPUT trên GPIOD.
+   * Config lại đúng: OUTPUT_PP, initial HIGH để giữ latch nguồn. */
+  GPIO_InitStruct.Pin   = PW_HOLD_Pin;
+  GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull  = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_WritePin(PW_HOLD_GPIO_Port, PW_HOLD_Pin, GPIO_PIN_SET);
+  HAL_GPIO_Init(PW_HOLD_GPIO_Port, &GPIO_InitStruct);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 

@@ -63,7 +63,7 @@ void PWR_Init(void)
 void PWR_Hold(void)
 {
   /* USER CODE BEGIN PWR_Hold_0 */
-  HAL_GPIO_WritePin(PW_GPIO_Port, PW_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(PW_HOLD_GPIO_Port, PW_HOLD_Pin, GPIO_PIN_SET);
   s_pwr_held = true;
   /* USER CODE END PWR_Hold_0 */
 }
@@ -71,13 +71,8 @@ void PWR_Hold(void)
 void PWR_Shutdown(void)
 {
   /* USER CODE BEGIN PWR_Shutdown_0 */
-  /* Báo MCU sắp tắt */
   HAL_GPIO_WritePin(PW_HOLD_GPIO_Port, PW_HOLD_Pin, GPIO_PIN_RESET);
-  HAL_Delay(100U);
-  /* Tắt nguồn */
-  HAL_GPIO_WritePin(PW_GPIO_Port, PW_Pin, GPIO_PIN_RESET);
   s_pwr_held = false;
-  /* MCU sẽ reset sau khi nguồn mất */
   while (1) { __WFI(); }
   /* USER CODE END PWR_Shutdown_0 */
 }
@@ -88,20 +83,19 @@ bool PWR_IsHeld(void)
 }
 
 /**
-  * @brief  Gọi mỗi 100ms: phát hiện nhấn giữ ENC_SW để tắt nguồn.
+  * @brief  Gọi mỗi 100ms: phát hiện nhấn giữ PW để tắt nguồn.
   *         Nhấn giữ > POWER_OFF_HOLD_MS → kích hoạt shutdown sequence.
   */
 void PWR_Poll(void)
 {
   /* USER CODE BEGIN PWR_Poll_0 */
-  bool btn_pressed = (HAL_GPIO_ReadPin(ENC_SW_GPIO_Port, ENC_SW_Pin) == GPIO_PIN_RESET);
+  bool btn_pressed = (HAL_GPIO_ReadPin(PW_GPIO_Port, PW_Pin) == GPIO_PIN_RESET);
   uint32_t now = HAL_GetTick();
 
   if (btn_pressed) {
     if (s_btn_down_tick == 0U) { s_btn_down_tick = now; }
     else if ((now - s_btn_down_tick) >= POWER_OFF_HOLD_MS) {
-      /* Long press → shutdown */
-      PWR_Shutdown();
+      CSDR_PrepareShutdown();
     }
   } else {
     s_btn_down_tick = 0U;

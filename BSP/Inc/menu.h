@@ -50,7 +50,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      18U   /* 14 settings + Span + Diagnostics + Calibration + SWR Scan */
+#define MENU_ITEM_COUNT      19U   /* 14 settings + Span + Ext ALC + RF Power + Calibration + SWR Scan */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px                            */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -84,6 +84,7 @@ typedef struct {
   const char  **enum_strs;     /*!< String options (ENUM type)   */
   uint8_t      enum_count;     /*!< Number of enum options       */
   void        (*on_change)(void);  /*!< Callback khi thay đổi   */
+  const char  *suffix;             /*!< Unit appended to INT value, e.g. "W", "%" */
 } MenuItem_t;
 
 typedef struct {
@@ -164,7 +165,9 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t vol, uint8_t mic_gain, uint8_t digi_gain,
                        uint8_t sq, uint32_t step,
                        uint8_t att, uint8_t band, uint8_t mode,
-                       uint8_t usb_mode, uint8_t zoom, MenuApplyFn apply_cb);
+                       uint8_t usb_mode, uint8_t zoom,
+                       bool ext_alc, uint8_t rf_power_pct, uint8_t pa_watts,
+                       MenuApplyFn apply_cb);
 
 /**
   * @brief  Đọc giá trị từ menu ra SDR state sau khi đóng.
@@ -174,7 +177,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *vol, uint8_t *mic_gain, uint8_t *digi_gain,
                      uint8_t *sq, uint32_t *step,
                      uint8_t *att, uint8_t *band, uint8_t *mode,
-                     uint8_t *usb_mode, uint8_t *zoom);
+                     uint8_t *usb_mode, uint8_t *zoom,
+                     bool *ext_alc, uint8_t *rf_power);
 
 #ifdef __cplusplus
 }

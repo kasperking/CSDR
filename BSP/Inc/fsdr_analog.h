@@ -24,21 +24,15 @@ extern "C" {
 
 /* ══════════════════════════════════════════════════════════
  *  POWER MANAGEMENT
- *  PD12 PW      – Power latch (drive HIGH = keep ON)
- *  PD13 PW_HOLD – Power-hold signal (drive HIGH = MCU running)
- *
- *  IMPORTANT: IOC currently configures PD12/PD13 as GPIO_Input (PULLUP).
- *  If the power latch requires the MCU to actively drive these pins,
- *  reconfigure them as GPIO_Output in CubeMX and regenerate.
+ *  PD12 PW      – Power button input (INPUT_PULLUP; LOW = button held)
+ *  PB1  PW_HOLD – Power latch output (drive HIGH = keep ON, LOW = cut power)
  *
  *  Sequence bật nguồn:
- *   1. Nguồn vào → PW bị pull-up → MCU bắt đầu chạy
- *   2. MCU set PW=HIGH (giữ nguồn qua transistor)
- *   3. MCU init xong → PW_HOLD=HIGH
+ *   1. User nhấn PW → nguồn vào → MCU bắt đầu chạy
+ *   2. MCU set PW_HOLD=HIGH → latch giữ nguồn dù nhả nút
  *
- *  Sequence tắt nguồn mềm (nhấn giữ ENC_SW):
- *   1. PW_HOLD=LOW
- *   2. PW=LOW → nguồn tắt
+ *  Sequence tắt nguồn mềm (nhấn giữ PW > POWER_OFF_HOLD_MS):
+ *   1. PW_HOLD=LOW → nguồn tắt
  * ══════════════════════════════════════════════════════════ */
 
 void PWR_Init(void);                     /* Set PW=HIGH, PW_HOLD=HIGH         */

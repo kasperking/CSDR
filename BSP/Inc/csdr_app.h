@@ -119,6 +119,8 @@ typedef struct {
   bool        cat_rit_dirty;  /* RT/RC/RU/RD/IS: recompute nco_if = if_shift_hz + (rit_on ? rit_hz : 0) */
   /* RF front-end AGC (PE4302) */
   bool        rf_agc_on;     /*!< Automatic PE4302 RF attenuator control (overload prevention) */
+  /* External PA ALC feedback (PC1 / ADC2_INP11) */
+  bool        ext_alc_on;   /*!< Enable external ALC drive reduction from PA feedback voltage  */
 } SDR_State_t;
 
 extern SDR_State_t g_sdr;
@@ -173,6 +175,8 @@ void CSDR_SysTickCallback(void);
 
 void CSDR_CDC_Receive(uint8_t *buf, uint32_t len);
 void CSDR_CDC_ResetCAT(void);
+
+void CSDR_PrepareShutdown(void);   /*!< Save settings + power-off screen, then cut power */
 
 #ifdef __cplusplus
 }

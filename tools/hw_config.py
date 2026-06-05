@@ -140,6 +140,16 @@ SETTINGS = OrderedDict([
         "parent":       "storage_type",   # only shown when parent matches
         "parent_val":   "W25Q_NOR",
     }),
+    ("spi_flash_mode", {
+        "label":    "  W25Q SPI Mode",
+        "choices":  OrderedDict([
+            ("MODE3", "Mode 3  CPOL=1 CPHA=1  (recommended — fixes 1-bit MISO shift on most boards)"),
+            ("MODE0", "Mode 0  CPOL=0 CPHA=0  (standard default)"),
+        ]),
+        "default":  "MODE3",
+        "parent":   "storage_type",
+        "parent_val": "W25Q_NOR",
+    }),
 ])
 
 
@@ -764,6 +774,38 @@ def patch_main_clock(r):
         fh.write(text)
 
 
+def patch_spi_flash_mode(cfg):
+    """Patch CLKPolarity / CLKPhase for SPI3 (flash) in Core/Src/main.c."""
+    if cfg.get("storage_type") != "W25Q_NOR":
+        return
+    mode = cfg.get("spi_flash_mode", "MODE3")
+    if mode == "MODE3":
+        polarity = "SPI_POLARITY_HIGH"
+        phase    = "SPI_PHASE_2EDGE"
+    else:  # MODE0
+        polarity = "SPI_POLARITY_LOW"
+        phase    = "SPI_PHASE_1EDGE"
+
+    if not os.path.isfile(MAIN_C):
+        print(f"  [!] {MAIN_C} not found — skipping SPI mode patch.", file=sys.stderr)
+        return
+
+    with open(MAIN_C, encoding="utf-8") as fh:
+        text = fh.read()
+
+    text = _sub1(
+        r"(hspi3\.Init\.CLKPolarity\s*=\s*)SPI_POLARITY_\w+;[^\n]*",
+        rf"\g<1>{polarity};  /* W25Q {mode} (hw_config) */",
+        text, "main.c CLKPolarity")
+    text = _sub1(
+        r"(hspi3\.Init\.CLKPhase\s*=\s*)SPI_PHASE_\w+;[^\n]*",
+        rf"\g<1>{phase};",
+        text, "main.c CLKPhase")
+
+    with open(MAIN_C, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
 def patch_hse_value(hse_hz):
     """Patch HSE_VALUE literals in stm32h7xx_hal_conf.h and system_stm32h7xx.c."""
     hz = int(hse_hz)
@@ -868,6 +910,7 @@ def apply_config(cfg):
 
     patch_main_clock(r)
     patch_hse_value(r["hse_hz"])
+    patch_spi_flash_mode(cfg)
     save_state(cfg)
 
     t  = r["timing"]
@@ -917,6 +960,9 @@ def _print_storage_summary(st, cfg):
         if st["supports_wf"]:  flags.append("SUPPORTS_WATERFALL_CACHE")
         if flags:
             print(f"            flags: {' '.join(flags)}")
+        spi_mode = cfg.get("spi_flash_mode", "MODE3")
+        print(f"            SPI {spi_mode}  (CPOL={'1' if spi_mode == 'MODE3' else '0'}"
+              f" CPHA={'1' if spi_mode == 'MODE3' else '0'})")
     elif st["stype"] == "NONE":
         print("  NVM     : None")
     else:

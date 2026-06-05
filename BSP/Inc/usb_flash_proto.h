@@ -57,6 +57,8 @@ extern "C" {
 #define FP_CMD_SECTOR_ERASE     0x03U
 #define FP_CMD_CHIP_ID          0x04U
 #define FP_CMD_BLOCK64_ERASE    0x05U
+#define FP_CMD_READ_SR1         0x06U   /* Read STATUS1 register (1-byte response) */
+#define FP_CMD_WRITE_SR1        0x07U   /* Write STATUS1 — 1-byte payload (new SR value) */
 
 /* ── Status codes ───────────────────────────────────────────────────────── */
 #define FP_STATUS_OK            0x00U

@@ -160,6 +160,28 @@ static void execute(void)
         build_resp((r == HAL_OK) ? FP_STATUS_OK : FP_STATUS_ERR_FLASH, NULL, 0U);
         break;
 
+    /* ── READ STATUS1 ────────────────────────────────────────────────── */
+    case FP_CMD_READ_SR1: {
+        uint8_t sr = 0U;
+        r = W25Q_ReadSR1(&g_flash, &sr);
+        if (r == HAL_OK) {
+            build_resp(FP_STATUS_OK, &sr, 1U);
+        } else {
+            build_resp(FP_STATUS_ERR_FLASH, NULL, 0U);
+        }
+        break;
+    }
+
+    /* ── WRITE STATUS1 ───────────────────────────────────────────────── */
+    case FP_CMD_WRITE_SR1:
+        if (s_data_len < 1U) {
+            build_resp(FP_STATUS_ERR_LEN, NULL, 0U);
+            break;
+        }
+        r = W25Q_WriteSR1(&g_flash, s_data[0]);
+        build_resp((r == HAL_OK) ? FP_STATUS_OK : FP_STATUS_ERR_FLASH, NULL, 0U);
+        break;
+
     default:
         build_resp(FP_STATUS_ERR_CMD, NULL, 0U);
         break;
@@ -210,8 +232,8 @@ void FlashProto_Receive(const uint8_t *data, uint16_t len)
                 s_data_len  = ((uint16_t)s_hdr[5] << 8) | s_hdr[6];
                 s_data_cnt  = 0U;
 
-                /* Only WRITE has a payload; everything else is header-only. */
-                if (cmd == FP_CMD_WRITE && s_data_len > 0U) {
+                /* WRITE and WRITE_SR1 carry a payload; everything else is header-only. */
+                if ((cmd == FP_CMD_WRITE || cmd == FP_CMD_WRITE_SR1) && s_data_len > 0U) {
                     if (s_data_len > FP_MAX_DATA_LEN) {
                         reset_assembler(); /* reject oversized write */
                     } else {

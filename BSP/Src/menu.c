@@ -29,7 +29,8 @@ Menu_Handle_t g_menu;
 static int32_t _agc_val, _nb_val, _nr_val, _rit_val;
 static int32_t _vol_val, _mic_val, _digi_val, _sq_val, _step_val, _att_val;
 static int32_t _band_val, _mode_val, _bl_val, _usb_val;
-static int32_t _zoom_val;
+static int32_t _zoom_val, _alc_val, _rfpwr_val;
+static uint8_t s_pa_watts = 0U;   /* cached for W↔% conversion in SaveToSDR */
 
 static const char *agc_strs[]  = { "SLOW", "FAST" };
 static const char *onoff_strs[]= { "OFF",  "ON"   };
@@ -64,7 +65,8 @@ static void render_item(Menu_Handle_t *m, uint8_t idx, uint16_t abs_y)
   if (it->type == MENU_TYPE_ACTION) {
     snprintf(val, sizeof(val), ">> RUN");
   } else if (it->type == MENU_TYPE_INT) {
-    snprintf(val, sizeof(val), "%ld", (long)*it->value_ptr);
+    snprintf(val, sizeof(val), "%ld%s",
+             (long)*it->value_ptr, it->suffix ? it->suffix : "");
   } else {
     int32_t vi = *it->value_ptr;
     if (vi < 0) vi = 0;
@@ -128,9 +130,10 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[12] = (MenuItem_t){ "Backlight", MENU_TYPE_INT, 0, 100,10, &_bl_val,  NULL, 0, NULL };
   m->items[13] = (MenuItem_t){ "USB",       MENU_TYPE_ENUM, 0,0,0, &_usb_val,  usb_strs,  3U,  NULL };
   m->items[14] = (MenuItem_t){ "Span",      MENU_TYPE_ENUM, 0,0,0, &_zoom_val, zoom_strs, 4U,  NULL };
-  m->items[15] = (MenuItem_t){ "Diagnostics",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
-  m->items[16] = (MenuItem_t){ "Calibration",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
-  m->items[17] = (MenuItem_t){ "SWR Scan",     MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
+  m->items[15] = (MenuItem_t){ "Calibration",  MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
+  m->items[16] = (MenuItem_t){ "SWR Scan",     MENU_TYPE_ACTION, 0,0,0, NULL, NULL, 0U, NULL };
+  m->items[17] = (MenuItem_t){ "Ext ALC",      MENU_TYPE_ENUM, 0,0,0, &_alc_val,   onoff_strs, 2U, NULL };
+  m->items[18] = (MenuItem_t){ "RF Power",      MENU_TYPE_INT,  5,100,5, &_rfpwr_val, NULL,      0U, NULL, "%" };
   /* USER CODE END Menu_Init_0 */
 }
 
@@ -261,10 +264,11 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t vol, uint8_t mic_gain, uint8_t digi_gain,
                        uint8_t sq, uint32_t step,
                        uint8_t att, uint8_t band, uint8_t mode,
-                       uint8_t usb_mode, uint8_t zoom, MenuApplyFn apply_cb)
+                       uint8_t usb_mode, uint8_t zoom,
+                       bool ext_alc, uint8_t rf_power_pct, uint8_t pa_watts,
+                       MenuApplyFn apply_cb)
 {
   /* USER CODE BEGIN Menu_LoadFromSDR_0 */
-  (void)m;
   static const uint32_t sv[6] = {1,10,100,1000,10000,100000};
   _agc_val  = agc_fast ? 1 : 0;
   _nb_val   = nb  ? 1 : 0;
@@ -281,6 +285,29 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _mode_val = (int32_t)mode;
   _usb_val  = (int32_t)usb_mode;
   _zoom_val = (int32_t)zoom;
+  _alc_val  = ext_alc ? 1 : 0;
+
+  /* RF Power item: show Watts when pa_watts configured, else percent */
+  s_pa_watts = pa_watts;
+  if (pa_watts > 0U) {
+    uint8_t pct = (rf_power_pct > 0U && rf_power_pct <= 100U) ? rf_power_pct : 100U;
+    int32_t w   = (int32_t)((uint32_t)pct * pa_watts / 100U);
+    if (w < 1) w = 1;
+    if (w > (int32_t)pa_watts) w = (int32_t)pa_watts;
+    _rfpwr_val            = w;
+    m->items[18].min      = 1;
+    m->items[18].max      = (int32_t)pa_watts;
+    m->items[18].step     = (pa_watts >= 50U) ? 5 : 1;
+    m->items[18].suffix   = "W";
+  } else {
+    /* No PA configured: keep % */
+    _rfpwr_val            = (rf_power_pct >= 5U && rf_power_pct <= 100U) ? (int32_t)rf_power_pct : 100;
+    m->items[18].min      = 5;
+    m->items[18].max      = 100;
+    m->items[18].step     = 5;
+    m->items[18].suffix   = "%";
+  }
+
   s_apply_cb = apply_cb;
   /* USER CODE END Menu_LoadFromSDR_0 */
 }
@@ -290,7 +317,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *vol, uint8_t *mic_gain, uint8_t *digi_gain,
                      uint8_t *sq, uint32_t *step,
                      uint8_t *att, uint8_t *band, uint8_t *mode,
-                     uint8_t *usb_mode, uint8_t *zoom)
+                     uint8_t *usb_mode, uint8_t *zoom,
+                     bool *ext_alc, uint8_t *rf_power)
 {
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
@@ -309,6 +337,17 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *mode     = (uint8_t)_mode_val;
   *usb_mode = (uint8_t)_usb_val;
   *zoom     = (uint8_t)(_zoom_val >= 0 && _zoom_val < 4 ? _zoom_val : 0);
+  *ext_alc  = (_alc_val  != 0);
+  if (s_pa_watts > 0U) {
+    /* convert Watts back to percent */
+    int32_t w = (_rfpwr_val >= 1) ? _rfpwr_val : 1;
+    uint32_t pct = (uint32_t)w * 100U / s_pa_watts;
+    if (pct < 1U)   pct = 1U;
+    if (pct > 100U) pct = 100U;
+    *rf_power = (uint8_t)pct;
+  } else {
+    *rf_power = (uint8_t)(_rfpwr_val >= 5 && _rfpwr_val <= 100 ? _rfpwr_val : 100);
+  }
   /* USER CODE END Menu_SaveToSDR_0 */
 }
 

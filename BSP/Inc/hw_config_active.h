@@ -1,16 +1,16 @@
 /* hw_config_active.h -- CSDR Hardware Configuration (auto-generated)
  * DO NOT EDIT -- regenerate with:  python tools/hw_config.py
  *
- * Generated  : 2026-06-01 00:29:44
+ * Generated  : 2026-06-05 10:37:57
  * Controller : ST7789
- * Orientation: Landscape BGR
+ * Orientation: Landscape RGB
  * FMC width  : 8-bit
  * GPIO speed : MEDIUM
  * Board      : Test board
  * HSE        : 25.000 MHz  CRYSTAL
  * SYSCLK     : 480 MHz  (PLL1 M=5 N=192 P=2)
  * SAI1       : 12.2881 MHz  (PLL2 M=2 N=58 P=59)
- * Storage    : W25Q NOR  W25Q128  128 Mbit
+ * Storage    : W25Q NOR  W25Q64  64 Mbit
  */
 
 #ifndef HW_CONFIG_ACTIVE_H
@@ -25,8 +25,7 @@
 #define LCD_H               240U
 
 /* -- MADCTL (register 0x36) ----------------------------------------------
- * MX|MV           landscape, RGB filter
- * BGR=0: panel has RGB sub-pixels — BGR=1 was swapping R↔B incorrectly  */
+ * MX|MV          landscape, RGB filter                                */
 #define HW_LCD_MADCTL       0x60U
 
 /* -- FMC SRAM timing (AHB cycles, asynchronous mode A) ------------------
@@ -65,7 +64,7 @@
 #define HW_PLL2_VCIRANGE    RCC_PLL2VCIRANGE_3
 
 /* -- External NVM storage -----------------------------------------------
- * Selected : W25Q NOR Flash  W25Q128  128 Mbit (16 MB)
+ * Selected : W25Q NOR Flash  W25Q64  64 Mbit (8 MB)
  *
  * Use #if HW_STORAGE_W25Q / HW_STORAGE_NONE etc. for conditional
  * compilation.  Future variants (FRAM, QSPI_NOR, NAND, SD) will use
@@ -94,8 +93,8 @@
 #define HW_SUPPORTS_WATERFALL_CACHE  1
 
 /* W25Q geometry  (valid only when HW_STORAGE_W25Q == 1) */
-#define HW_W25Q_CAPACITY_MBIT        128U
-#define HW_W25Q_CAPACITY_BYTES       (128UL * 131072UL)
+#define HW_W25Q_CAPACITY_MBIT        64U
+#define HW_W25Q_CAPACITY_BYTES       (64UL * 131072UL)
 #define HW_W25Q_PAGE_SIZE            256U
 #define HW_W25Q_SECTOR_SIZE          4096U
 #define HW_W25Q_BLOCK32_SIZE         32768U

@@ -238,7 +238,7 @@ static void wf_lut_init(void)
   }
   for (int i = 0; i <= 255; i++) {
     float n = (float)i / 255.0f;
-    float ng = powf(n, 1.3f);
+    float ng = (n > 0.0f) ? expf(1.3f * logf(n)) : 0.0f;
     float pos = ng * 10.0f;
     int lo = (int)pos;
     if (lo >= 10) {

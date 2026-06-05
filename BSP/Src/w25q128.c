@@ -20,8 +20,22 @@ W25Q_Handle_t g_flash;
 static HAL_StatusTypeDef spi_tx(W25Q_Handle_t *d, const uint8_t *b, uint16_t n)
 { return HAL_SPI_Transmit(d->hspi,(uint8_t*)b,n,W25Q_SPI_TIMEOUT_MS); }
 
+/* STM32H7 SPI in 2LINES full-duplex: HAL_SPI_Transmit accumulates one dirty
+ * byte in RXFIFO per call (MISO captured during TX is not discarded by HAL).
+ * Drain before every HAL_SPI_Receive so we read real flash data, not stale
+ * RXFIFO bytes from prior transmits. */
+static inline void spi_rx_flush(W25Q_Handle_t *d)
+{
+    while ((d->hspi->Instance->SR & SPI_SR_RXP) != 0U) {
+        (void)(*(volatile uint8_t *)&d->hspi->Instance->RXDR);
+    }
+}
+
 static HAL_StatusTypeDef spi_rx(W25Q_Handle_t *d, uint8_t *b, uint16_t n)
-{ return HAL_SPI_Receive(d->hspi,b,n,W25Q_SPI_TIMEOUT_MS); }
+{
+    spi_rx_flush(d);
+    return HAL_SPI_Receive(d->hspi,b,n,W25Q_SPI_TIMEOUT_MS);
+}
 
 static HAL_StatusTypeDef __attribute__((unused)) spi_txrx(W25Q_Handle_t *d,
   const uint8_t *tx, uint8_t *rx, uint16_t n)
@@ -67,14 +81,19 @@ HAL_StatusTypeDef W25Q_Init(W25Q_Handle_t *dev, SPI_HandleTypeDef *hspi,
   w25q_cmd(dev, W25Q_CMD_RELEASE_PD);
   HAL_Delay(1U);
 
-  /* Read JEDEC ID */
+  /* Read JEDEC ID — accept any non-trivial response (0x000000 / 0xFFFFFF = no chip) */
   uint32_t id = 0U;
   if (W25Q_ReadID(dev, &id) == HAL_OK) {
     dev->jedec_id = id;
-    /* W25Q128: 0xEF4018 */
-    dev->present = ((id & 0xFFFF00U) == 0xEF4000U);
+    dev->present = (id != 0x000000U && id != 0xFFFFFFU);
   }
-  return dev->present ? HAL_OK : HAL_ERROR;
+
+  if (!dev->present) return HAL_ERROR;
+
+  /* Clear status register to remove any write protection (BP bits) */
+  W25Q_WriteSR1(dev, 0x00U);
+
+  return HAL_OK;
   /* USER CODE END W25Q_Init_0 */
 }
 
@@ -248,4 +267,27 @@ HAL_StatusTypeDef Flash_ReadLogoScanline(W25Q_Handle_t *dev,
 }
 
 /* USER CODE BEGIN 1 */
+
+HAL_StatusTypeDef W25Q_ReadSR1(W25Q_Handle_t *dev, uint8_t *sr)
+{
+  uint8_t cmd = W25Q_CMD_READ_STATUS1;
+  *sr = 0U;
+  _CS_L(dev);
+  HAL_StatusTypeDef r = spi_tx(dev, &cmd, 1U);
+  if (r == HAL_OK) r = spi_rx(dev, sr, 1U);
+  _CS_H(dev);
+  return r;
+}
+
+HAL_StatusTypeDef W25Q_WriteSR1(W25Q_Handle_t *dev, uint8_t new_sr)
+{
+  HAL_StatusTypeDef r = W25Q_WaitBusy(dev, 20U);
+  if (r != HAL_OK) return r;
+  r = w25q_write_enable(dev);
+  if (r != HAL_OK) return r;
+  uint8_t cmd[2] = { W25Q_CMD_WRITE_STATUS, new_sr };
+  _CS_L(dev); spi_tx(dev, cmd, 2U); _CS_H(dev);
+  return W25Q_WaitBusy(dev, 50U);
+}
+
 /* USER CODE END 1 */
