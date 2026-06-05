@@ -80,6 +80,16 @@ bool              SPI_Assets_IsLoaded(SpiAssetId_t id);
 /** Returns pointer to RAM buffer for a loaded asset, NULL if not loaded. */
 void             *SPI_Assets_GetBuf(SpiAssetId_t id);
 
+/* ── Debug diagnostics ──────────────────────────────────────────────────── *
+ * Inspect in debugger after SPI_Assets_LoadAll() returns:                   *
+ *   dbg_spi_assets_loaded   bitmask — bit N set = asset N loaded OK         *
+ *   dbg_spi_assets_probe[N] probe word read from sector N                   *
+ *     0xFFFFFFFF = blank (write-assets not yet run)                         *
+ *     0x00000000 = font sector programmed (space glyph first)               *
+ *     0xDEAD0000 = SPI read error during probe                              */
+extern uint32_t dbg_spi_assets_loaded;
+extern uint32_t dbg_spi_assets_probe[SPI_ASSET_COUNT];
+
 #ifdef __cplusplus
 }
 #endif
