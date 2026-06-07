@@ -27,6 +27,8 @@
  *  │  0x03 SECTOR_ERASE addr 0x00 0x00   → 0xFF 0x00 0x00 0x00  (4 KB)   │
  *  │  0x04 CHIP_ID     0x00 0x00 0x00 0x00 0x00 → 0xFF 0x00 0x00 0x04 id[4]│
  *  │  0x05 BLOCK64_ERASE addr 0x00 0x00  → 0xFF 0x00 0x00 0x00  (64 KB)  │
+ *  │  0x06 READ_SR1    0x00 0x00 0x00 0x00 0x00 → 0xFF 0x00 0x00 0x01 sr  │
+ *  │  0x07 WRITE_SR1   0x00 0x00 0x00 0x00 0x01 new_sr → 0xFF 0x00 0x00 0x00│
  *  ├──────────────────────────────────────────────────────────────────────┤
  *  │ STATUS CODES                                                         │
  *  │  0x00 OK  0x01 ERR_FLASH  0x02 ERR_ADDR  0x03 ERR_LEN  0x04 ERR_CMD │
@@ -92,11 +94,12 @@ void FlashProto_Process(void);
 bool FlashProto_IsActive(void);
 
 /* ── Diagnostics ────────────────────────────────────────────────────────── */
-extern volatile uint32_t dbg_fp_rx_frames;   /*!< complete frames received  */
-extern volatile uint32_t dbg_fp_tx_frames;   /*!< responses sent            */
-extern volatile uint32_t dbg_fp_err_frames;  /*!< frames that returned error*/
-extern volatile uint32_t dbg_fp_last_cmd;    /*!< last CMD byte executed    */
-extern volatile uint32_t dbg_fp_last_status; /*!< last STATUS returned      */
+extern volatile uint32_t dbg_fp_rx_frames;   /*!< complete frames received          */
+extern volatile uint32_t dbg_fp_tx_frames;   /*!< responses successfully sent        */
+extern volatile uint32_t dbg_fp_tx_drop;     /*!< responses dropped (CDC busy >50ms) */
+extern volatile uint32_t dbg_fp_err_frames;  /*!< frames that returned error         */
+extern volatile uint32_t dbg_fp_last_cmd;    /*!< last CMD byte executed             */
+extern volatile uint32_t dbg_fp_last_status; /*!< last STATUS returned               */
 
 #ifdef __cplusplus
 }

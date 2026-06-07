@@ -2267,3 +2267,42 @@ void SDR_UI_GetSpecSkipStats(uint32_t *skip_hits, uint32_t *draw_hits)
 /* ── Stub ────────────────────────────────────────────────────────────────── */
 void SDR_UI_DrawFuncBar(const SDR_UI_State_t *ui)
 { (void)ui; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+ *  SDR_UI_DrawCWText  –  INFO strip (Y=120..144, 24 px × LCD_W)
+ *
+ *  Renders decoded CW text in amber (UI_MODE_CW = 0x07FF) centred vertically
+ *  in the 24-row INFO zone, using Font6x8 (6×8 px).  Right-fills with spaces
+ *  so leftover characters from a previous longer string are erased.
+ *
+ *  Uses the shared line buffer (LCD_GetLineBuf) to avoid a dedicated 23 KB
+ *  static buffer for a 24-row zone.
+ * ════════════════════════════════════════════════════════════════════════════ */
+#if INFO_H > 0
+static void cw_text_draw_rows(const char *text)
+{
+  uint16_t *ln    = LCD_GetLineBuf();
+  uint16_t  txt_y = (uint16_t)((INFO_H - Font6x8.height) / 2U);
+
+  for (uint16_t row = 0U; row < INFO_H; row++) {
+    LCD_LineFill(ln, 0U, LCD_W, UI_BG);
+    if (text && row >= txt_y && row < txt_y + Font6x8.height) {
+      uint16_t fr = row - txt_y;
+      uint16_t x  = 4U;
+      for (const char *p = text; *p && x + Font6x8.width <= LCD_W; p++) {
+        LCD_LineChar(ln, x, fr, *p, &Font6x8, UI_MODE_CW, UI_BG);
+        x = (uint16_t)(x + Font6x8.width);
+      }
+    }
+    LCD_PushWindow(0U, (uint16_t)(INFO_Y + row),
+                   (uint16_t)(LCD_W - 1U), (uint16_t)(INFO_Y + row),
+                   ln, LCD_W);
+  }
+}
+
+void SDR_UI_DrawCWText(const char *text)  { cw_text_draw_rows(text); }
+void SDR_UI_ClearCWText(void)             { cw_text_draw_rows(NULL);  }
+#else
+void SDR_UI_DrawCWText(const char *text)  { (void)text; }
+void SDR_UI_ClearCWText(void)             {}
+#endif

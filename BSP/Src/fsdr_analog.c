@@ -53,7 +53,7 @@ static uint16_t adc_read_ch(ADC_HandleTypeDef *hadc, uint32_t channel)
 void PWR_Init(void)
 {
   /* USER CODE BEGIN PWR_Init_0 */
-  /* PW_HOLD (PD13, GPIO_Output): already driven HIGH in MX_GPIO_Init_2
+  /* PW_HOLD (PB1, GPIO_Output): already driven HIGH in MX_GPIO_Init_2
    * USER CODE to prevent latch dropout; assert again here as belt-and-suspenders. */
   HAL_GPIO_WritePin(PW_HOLD_GPIO_Port, PW_HOLD_Pin, GPIO_PIN_SET);
   s_pwr_held = true;

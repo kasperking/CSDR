@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "csdr_app.h"
 #include "lcd_bus_fmc.h"
+#include "pa_overcurrent.h"
 #include "lcd_dma.h"
 #include "boot_dfu.h"
 /* USER CODE END Includes */
@@ -160,7 +161,37 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  /* ── DFU redirect (reset-path from boot_enter_dfu) ─────────────────────
+   * boot_enter_dfu() writes 0xB007DEAD to RTC_BKP0R then calls
+   * NVIC_SystemReset().  After the reset the MCU lands here before
+   * SystemClock_Config() or any peripheral init: HSI 64 MHz, no PLLs, no
+   * peripheral clocks — the ROM bootloader gets the cleanest possible state
+   * and can initialise USB DFU without interference from prior app clocks.
+   *
+   * Note: MPU_Config() and SCB_EnableI/DCache() already ran (6 lines above)
+   * so we must undo them before jumping.                                    */
+  {
+    SET_BIT(RCC->APB4ENR, RCC_APB4ENR_RTCAPBEN);  /* enable RTC APB clock  */
+    SET_BIT(PWR->CR1, PWR_CR1_DBP);                /* backup domain access  */
+    __DSB();
+    if (RTC->BKP0R == 0xB007DEADUL) {
+      RTC->BKP0R = 0U;
+      __DSB();
+      SCB_DisableDCache();   /* flush + disable (was enabled above) */
+      SCB_DisableICache();
+      MPU->CTRL = 0U;        /* disable MPU (configured by MPU_Config above) */
+      __DSB(); __ISB();
+      uint32_t bl_sp = *(volatile uint32_t *)0x1FF09800UL;
+      typedef void (*BootFn)(void);
+      BootFn bl_fn = (BootFn)(*(volatile uint32_t *)0x1FF09804UL);
+      SCB->VTOR = 0x1FF09800UL;
+      __DSB();
+      __set_MSP(bl_sp);
+      __ISB();
+      bl_fn();
+      while(1) {}
+    }
+  }
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -231,24 +262,26 @@ int main(void)
   /* FMC + LCD MPU setup MUST precede USB start so the Strongly-Ordered MPU
    * region covering 0x60000000 is active before any bus activity.
    * CubeMX may regenerate this block with USB before FMC — if so, re-swap.
-   * LCD_Bus_Init() is called inside MX_FMC_Init (USER CODE FMC_Init 2). */
+   * MX_USB_DEVICE_Init() is intentionally in USER CODE BEGIN 2 (after CSDR_Init)
+   * so all application state is ready before USB IRQs can fire CDC callbacks. */
   MX_FMC_Init();
-  MX_USB_DEVICE_Init();
   MX_I2C2_Init();
   MX_TIM3_Init();
   MX_TIM8_Init();
   MX_TIM17_Init();
   /* USER CODE BEGIN 2 */
 
-  /* ── Init order safety note ──────────────────────────────────────────────
-   * If CubeMX regeneration swapped MX_FMC_Init() and MX_USB_DEVICE_Init()
-   * above, move MX_FMC_Init() back before MX_USB_DEVICE_Init().
-   * Reason: LCD_Bus_Init() (called inside MX_FMC_Init USER CODE FMC_Init 2)
-   * programs MPU Region 1 as Strongly-Ordered over 0x60000000. This must be
-   * active before any USB bus activity, or the D-Cache can corrupt FMC writes.
-   */
+  /* ── Init order: CSDR first, then USB ───────────────────────────────────
+   * CSDR_Init() must complete before MX_USB_DEVICE_Init() calls USBD_Start().
+   * Reason: USBD_Start() enables OTG_FS IRQ; a fast-connecting host can send
+   * CDC/CAT data within the first SOF frame, invoking CSDR functions before
+   * they are initialised → undefined behaviour.
+   * CubeMX regeneration moves MX_USB_DEVICE_Init() into the peripheral block
+   * above — move it back here after CSDR_Init() when that happens. */
 
   CSDR_Init();
+  MX_USB_DEVICE_Init();
+  CSDR_VerifyIRQConfig();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -1036,30 +1069,38 @@ static void MX_FMC_Init(void)
     HAL_SRAM_Init(&hsram1, &hw_tim, NULL);
   }
 
-  /* Install MPU Region 1 (FMC LCD space, Strongly-Ordered) immediately after
-   * the FMC peripheral is configured. Without this region the D-Cache can
-   * corrupt 8080-mode writes even when FMC timing is correct.
-   * Placed here so protection is active before USB or any other IRQ fires.
-   * This USER CODE block survives CubeMX regeneration. */
+  /* ── USB DFU boot check ────────────────────────────────────────────────
+   * Runs BEFORE LCD_Bus_Init() so buttons need only be held ~50 ms from
+   * power-on rather than 600 ms (LCD init has ~530 ms of mandatory delays).
+   * FMC SRAM and GPIO are ready; USB stack has NOT started yet.
+   * Hold PW_KEY + ENC_SW at power-on to enter the STM32 ROM DFU bootloader.
+   *
+   * Debounce: check → 50 ms settle → confirm.
+   *   • No delay on normal boot (buttons not pressed).
+   *   • Both buttons must remain pressed across the settle window to avoid
+   *     spurious DFU entry from contact bounce or accidental simultaneous
+   *     press.                                                              */
+  if (boot_dfu_requested()) {
+      HAL_Delay(50U);
+      if (boot_dfu_requested()) {
+          /* Init LCD only for the DFU confirmation screen; MPU Region 1
+           * (Strongly-Ordered, 0x60000000) is installed inside LCD_Bus_Init(). */
+          LCD_Bus_Init();
+          LCD_DMA_Init();
+          ui_show_dfu_screen();
+          HAL_Delay(1000U);
+          boot_enter_dfu();   /* never returns */
+      }
+  }
+
+  /* Normal boot: install MPU Region 1 and bring up LCD bus.
+   * Without this region the D-Cache can corrupt 8080-mode writes. */
   LCD_Bus_Init();
 
   /* Async DMA overlay: DMA2 Stream0, M2M, MEDIUM priority.
-   * Initialised here so the DMA layer is ready before any LCD push occurs.
    * Must follow LCD_Bus_Init() (needs FMC + MPU Region 1 already active).
    * Priority 5 ISR: below audio (0) and USB (2); clears one flag per TC. */
   LCD_DMA_Init();
-  /* Test: clear đỏ → rồi xanh → nếu thấy màu = FMC OK */
-
-  /* ── USB DFU boot check ────────────────────────────────────────────────
-   * GPIO and FMC/LCD are ready; USB stack has NOT started yet.
-   * Hold PW_KEY + ENC_SW at power-on to enter the STM32 ROM DFU bootloader.
-   * 50 ms debounce covers contact bounce on both mechanical switches.       */
-  HAL_Delay(50U);
-  if (boot_dfu_requested()) {
-      ui_show_dfu_screen();
-      HAL_Delay(1000U);
-      boot_enter_dfu();   /* never returns */
-  }
   /* USER CODE END FMC_Init 2 */
 }
 
@@ -1088,7 +1129,7 @@ static void MX_GPIO_Init(void)
                           |BPF_S2_Pin|BPF_OE1_Pin|BPF_OE2_Pin|FLASH_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, ATT_DAT_Pin|ATT_CLK_Pin|NC_PC6_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, ATT_DAT_Pin|ATT_CLK_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, ATT_LATCH_Pin|T_R_SW_Pin, GPIO_PIN_RESET);
@@ -1138,13 +1179,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(LCD_RESET_GPIO_Port, &GPIO_InitStruct);
 
-  /* PC6 legacy LCD_RS: unused, RS/DC is now FMC_A16 (PD11). Kept as a
-   * driven-low output at LOW speed to prevent the pin floating. */
-  GPIO_InitStruct.Pin = NC_PC6_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(NC_PC6_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : ENC_SW_Pin */
   GPIO_InitStruct.Pin = ENC_SW_Pin;
@@ -1159,6 +1193,15 @@ static void MX_GPIO_Init(void)
   HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PA1, SYSCFG_SWITCH_PA1_CLOSE);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* PA_OC_ALERT (PC6): INA226 ALERT output, active-LOW, falling edge.
+   * NVIC priority 5 — below audio DMA (0) and USB (2). */
+  GPIO_InitStruct.Pin  = PA_OC_ALERT_GPIO_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(PA_OC_ALERT_GPIO_PORT, &GPIO_InitStruct);
+  HAL_NVIC_SetPriority(PA_OC_ALERT_EXTI_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(PA_OC_ALERT_EXTI_IRQn);
+
   /* PW_HOLD (PB1): CubeMX nhóm nhầm vào block INPUT trên GPIOD.
    * Config lại đúng: OUTPUT_PP, initial HIGH để giữ latch nguồn. */
   GPIO_InitStruct.Pin   = PW_HOLD_Pin;

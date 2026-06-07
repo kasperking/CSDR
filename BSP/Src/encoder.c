@@ -7,7 +7,7 @@
   *  Đọc TIM3->CNT mỗi 1ms (từ SysTick callback qua Encoder_Poll).
   *  Delta = CNT_now - CNT_prev (signed 16-bit → xử lý wrap-around).
   *  Gia tốc: đọc nhanh nhiều xung → nhân hệ số.
-  *  Nút PB3 (ENC_SW): polling có debounce + long press.
+  *  Nút ENC_SW (PB3): polling có debounce + long press.
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -64,7 +64,7 @@ void Encoder_Init(Encoder_t *enc, TIM_HandleTypeDef *htim)
   *
   *  1. Đọc TIM3->CNT, tính delta (16-bit signed để xử lý wrap-around 0/65535).
   *  2. Tính gia tốc: |delta| lớn trong thời gian ngắn → nhân hệ số.
-  *  3. Đọc PB3 (ENC_SW) với debounce & long press.
+  *  3. Đọc ENC_SW (PB3) với debounce & long press.
   *
   * @param  enc  Encoder handle
   */
@@ -109,7 +109,7 @@ void Encoder_Poll(Encoder_t *enc)
     if (enc->accel_count > 0U) { enc->accel_count--; }
   }
 
-  /* ── 3. Nút nhấn PB3 (ENC_SW) – polling ─────────────────── */
+  /* ── 3. Nút nhấn ENC_SW (PB3) – polling ─────────────────── */
   bool btn_now = (HAL_GPIO_ReadPin(ENC_SW_GPIO_Port, ENC_SW_Pin) == GPIO_PIN_SET);
   uint32_t tick = HAL_GetTick();
 

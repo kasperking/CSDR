@@ -32,6 +32,7 @@
 #include "selftest.h"
 #include "hw_fault.h"
 #include "spi_assets.h"
+#include "cw_decode.h"
 #include <string.h>
 #include <math.h>
 
@@ -54,6 +55,7 @@ extern ADC_HandleTypeDef  hadc3;
  *  Private state
  * ══════════════════════════════════════════════════════════ */
 static DSP_State_t      g_dsp;
+static CWDec_t          g_cw_dec;
 
 SDR_State_t g_sdr = {
   .freq_hz       = CSDR_FREQ_DEFAULT_HZ,
@@ -211,6 +213,7 @@ static void menu_apply_cb(void);
 static uint32_t default_bw_for_mode(SDR_Mode_t m);
 static void csdr_apply_nco_if(void);
 static void csdr_vfo_swap(void);
+static void csdr_on_mode_changed(SDR_Mode_t old_mode);
 static void csdr_vfo_copy_to_b(void);
 /* CAT VFO-B callbacks */
 static void     cat_set_lo_cut(uint32_t hz);
@@ -452,6 +455,7 @@ void CSDR_Init(void)
   AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, g_sdr.nb_on, g_sdr.nb_level);
   DSP_SetSquelch(&g_dsp, g_sdr.squelch);
+  CWDec_Init(&g_cw_dec);
 
   /* Encoder – TIM3 quadrature (PB4/PB5), initialised as encoder in MX_TIM3_Init */
   Encoder_Init(&g_encoder, &htim3);
@@ -545,35 +549,6 @@ void CSDR_Init(void)
   dbg_sai_init_ret = HAL_SAI_Receive_DMA(&hsai_BlockB1, (uint8_t*)s_rx_buf,
       CSDR_AUDIO_BUF_TOTAL * 2U);
   HAL_Delay(10U);
-
-  /* ── E. Boot-time IRQ priority safety check ───────────────────────────────
-   * Verifies that SAI and DMA audio IRQs are strictly higher priority
-   * (lower number) than USB OTG.  CubeMX regeneration reverts the OTG_FS
-   * priority to 0, putting it on par with SAI — the most common regen bug.
-   *
-   * If the hierarchy is wrong, the FAULT_IRQ_CFG bit is set in the runtime
-   * fault register so it appears in the diagnostic snapshot.  In debug builds
-   * (NDEBUG not defined) we halt in the debugger so the violation is
-   * impossible to miss; a watchdog reset is the release-build recovery.
-   *
-   * Priority encoding (STM32H7, NVIC_PRIORITYGROUP_4, __NVIC_PRIO_BITS=4):
-   *   HAL_NVIC_SetPriority(x, N, 0) stores N<<4 in the IPR register.
-   *   Numerically lower IPR value = higher urgency = must preempt USB. */
-  {
-    uint32_t sai_prio  = NVIC_GetPriority(SAI1_IRQn);
-    uint32_t dma0_prio = NVIC_GetPriority(DMA1_Stream0_IRQn);
-    uint32_t dma1_prio = NVIC_GetPriority(DMA1_Stream1_IRQn);
-    uint32_t otg_prio  = NVIC_GetPriority(OTG_FS_IRQn);
-    if (sai_prio >= otg_prio || dma0_prio >= otg_prio || dma1_prio >= otg_prio) {
-      RuntimeDiag_SetFault(FAULT_IRQ_CFG);
-#if !defined(NDEBUG)
-      /* Halt in debugger.  Check usbd_conf.c USER CODE USB_OTG_FS_MspInit 1
-       * for the HAL_NVIC_SetPriority(OTG_FS_IRQn, 2, 0) override — it is
-       * the first thing CubeMX regen silently removes. */
-      while ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) != 0U) { __BKPT(0); }
-#endif
-    }
-  }
 
   /* Re-activate WM8731 now that SAI clocks are running.
    * First activate may have failed because BCLK/LRCK weren't running.
@@ -882,6 +857,14 @@ void CSDR_PrepareShutdown(void)
   PWR_Shutdown();
 }
 
+/* Called after any DSP_SetMode to sync CW decoder + UI strip */
+static void csdr_on_mode_changed(SDR_Mode_t old_mode)
+{
+    CWDec_Reset(&g_cw_dec);
+    if (old_mode == MODE_CW && g_sdr.mode != MODE_CW)
+        SDR_UI_ClearCWText();
+}
+
 void CSDR_Loop(void)
 {
   RuntimeDiag_MainLoopBeat();
@@ -919,6 +902,17 @@ void CSDR_Loop(void)
   Input_Scan();
   csdr_handle_encoder();
   csdr_handle_keys();
+
+  /* CW decoder – main-loop timing decoder, runs every loop iteration.
+   * CWDec_Update is cheap (a few compares + HAL_GetTick); no timer guard needed.
+   * Decoded text is pushed to the INFO strip when the buffer changes. */
+  if (g_sdr.mode == MODE_CW && !g_sdr.tx_mode) {
+    if (CWDec_Update(&g_cw_dec, g_dsp.cw_env.keyed)) {
+      char cw_buf[CWDEC_TEXT_LEN + 1U];
+      CWDec_GetText(&g_cw_dec, cw_buf, (uint8_t)(LCD_W / 6U));
+      SDR_UI_DrawCWText(cw_buf);
+    }
+  }
 
   /* Timed tasks */
   static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0, t_spec=0, t_tx_spec=0;
@@ -1251,9 +1245,11 @@ void CSDR_Loop(void)
     }
     if (g_sdr.cat_mode_dirty) {
       g_sdr.cat_mode_dirty = false;
+      SDR_Mode_t old_mode = g_sdr.mode;
       DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
       DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
       AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
+      csdr_on_mode_changed(old_mode);
       g_sdr.cat_rit_dirty = true;  /* recompute nco_if with updated sl_sign for new mode */
     }
     if (g_sdr.cat_tx_dirty) {
@@ -1498,6 +1494,7 @@ static void csdr_handle_encoder(void)
       }
       return;
     }
+    SDR_Mode_t old_mode_enc = g_sdr.mode;
     g_sdr.mode   = (SDR_Mode_t)((g_sdr.mode + 1U) % MODE_COUNT);
     g_sdr.bw_hz  = default_bw_for_mode(g_sdr.mode);
     g_sdr.sl_hz  = 0U;
@@ -1505,6 +1502,7 @@ static void csdr_handle_encoder(void)
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
     AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
     csdr_apply_nco_if();
+    csdr_on_mode_changed(old_mode_enc);
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
   }
   if (Encoder_GetLongPress(&g_encoder)) {
@@ -1623,6 +1621,7 @@ static void csdr_handle_keys(void)
     csdr_apply_band(BPF_BandUp(g_sdr.band_idx));
 
   if (Key_Press(&k_mode)) {
+    SDR_Mode_t old_mode_key = g_sdr.mode;
     g_sdr.mode  = (SDR_Mode_t)((g_sdr.mode + 1U) % MODE_COUNT);
     g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
     g_sdr.sl_hz = 0U;
@@ -1630,6 +1629,7 @@ static void csdr_handle_keys(void)
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
     AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
     csdr_apply_nco_if();
+    csdr_on_mode_changed(old_mode_key);
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
   }
 
@@ -1811,6 +1811,7 @@ static void menu_apply_cb(void)
   }
   if (band != g_sdr.band_idx) csdr_apply_band(band);
   if (mode != (uint8_t)g_sdr.mode) {
+    SDR_Mode_t old_mode_menu = g_sdr.mode;
     g_sdr.mode  = (SDR_Mode_t)mode;
     g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
     g_sdr.sl_hz = 0U;
@@ -1818,6 +1819,7 @@ static void menu_apply_cb(void)
     DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
     AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
     csdr_apply_nco_if();
+    csdr_on_mode_changed(old_mode_menu);
   }
   g_sdr.usb_mode = usb;
   if (zoom != SDR_UI_GetSpecZoom()) SDR_UI_SetSpecZoom(zoom);
@@ -2221,4 +2223,25 @@ static uint8_t cat_get_tx_power(void) { return g_sdr.tx_power; }
 
 int32_t *CSDR_GetTxBuf(void) { return s_tx_buf; }
 int32_t *CSDR_GetRxBuf(void) { return s_rx_buf; }
+
+/* Called from main() AFTER MX_USB_DEVICE_Init() so OTG_FS priority is live.
+ * Priority encoding (STM32H7, NVIC_PRIORITYGROUP_4):
+ *   HAL_NVIC_SetPriority(x, N, 0) → N in IPR; lower N = higher urgency.
+ *   Required: SAI1/DMA1_Str0-1 < OTG_FS (0 < 2). */
+void CSDR_VerifyIRQConfig(void)
+{
+  uint32_t sai_prio  = NVIC_GetPriority(SAI1_IRQn);
+  uint32_t dma0_prio = NVIC_GetPriority(DMA1_Stream0_IRQn);
+  uint32_t dma1_prio = NVIC_GetPriority(DMA1_Stream1_IRQn);
+  uint32_t otg_prio  = NVIC_GetPriority(OTG_FS_IRQn);
+  if (sai_prio >= otg_prio || dma0_prio >= otg_prio || dma1_prio >= otg_prio) {
+    RuntimeDiag_SetFault(FAULT_IRQ_CFG);
+#if !defined(NDEBUG)
+    /* Check usbd_conf.c USER CODE USB_OTG_FS_MspInit 1 for the
+     * HAL_NVIC_SetPriority(OTG_FS_IRQn, 2, 0) override — first thing
+     * CubeMX regen silently removes. */
+    while ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) != 0U) { __BKPT(0); }
+#endif
+  }
+}
 void CSDR_ClearDspFlags(void) { s_rx_ready_seq[0] = s_rx_done_seq[0]; s_rx_ready_seq[1] = s_rx_done_seq[1]; }

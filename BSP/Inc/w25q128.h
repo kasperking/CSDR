@@ -13,9 +13,8 @@
   *  Layout flash (ví dụ):
   *   Sector 0   (0x000000..0x000FFF): Settings / config (4KB)
   *   Sector 1-2 (0x001000..0x002FFF): SI5351 cal + band settings (8KB)
-  *   Sector 3-N (0x003000..        ): Boot logo bitmap 320×240×2B = 153600B
-  *                                   cần 38 sector = 152KB
-  *                                   → 0x003000..0x028FFF
+  *   Sector 3-N (0x003000..0x028800): Boot logo bitmap 320×240×2B = 153600B
+  *                                   = 150KB (cần 38 sector)
   *
   *  Hỗ trợ: Read, Page Program, Sector/Block/Chip Erase
   ******************************************************************************
@@ -71,13 +70,18 @@ extern "C" {
 #endif
 
 /* Flash layout addresses */
-#define FLASH_ADDR_SETTINGS      0x000000UL   /* 4KB: cài đặt hệ thống */
-#define FLASH_ADDR_BAND_CAL      0x001000UL   /* 4KB: band / SI5351 cal */
-#define FLASH_ADDR_LOGO          0x003000UL   /* 153600B: boot logo      */
-#define FLASH_ADDR_FREE          0x02C000UL   /* Free area               */
-#define FLASH_ADDR_FONT_DATA    0x02C000UL   /* 4KB : font bitmaps blob (~1652 B) */
-#define FLASH_ADDR_FFT_TWIDDLE  0x02D000UL   /* 4KB : twiddleCoef_512[1024] float32 */
-#define FLASH_ADDR_FFT_BITREV   0x02E000UL   /* 1KB : armBitRevIndexTable512[448] uint16 */
+/* Flash layout — DO NOT overlap regions.
+ *  Logo: 320×240×2 = 153600 B → 0x003000..0x028800  (38 sectors, 152KB)
+ *  Gap:  0x028800..0x02BFFF  (14KB free)
+ *  Assets start at 0x02C000, safely after logo end.
+ *  WARNING: uploading a logo larger than 320×240 WILL corrupt asset sectors. */
+#define FLASH_ADDR_SETTINGS      0x000000UL   /* 4KB : cài đặt hệ thống */
+#define FLASH_ADDR_BAND_CAL      0x001000UL   /* 4KB : band / SI5351 cal */
+#define FLASH_ADDR_LOGO          0x003000UL   /* 153600B: boot logo 320×240 RGB565 */
+#define FLASH_ADDR_LOGO_END      0x028800UL   /* first byte AFTER logo area */
+#define FLASH_ADDR_FONT_DATA     0x02C000UL   /* 4KB : font bitmaps blob (~1652 B) */
+#define FLASH_ADDR_FFT_TWIDDLE   0x02D000UL   /* 4KB : twiddleCoef_512[1024] float32 */
+#define FLASH_ADDR_FFT_BITREV    0x02E000UL   /* 1KB : armBitRevIndexTable512[448] uint16 */
 
 /* Timeouts */
 #define W25Q_TIMEOUT_SECTOR_MS   400U

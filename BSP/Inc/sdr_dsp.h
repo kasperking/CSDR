@@ -16,6 +16,7 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "csdr_app.h"
+#include "cw_decode.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -88,7 +89,7 @@ typedef struct {
   IIR_Biquad_t de_emph;  /*!< De-emphasis 75µs */
 } FM_Demod_t;
 
-/* Hilbert FIR cho SSB modulate/demodulate - 31 taps odd-symmetric */
+/* Hilbert FIR cho SSB modulate/demodulate - 63 taps odd-symmetric */
 #define HILBERT_TAPS    63U
 /* Group delay of the Hilbert FIR = (HILBERT_TAPS-1)/2 samples */
 #define HILBERT_DELAY   ((HILBERT_TAPS - 1U) / 2U)   /* 31 samples */
@@ -159,6 +160,9 @@ typedef struct {
   /* CW BFO – RX demodulator */
   uint32_t   cw_phase_acc;   /*!< RX CW BFO phase accumulator */
   uint32_t   cw_bfo_inc;     /*!< RX CW BFO phase increment (sample-rate-derived) */
+
+  /* CW keying envelope – pre-AGC tap for decoder */
+  CWEnv_t    cw_env;
 
   /* RX phasing SSB demodulator – Hilbert FIR on Q + matched I delay.
    * Hilbert FIR shifts Q by 90° so that (I ± H{Q})*0.5 gives perfect

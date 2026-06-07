@@ -23,7 +23,10 @@ typedef enum {
     FPS_PENDING = 3,
 } FP_State_t;
 
-static FP_State_t  s_state;
+/* s_state written by USB ISR (FlashProto_Receive), read by main loop
+ * (FlashProto_Process / FlashProto_IsActive).  volatile prevents the
+ * compiler caching the value in a register across ISR boundaries. */
+static volatile FP_State_t s_state;
 static uint8_t     s_hdr[HDR_LEN];
 static uint8_t     s_hdr_cnt;
 static uint8_t     s_data[FP_MAX_DATA_LEN];
@@ -37,6 +40,7 @@ static uint16_t s_resp_len;
 /* ── Diagnostics ────────────────────────────────────────────────────────── */
 volatile uint32_t dbg_fp_rx_frames;
 volatile uint32_t dbg_fp_tx_frames;
+volatile uint32_t dbg_fp_tx_drop;    /* response dropped: CDC still busy after 50ms */
 volatile uint32_t dbg_fp_err_frames;
 volatile uint32_t dbg_fp_last_cmd;
 volatile uint32_t dbg_fp_last_status;
@@ -135,6 +139,10 @@ static void execute(void)
 
     /* ── CHIP ID ──────────────────────────────────────────────────────── */
     case FP_CMD_CHIP_ID: {
+        if (!g_flash.present) {
+            build_resp(FP_STATUS_ERR_FLASH, NULL, 0U);
+            break;
+        }
         uint32_t id = g_flash.jedec_id;
         uint8_t  id_buf[4] = {
             (uint8_t)(id >> 24),
@@ -200,6 +208,7 @@ void FlashProto_Init(void)
     reset_assembler();
     dbg_fp_rx_frames   = 0U;
     dbg_fp_tx_frames   = 0U;
+    dbg_fp_tx_drop     = 0U;
     dbg_fp_err_frames  = 0U;
     dbg_fp_last_cmd    = 0U;
     dbg_fp_last_status = 0U;
@@ -271,8 +280,11 @@ void FlashProto_Process(void)
     uint32_t t0 = HAL_GetTick();
     while (Composite_CDC_IsBusy() && (HAL_GetTick() - t0) < 50U) {}
 
-    CDC_Transmit_FS(s_resp, s_resp_len);
-    dbg_fp_tx_frames++;
+    if (CDC_Transmit_FS(s_resp, s_resp_len) == 0U) {
+        dbg_fp_tx_frames++;
+    } else {
+        dbg_fp_tx_drop++;
+    }
 
     reset_assembler();
 }

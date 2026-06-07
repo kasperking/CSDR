@@ -414,6 +414,12 @@ void SDR_UI_WaterfallPush(uint8_t buf_idx);
 /* Compat: combines Precompute + Push in one call */
 void SDR_UI_DrawWaterfall(const float *fft_db, uint16_t bins);
 
+/* CW decoder text strip (INFO zone, Y=120..144, 24 px).
+ * text: null-terminated string of decoded chars; drawn amber in CW mode.
+ * Call SDR_UI_ClearCWText() when leaving CW mode to restore INFO to blank. */
+void SDR_UI_DrawCWText(const char *text);
+void SDR_UI_ClearCWText(void);
+
 /* Meter fast-update (10 Hz) */
 void SDR_UI_UpdateSMeter(float signal_db);
 void SDR_UI_UpdateSMeter_SetTX(bool tx);

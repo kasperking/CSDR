@@ -177,6 +177,7 @@ void CSDR_CDC_Receive(uint8_t *buf, uint32_t len);
 void CSDR_CDC_ResetCAT(void);
 
 void CSDR_PrepareShutdown(void);   /*!< Save settings + power-off screen, then cut power */
+void CSDR_VerifyIRQConfig(void);   /*!< IRQ priority sanity-check; call after MX_USB_DEVICE_Init() */
 
 #ifdef __cplusplus
 }

@@ -16,22 +16,17 @@
 #include "cal.h"
 #include "sdr_ui.h"
 #include "encoder.h"
+#include "input_scan.h"
+#include "main.h"
 #include "stm32h7xx_hal.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
 
-/* ── Key sampling (active-low, same GPIO layout as csdr_app.c) ────────── */
+/* ── Key sampling ────────────────────────────────────────────────────────
+ * ENC_SW: direct MCU input (PB3) — use main.h macros.
+ * F1/F2/F4: PCA9555 expander — use Key_InitPCA with g_pca9555_raw cache. */
 extern TIM_HandleTypeDef htim3;   /* encoder timer (TIM3_CH1/CH2 = PB4/PB5) */
-
-#define KEY_ENC_SW_Port  GPIOA
-#define KEY_ENC_SW_Pin   GPIO_PIN_2
-#define KEY_F1_Port      GPIOE
-#define KEY_F1_Pin       GPIO_PIN_10
-#define KEY_F2_Port      GPIOE
-#define KEY_F2_Pin       GPIO_PIN_11
-#define KEY_F4_Port      GPIOE
-#define KEY_F4_Pin       GPIO_PIN_13
 
 /* Key_t instances are declared locally in each blocking loop. */
 
@@ -362,10 +357,10 @@ static void run_section(uint8_t sect_idx)
   bool    editing = false;
 
   Key_t k_enc = {0}, k_f1 = {0}, k_f2 = {0}, k_f4 = {0};
-  Key_Init(&k_enc, KEY_ENC_SW_Port, KEY_ENC_SW_Pin);
-  Key_Init(&k_f1,  KEY_F1_Port,     KEY_F1_Pin);
-  Key_Init(&k_f2,  KEY_F2_Port,     KEY_F2_Pin);
-  Key_Init(&k_f4,  KEY_F4_Port,     KEY_F4_Pin);
+  Key_Init   (&k_enc, ENC_SW_GPIO_Port,  ENC_SW_Pin);
+  Key_InitPCA(&k_f1,  &g_pca9555_raw,   PCA_BIT_F1);
+  Key_InitPCA(&k_f2,  &g_pca9555_raw,   PCA_BIT_F2);
+  Key_InitPCA(&k_f4,  &g_pca9555_raw,   PCA_BIT_F4);
 
   render_sublevel(sect_idx, cursor, editing, scroll);
 
@@ -480,8 +475,8 @@ bool Cal_Run(Cal_Params_t *params)
   uint8_t cursor = 0U;
   uint8_t scroll = 0U;
   Key_t k_enc = {0}, k_f4 = {0};
-  Key_Init(&k_enc, KEY_ENC_SW_Port, KEY_ENC_SW_Pin);
-  Key_Init(&k_f4,  KEY_F4_Port,     KEY_F4_Pin);
+  Key_Init   (&k_enc, ENC_SW_GPIO_Port, ENC_SW_Pin);
+  Key_InitPCA(&k_f4,  &g_pca9555_raw,  PCA_BIT_F4);
 
   render_toplevel(cursor, scroll);
 

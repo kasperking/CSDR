@@ -16,7 +16,7 @@
   *   pre-DC → NCO mix (LO offset) → post-DC → FFT feed → NCO mix (IF shift) → FIR LPF → [S-meter] → Demod → audio LPF → AGC → out
   *
   *  TX pipeline per sample:
-  *   USB pull → audio DC → gain → audio FIR LPF → SSB mod → FFT feed → DAC out
+  *   USB pull → audio DC → gain → audio FIR LPF → compressor → mod → FFT feed → DAC out
   *
   *  SAI DMA format (STM32H7, DataSize=16 in SlotSize=32):
   *   RX read:  (int16_t)(uint16_t)word          — right-justified, data in bits[15:0]
@@ -450,8 +450,8 @@ void FFT_ComputeMag_dB(const Complex_f *buf, float *mag_db,
 {
   /* USER CODE BEGIN FFT_ComputeMag_0 */
   /* Store raw power (re²+im²) — no sqrt, no log.
-   * Compression to log-like display range is done by pwr_compress() in st7789.c
-   * at render time (25 fps × 240 px) rather than here (188 fps × 256 bins). */
+   * Compression to log-like display range is done by pwr_compress() in sdr_ui.c
+   * at render time (~13 fps × SPEC_W px) rather than here (~94 fps × 512 bins). */
   const uint16_t n = half_n;
   const uint16_t h = n / 2U;
   *peak_db = 0.0f;
@@ -610,6 +610,8 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->cw_bfo_inc  = (uint32_t)((int64_t)700 * (int64_t)4294967296LL / (int64_t)sample_rate);
   dsp->cw_phase_acc = 0U;
 
+  CWEnv_Init(&dsp->cw_env, sample_rate);
+
   dsp->signal_power_db      = -120.0f;
   dsp->squelch_threshold_db = -200.0f;
   dsp->squelch_open         = true;
@@ -710,6 +712,11 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
 
   /* Recompute CW BFO increment for the current sample rate */
   dsp->cw_bfo_inc = (uint32_t)((int64_t)700 * (int64_t)4294967296LL / (int64_t)sample_rate);
+
+  /* Reset CW keying envelope so the decoder starts fresh after a mode change */
+  dsp->cw_env.env_sq   = 0.0f;
+  dsp->cw_env.floor_sq = 1e-8f;
+  dsp->cw_env.keyed    = 0U;
   /* USER CODE END DSP_SetMode_0 */
 }
 
@@ -746,8 +753,8 @@ void DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad)
  *             Read: (int16_t)(uint16_t)word
  *
  *  audio_out[]: int32 stereo [L0,R0, L1,R1, ...]
- *             Same MSB-aligned format for DAC output.
- *             Write: (uint32_t)(uint16_t)(int16_t)sample << 16
+ *             Right-justified format for DAC output, data in bits[15:0].
+ *             Write: (int32_t)(int16_t)sample
  * ============================================================ */
 void DSP_Process(DSP_State_t *dsp,
                   const int32_t *iq_in,
@@ -868,7 +875,25 @@ void DSP_Process(DSP_State_t *dsp,
      *        band-limited to the selected passband, independent of demod mode.
      *        Measuring post-AGC audio (as previously done) produced a nearly
      *        constant value (~AGC target²) regardless of signal strength. */
-    power_acc += filt_i * filt_i + filt_q * filt_q;
+    float mag_sq = filt_i * filt_i + filt_q * filt_q;
+    power_acc += mag_sq;
+
+    /* ── 5c. CW keying envelope tap – pre-AGC, no BFO ripple, no sqrt.
+     *        Asymmetric IIR on mag² + adaptive floor tracker.
+     *        Threshold: signal must be 9 dB (8×) above noise floor power.
+     *        Only updated in CW mode to save cycles in other modes. */
+    if (dsp->mode == MODE_CW) {
+      float alpha = (mag_sq > dsp->cw_env.env_sq)
+                    ? dsp->cw_env.alpha_r : dsp->cw_env.alpha_f;
+      dsp->cw_env.env_sq = alpha * dsp->cw_env.env_sq
+                           + (1.0f - alpha) * mag_sq;
+      float fa = (dsp->cw_env.env_sq < dsp->cw_env.floor_sq)
+                 ? dsp->cw_env.alpha_nd : dsp->cw_env.alpha_nu;
+      dsp->cw_env.floor_sq = fa * dsp->cw_env.floor_sq
+                             + (1.0f - fa) * dsp->cw_env.env_sq;
+      dsp->cw_env.keyed = (dsp->cw_env.env_sq > dsp->cw_env.floor_sq * 8.0f)
+                          ? 1U : 0U;
+    }
 
     /* ── 5c. Hilbert FIR on Q + matched I delay for USB/LSB phasing demod.
      *
@@ -923,7 +948,7 @@ void DSP_Process(DSP_State_t *dsp,
     /* ── 8. AGC */
     audio = AGC_Process(&dsp->agc, audio);
 
-    /* ── 9. Write: MSB-align 16-bit sample into 32-bit DAC word [31:16] */
+    /* ── 9. Write: right-justified 16-bit sample into 32-bit DAC word bits[15:0] */
     int32_t out_val = (int32_t)(audio * 32767.0f);
     if (out_val >  32767)  out_val =  32767;
     if (out_val < -32768)  out_val = -32768;

@@ -290,6 +290,15 @@ class FlashTool:
                     verbose: bool = True):
         """Convert image and program it into the boot logo area."""
         total_bytes = width * height * 2
+        logo_end    = FLASH_ADDR_LOGO + total_bytes
+        if logo_end > FLASH_ADDR_FONT_DATA:
+            raise ValueError(
+                f"Logo {width}×{height} = {total_bytes} B would end at "
+                f"0x{logo_end:06X}, overlapping asset data at "
+                f"0x{FLASH_ADDR_FONT_DATA:06X}. "
+                f"Max logo size for this layout: "
+                f"{FLASH_ADDR_FONT_DATA - FLASH_ADDR_LOGO} B "
+                f"(e.g. 320×240).")
         if verbose:
             print(f"Converting {image_path} → {width}×{height} RGB565 "
                   f"({total_bytes} bytes)...")
@@ -661,17 +670,17 @@ def main():
 
     p_lu = sub.add_parser("logo-upload", help="Upload boot logo image")
     p_lu.add_argument("image", help="Source image (PNG/JPG/BMP)")
-    p_lu.add_argument("--width",  type=int, default=480,
-                      help="LCD width  (default 480)")
-    p_lu.add_argument("--height", type=int, default=320,
-                      help="LCD height (default 320)")
+    p_lu.add_argument("--width",  type=int, default=320,
+                      help="Logo width  in pixels (default 320)")
+    p_lu.add_argument("--height", type=int, default=240,
+                      help="Logo height in pixels (default 240)")
 
     p_ld = sub.add_parser("logo-download", help="Download boot logo as PNG")
     p_ld.add_argument("output", help="Output PNG file")
-    p_ld.add_argument("--width",  type=int, default=480,
-                      help="LCD width  (default 480)")
-    p_ld.add_argument("--height", type=int, default=320,
-                      help="LCD height (default 320)")
+    p_ld.add_argument("--width",  type=int, default=320,
+                      help="Logo width  in pixels (default 320)")
+    p_ld.add_argument("--height", type=int, default=240,
+                      help="Logo height in pixels (default 240)")
 
     sub.add_parser("read-sr", help="Read STATUS1 register (shows write-protect bits)")
 
