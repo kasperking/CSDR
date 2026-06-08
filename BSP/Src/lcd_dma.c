@@ -14,6 +14,7 @@
 
 #include "lcd_dma.h"
 #include "lcd_bus_fmc.h"
+#include "hw_config_active.h"
 #include "core_cm7.h"   /* DWT->CYCCNT */
 #include "main.h"       /* SystemCoreClock */
 
@@ -71,8 +72,18 @@ void LCD_DMA_Init(void)
     /* Destination (FMC data register): fixed address, every byte goes here. */
     s_hdma_lcd.Init.MemInc              = DMA_MINC_DISABLE;
 
+#if HW_FMC_16BIT
+    /* 16-bit FMC: halfword per beat to match the bus width.
+     * Note: LCD_PushWindowAsync falls back to CPU writes in 16-bit mode because
+     * DMA cannot apply the per-pixel bswap16 needed to un-do the SWAP16 buffer
+     * convention.  These alignment settings remain correct for any future path
+     * that stores pixels in native (non-SWAP16) order. */
+    s_hdma_lcd.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
+    s_hdma_lcd.Init.MemDataAlignment    = DMA_MDATAALIGN_HALFWORD;
+#else
     s_hdma_lcd.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
     s_hdma_lcd.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
+#endif
     s_hdma_lcd.Init.Mode                = DMA_NORMAL;
 
     /* MEDIUM priority: LCD DMA yields to audio (VERY_HIGH) and USB (priority 2)
@@ -126,7 +137,18 @@ void LCD_Wait(void)
 bool LCD_PushWindowAsync(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
                          const void *buf, uint32_t len)
 {
-    if (len == 0U)   return false;
+    if (len == 0U)  return false;
+
+#if HW_FMC_16BIT
+    /* 16-bit FMC: DMA halfword transfers cannot apply the per-pixel bswap16
+     * required to un-do the SWAP16 buffer convention used by the UI layer.
+     * Fall back to the CPU path which handles this correctly.
+     * len is in bytes; LCD_PushWindow takes npix = len/2. */
+    if (s_dma_busy) return false;  /* keep same busy contract as DMA path */
+    s_queued_count++;
+    LCD_PushWindow(x0, y0, x1, y1, (const uint16_t *)buf, len / 2U);
+    return true;
+#else
     if (s_dma_busy)  return false;  /* caller must LCD_Wait() before calling */
 
     /* Window setup: CASET/RASET/RAMWR via synchronous CPU FMC writes (~1 µs).
@@ -156,6 +178,7 @@ bool LCD_PushWindowAsync(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
         return false;
     }
     return true;
+#endif
 }
 
 /* ── Diagnostics ─────────────────────────────────────────────────────────── */

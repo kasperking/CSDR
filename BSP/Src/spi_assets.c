@@ -54,6 +54,11 @@ static HAL_StatusTypeDef asset_read(W25Q_Handle_t *dev, uint32_t addr,
 
 HAL_StatusTypeDef SPI_Assets_LoadAll(W25Q_Handle_t *dev)
 {
+#if !HW_STORAGE_W25Q
+    /* No W25Q fitted per hw_config (HW_STORAGE_W25Q == 0) — skip all asset loads. */
+    (void)dev;
+    return HAL_ERROR;
+#endif
     if (!dev || !dev->present) return HAL_ERROR;
 
     dbg_spi_assets_loaded = 0U;

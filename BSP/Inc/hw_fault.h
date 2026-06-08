@@ -33,7 +33,7 @@ extern "C" {
 #define HW_FAULT_WARN  0
 
 /* ── Fault bits — one per hardware component ─────────────────────────── */
-#define HW_FAULT_FLASH   (1UL << 0)   /*!< W25Q128 SPI flash — settings persistence  */
+#define HW_FAULT_FLASH   (1UL << 0)   /*!< W25Q SPI flash — settings persistence  */
 #define HW_FAULT_CODEC   (1UL << 1)   /*!< WM8731 audio codec — RX/TX audio          */
 #define HW_FAULT_PLL     (1UL << 2)   /*!< SI5351 oscillator — VFO / LO synthesis    */
 #define HW_FAULT_INA226  (1UL << 3)   /*!< INA226 current sensor — PA protection     */

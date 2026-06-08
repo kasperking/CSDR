@@ -1,10 +1,10 @@
 /* hw_config_active.h -- CSDR Hardware Configuration (auto-generated)
  * DO NOT EDIT -- regenerate with:  python tools/hw_config.py
  *
- * Generated  : 2026-06-05 10:37:57
- * Controller : ST7789
- * Orientation: Landscape RGB
- * FMC width  : 8-bit
+ * Generated  : 2026-06-08 20:43:49
+ * Controller : ST7796
+ * Orientation: Landscape BGR
+ * FMC width  : 16-bit
  * GPIO speed : MEDIUM
  * Board      : Test board
  * HSE        : 25.000 MHz  CRYSTAL
@@ -20,13 +20,13 @@
  * HW_LCD_PANEL is read by lcd_panel_config.h to select the driver path.
  * LCD_W / LCD_H are provided here so portrait and landscape both resolve
  * correctly without editing lcd_panel_config.h.                          */
-#define HW_LCD_PANEL        2   /* ST7789 */
-#define LCD_W               320U
-#define LCD_H               240U
+#define HW_LCD_PANEL        1   /* ST7796 */
+#define LCD_W               480U
+#define LCD_H               320U
 
 /* -- MADCTL (register 0x36) ----------------------------------------------
- * MX|MV          landscape, RGB filter                                */
-#define HW_LCD_MADCTL       0x60U
+ * MY|MX|MV|BGR  landscape, BGR filter                                 */
+#define HW_LCD_MADCTL       0xE8U
 
 /* -- FMC SRAM timing (AHB cycles, asynchronous mode A) ------------------
  * Limits per STM32H7 RM0433: ADDR_SETUP 0-15, ADDR_HOLD 1-15,
@@ -41,6 +41,19 @@
 /* -- FMC GPIO drive strength ---------------------------------------------
  * One of GPIO_SPEED_FREQ_LOW / MEDIUM / HIGH / VERY_HIGH               */
 #define HW_FMC_GPIO_SPEED   GPIO_SPEED_FREQ_MEDIUM
+
+/* -- FMC bus data width -------------------------------------------------
+ * HW_FMC_8BIT / HW_FMC_16BIT: exactly one equals 1.
+ * HW_FMC_DATA_WIDTH: 8 or 16 (FMC data-bus bits).
+ * HW_FMC_DATA_ADDR_OFFSET: byte offset from FMC Bank1 NE1 base
+ *   (0x60000000) to the DATA (RS/DC HIGH) address.
+ *   8-bit : A16 = CPU bit 16 → offset 0x10000
+ *   16-bit: A16 = CPU bit 17 (bus width shift) → offset 0x20000
+ * lcd_bus_fmc.h reads these to set LCD_FMC_DATA_ADDR and lcd_bus_t.  */
+#define HW_FMC_8BIT             0
+#define HW_FMC_16BIT            1
+#define HW_FMC_DATA_WIDTH       16U
+#define HW_FMC_DATA_ADDR_OFFSET 0x20000UL
 
 /* -- LCD DMA push chunk size (spectrum strip height) --------------------
  * Must be <= SPEC_H (72 for ST7796, 76 for ST7789). Valid range 1-64.  */
@@ -66,9 +79,7 @@
 /* -- External NVM storage -----------------------------------------------
  * Selected : W25Q NOR Flash  W25Q64  64 Mbit (8 MB)
  *
- * Use #if HW_STORAGE_W25Q / HW_STORAGE_NONE etc. for conditional
- * compilation.  Future variants (FRAM, QSPI_NOR, NAND, SD) will use
- * the same flag pattern with type IDs 4-7.
+ * Use #if HW_STORAGE_W25Q / HW_STORAGE_NONE for conditional compilation.
  *
  * HW_HAS_PERSISTENT_STORAGE : any writable NVM is fitted
  * HW_HAS_LARGE_NVM          : >= 8 Mbit fitted (suitable for IQ/WF buffering)
@@ -76,16 +87,10 @@
 
 /* Storage type flags (exactly one equals 1) */
 #define HW_STORAGE_NONE              0
-#define HW_STORAGE_I2C_EE            0
-#define HW_STORAGE_SPI_EE            0
 #define HW_STORAGE_W25Q              1
-#define HW_STORAGE_FRAM              0   /* future */
-#define HW_STORAGE_QSPI_NOR          0  /* future */
-#define HW_STORAGE_NAND              0      /* future */
-#define HW_STORAGE_SD                0        /* future */
 
-/* Storage type ID  (0=none 1=i2c_ee 2=spi_ee 3=w25q 4-7=future) */
-#define HW_STORAGE_TYPE              3
+/* Storage type ID  (0=none 1=w25q) */
+#define HW_STORAGE_TYPE              1
 
 /* Capability flags */
 #define HW_HAS_PERSISTENT_STORAGE    1

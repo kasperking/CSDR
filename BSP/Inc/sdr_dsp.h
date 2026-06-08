@@ -68,6 +68,26 @@ typedef struct {
   bool     bypass;      /*!< true = FM/DIGI: unity gain, no AGC */
 } AGC_t;
 
+/* ── Calibration measurement accumulator ──────────────────────────────────── */
+typedef enum {
+  DSP_CAL_IDLE = 0,
+  DSP_CAL_DC,   /*!< Accumulate raw ADC mean (static I/Q bias)        */
+  DSP_CAL_IQ,   /*!< Accumulate I²/Q²/IQ cross for mismatch estimate  */
+} DSP_CalMode_t;
+
+typedef struct {
+  DSP_CalMode_t     mode;
+  uint32_t          n_target;
+  volatile uint32_t n_count;
+  float             acc_i,  acc_q;           /*!< DC: raw ADC count sums  */
+  float             acc_ii, acc_qq, acc_iq;  /*!< IQ: power + cross-term  */
+  float             result_dc_i;             /*!< ADC count units          */
+  float             result_dc_q;
+  float             result_iq_gain;          /*!< × 1000 (millis)          */
+  float             result_iq_phase;         /*!< milliradians             */
+  volatile bool     done;
+} DSP_CalMeas_t;
+
 /** Noise Blanker – time-domain impulse suppressor for HF (PSU spikes, ignition) */
 typedef struct {
   bool     enabled;               /*!< Runtime on/off toggle (disabled by default) */
@@ -135,6 +155,12 @@ typedef struct {
   FM_Demod_t   fm;
   AGC_t        agc;
   NoiseBlanker_t nb;  /*!< HF impulse noise blanker (disabled by default) */
+
+  /* Static ADC DC offset (from auto-cal, applied pre-IIR in DSP_Process) */
+  float         dc_i_static;   /*!< ADC count units subtracted from raw I */
+  float         dc_q_static;
+  /* Cal measurement accumulator (armed by DSP_CalStart, polled by DSP_CalPoll) */
+  DSP_CalMeas_t cal_meas;
 
   /* Current bandwidth (Hz) và sample rate - dùng cho UI hiển thị BW marker */
   float     bw_hz;
@@ -226,6 +252,13 @@ void  DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level);
 
 /* IQ correction */
 void  DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad);
+
+/* Static DC offset (call after loading cal from flash) */
+void  DSP_SetDCOffset(DSP_State_t *dsp, int32_t dc_i, int32_t dc_q);
+
+/* Cal measurement: arm accumulator, poll for completion */
+void  DSP_CalStart(DSP_State_t *dsp, DSP_CalMode_t mode, uint32_t n_samples);
+bool  DSP_CalPoll(DSP_State_t *dsp, DSP_CalMeas_t *out);
 
 /* FFT */
 void  FFT_Hann_Window(float *w, uint16_t n);

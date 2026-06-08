@@ -52,17 +52,26 @@ SETTINGS = OrderedDict([
     ("lcd_orientation", {
         "label":   "LCD Orientation",
         "choices": OrderedDict([
-            ("LANDSCAPE_BGR", "Landscape BGR  (MY|MX|MV|BGR)"),
-            ("LANDSCAPE_RGB", "Landscape RGB  (MY|MX|MV, no BGR swap)"),
-            ("PORTRAIT",      "Portrait       (BGR only, no axis swap)"),
+            ("LANDSCAPE", "Landscape  (axis swap MV)"),
+            ("PORTRAIT",  "Portrait   (no axis swap)"),
         ]),
-        "default": "LANDSCAPE_BGR",
+        "default": "LANDSCAPE",
+    }),
+    ("lcd_color_order", {
+        "label":      "  Color Order",
+        "choices": OrderedDict([
+            ("BGR", "BGR  (most panels — swap R↔B in controller)"),
+            ("RGB", "RGB  (no swap)"),
+        ]),
+        "default":    "BGR",
+        "parent":     "lcd_orientation",
+        "parent_val": "LANDSCAPE",
     }),
     ("fmc_bus_width", {
         "label":   "FMC Bus Width",
         "choices": OrderedDict([
             ("8BIT",  "8-bit   (current hardware)"),
-            ("16BIT", "16-bit  [NOT SUPPORTED on current boards]"),
+            ("16BIT", "16-bit  (requires DA8-DA15 on PCB; see hw_config docs)"),
         ]),
         "default": "8BIT",
     }),
@@ -119,8 +128,6 @@ SETTINGS = OrderedDict([
         "label":   "Ext NVM Storage",
         "choices": OrderedDict([
             ("NONE",     "None           (no external NVM fitted)"),
-            ("I2C_EE",   "I2C EEPROM     (AT24Cxx, M24xxx, etc.)"),
-            ("SPI_EE",   "SPI EEPROM     (M95xxx, CAT25xxx, etc.)"),
             ("W25Q_NOR", "W25Q NOR Flash  (W25Q16 .. W25Q128+)"),
         ]),
         "default": "W25Q_NOR",
@@ -158,7 +165,7 @@ PRESETS = OrderedDict([
     ("hw_test_fmc", {
         "label": "Test board -- ST7796 landscape BGR, MEDIUM GPIO, 25 MHz crystal",
         "config": {
-            "lcd_controller":  "ST7796", "lcd_orientation": "LANDSCAPE_BGR",
+            "lcd_controller":  "ST7796", "lcd_orientation": "LANDSCAPE", "lcd_color_order": "BGR",
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "MEDIUM",
             "board_type":      "TEST",   "dma_chunk_rows":  "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
@@ -168,7 +175,7 @@ PRESETS = OrderedDict([
     ("hw_prod_v1", {
         "label": "Production board -- ST7796 landscape BGR, VERY_HIGH GPIO",
         "config": {
-            "lcd_controller":  "ST7796", "lcd_orientation": "LANDSCAPE_BGR",
+            "lcd_controller":  "ST7796", "lcd_orientation": "LANDSCAPE", "lcd_color_order": "BGR",
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "VERY_HIGH",
             "board_type":      "PRODUCTION", "dma_chunk_rows": "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
@@ -178,7 +185,7 @@ PRESETS = OrderedDict([
     ("hw_long_fpc_debug", {
         "label": "Long FPC debug cable -- relaxed FMC timing",
         "config": {
-            "lcd_controller":  "ST7796", "lcd_orientation": "LANDSCAPE_BGR",
+            "lcd_controller":  "ST7796", "lcd_orientation": "LANDSCAPE", "lcd_color_order": "BGR",
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "MEDIUM",
             "board_type":      "LONG_FPC", "dma_chunk_rows": "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
@@ -254,6 +261,29 @@ ORIENT_LABEL = {
     "PORTRAIT":      "Portrait",
 }
 
+# Default color order per controller (panel glass characteristic)
+DEFAULT_COLOR_ORDER = {
+    "ST7796": "BGR",
+    "ST7789": "RGB",
+}
+
+
+def _resolve_orient(cfg):
+    """Return the internal orientation key used in MADCTL_TABLE / LCD_DIMENSIONS.
+
+    Handles both new format (lcd_orientation=LANDSCAPE + lcd_color_order=BGR/RGB)
+    and old format (lcd_orientation=LANDSCAPE_BGR / LANDSCAPE_RGB) so saved
+    configs from before the split remain compatible.
+    """
+    orient = cfg.get("lcd_orientation", "LANDSCAPE")
+    if orient in ("LANDSCAPE_BGR", "LANDSCAPE_RGB", "PORTRAIT"):
+        return orient                          # old format — pass through unchanged
+    if orient == "PORTRAIT":
+        return "PORTRAIT"
+    ctrl   = cfg.get("lcd_controller", "ST7796")
+    color  = cfg.get("lcd_color_order", DEFAULT_COLOR_ORDER.get(ctrl, "BGR"))
+    return f"LANDSCAPE_{color}"
+
 BOARD_LABEL = {
     "TEST":       "Test board",
     "PRODUCTION": "Production board",
@@ -269,18 +299,14 @@ W25Q_MODELS = {
 }
 
 # Storage type numeric IDs emitted as HW_STORAGE_TYPE
-# 0=none 1=i2c_ee 2=spi_ee 3=w25q 4=fram 5=qspi_nor 6=nand 7=sd
+# 0=none 1=w25q
 STORAGE_TYPE_ID = {
     "NONE":     0,
-    "I2C_EE":   1,
-    "SPI_EE":   2,
-    "W25Q_NOR": 3,
+    "W25Q_NOR": 1,
 }
 
 STORAGE_LABEL = {
     "NONE":     "None",
-    "I2C_EE":   "I2C EEPROM",
-    "SPI_EE":   "SPI EEPROM",
     "W25Q_NOR": "W25Q NOR Flash",
 }
 
@@ -432,22 +458,32 @@ def validate(cfg):
     """Return (errors, warnings) for the current configuration."""
     errors, warnings = [], []
     ctrl   = cfg["lcd_controller"]
-    orient = cfg["lcd_orientation"]
+    orient = _resolve_orient(cfg)
     board  = cfg["board_type"]
     speed  = cfg["gpio_speed"]
     width  = cfg["fmc_bus_width"]
 
     # ── FMC/LCD ──
     if width == "16BIT":
-        errors.append(
-            "16-bit FMC bus is not implemented in the current driver. "
-            "Select 8-bit."
+        warnings.append(
+            "16-bit FMC requires DA8-DA15 (8 extra GPIO pins) routed on the PCB "
+            "and the ST7796/ST7789 MCU interface strapped for 16-bit mode. "
+            "Verify hardware before enabling. DMA pixel path falls back to CPU in 16-bit mode."
         )
     if ctrl == "ST7789" and "LANDSCAPE" in orient:
         warnings.append(
             "ST7789 landscape is non-native (MV axis swap required). "
             "Verify MADCTL on oscilloscope before production use."
         )
+    if "LANDSCAPE" in orient:
+        color = "BGR" if "BGR" in orient else "RGB"
+        expected = DEFAULT_COLOR_ORDER.get(ctrl, "BGR")
+        if color != expected:
+            warnings.append(
+                f"{ctrl} panel color order is {color} but typical {ctrl} panels "
+                f"use {expected}. If colors look wrong (red/blue swap symptom), "
+                f"change Color Order to {expected}."
+            )
     if ctrl == "ST7796" and orient == "PORTRAIT":
         warnings.append(
             "ST7796 portrait (320x480): SDR UI zones were designed for 480x320 "
@@ -507,7 +543,7 @@ def validate(cfg):
 def resolve(cfg):
     """Return dict of all derived hardware values for the current config."""
     ctrl   = cfg["lcd_controller"]
-    orient = cfg["lcd_orientation"]
+    orient = _resolve_orient(cfg)
     board  = cfg["board_type"]
     speed  = cfg["gpio_speed"]
     rows   = int(cfg["dma_chunk_rows"])
@@ -525,21 +561,26 @@ def resolve(cfg):
     pll2    = compute_pll2(hse_hz) or _pll_fallback()
     storage = resolve_storage(cfg)
 
+    fmc_16bit = cfg.get("fmc_bus_width", "8BIT") == "16BIT"
+
     return {
-        "panel":        PANEL_ID[ctrl],
-        "madctl":       madctl_val,
-        "madctl_desc":  madctl_desc,
-        "lcd_w":        w,
-        "lcd_h":        h,
-        "timing":       timing,
-        "gpio_speed":   GPIO_SPEED_CONST[speed],
-        "dma_rows":     rows,
-        "hse_hz":       hse_hz,
-        "hse_source":   cfg["hse_source"],
-        "hse_rcc_mode": HSE_RCC_MODE[cfg["hse_source"]],
-        "pll1":         pll1,
-        "pll2":         pll2,
-        "storage":      storage,
+        "panel":                PANEL_ID[ctrl],
+        "madctl":               madctl_val,
+        "madctl_desc":          madctl_desc,
+        "lcd_w":                w,
+        "lcd_h":                h,
+        "timing":               timing,
+        "gpio_speed":           GPIO_SPEED_CONST[speed],
+        "dma_rows":             rows,
+        "fmc_16bit":            fmc_16bit,
+        "fmc_data_width":       16 if fmc_16bit else 8,
+        "fmc_data_addr_offset": 0x20000 if fmc_16bit else 0x10000,
+        "hse_hz":               hse_hz,
+        "hse_source":           cfg["hse_source"],
+        "hse_rcc_mode":         HSE_RCC_MODE[cfg["hse_source"]],
+        "pll1":                 pll1,
+        "pll2":                 pll2,
+        "storage":              storage,
     }
 
 
@@ -570,23 +611,15 @@ def _storage_header_section(cfg, st):
 
     # Build flag lines — one flag = 1 per type, rest = 0
     flags = {
-        "HW_STORAGE_NONE":     1 if stype == "NONE"     else 0,
-        "HW_STORAGE_I2C_EE":   1 if stype == "I2C_EE"   else 0,
-        "HW_STORAGE_SPI_EE":   1 if stype == "SPI_EE"   else 0,
-        "HW_STORAGE_W25Q":     1 if stype == "W25Q_NOR"  else 0,
-        "HW_STORAGE_FRAM":     0,   # future: SPI FRAM (e.g. MB85RSxxx)
-        "HW_STORAGE_QSPI_NOR": 0,   # future: QSPI NOR (OSPI / OCTOSPI)
-        "HW_STORAGE_NAND":     0,   # future: SPI/parallel NAND
-        "HW_STORAGE_SD":       0,   # future: SD / MMC card
+        "HW_STORAGE_NONE": 1 if stype == "NONE"    else 0,
+        "HW_STORAGE_W25Q": 1 if stype == "W25Q_NOR" else 0,
     }
 
     lines = [
         "/* -- External NVM storage -----------------------------------------------\n",
         f" * Selected : {summary}\n",
         " *\n",
-        " * Use #if HW_STORAGE_W25Q / HW_STORAGE_NONE etc. for conditional\n",
-        " * compilation.  Future variants (FRAM, QSPI_NOR, NAND, SD) will use\n",
-        " * the same flag pattern with type IDs 4-7.\n",
+        " * Use #if HW_STORAGE_W25Q / HW_STORAGE_NONE for conditional compilation.\n",
         " *\n",
         " * HW_HAS_PERSISTENT_STORAGE : any writable NVM is fitted\n",
         " * HW_HAS_LARGE_NVM          : >= 8 Mbit fitted (suitable for IQ/WF buffering)\n",
@@ -595,20 +628,11 @@ def _storage_header_section(cfg, st):
         "/* Storage type flags (exactly one equals 1) */\n",
     ]
     for name, val in flags.items():
-        comment = ""
-        if name == "HW_STORAGE_FRAM":
-            comment = "   /* future */"
-        elif name == "HW_STORAGE_QSPI_NOR":
-            comment = "  /* future */"
-        elif name == "HW_STORAGE_NAND":
-            comment = "      /* future */"
-        elif name == "HW_STORAGE_SD":
-            comment = "        /* future */"
-        lines.append(f"#define {name:<28s} {val}{comment}\n")
+        lines.append(f"#define {name:<28s} {val}\n")
 
     lines += [
         "\n",
-        f"/* Storage type ID  (0=none 1=i2c_ee 2=spi_ee 3=w25q 4-7=future) */\n",
+        f"/* Storage type ID  (0=none 1=w25q) */\n",
         f"#define HW_STORAGE_TYPE              {type_id}\n",
         "\n",
         "/* Capability flags */\n",
@@ -649,10 +673,8 @@ def generate_header(cfg, r):
         if model_str not in W25Q_MODELS:
             model_str = f"Custom {st['mbit']} Mbit"
         storage_comment = f"W25Q NOR  {model_str}  {st['mbit']} Mbit"
-    elif st["stype"] == "NONE":
-        storage_comment = "None"
     else:
-        storage_comment = st["label"]
+        storage_comment = "None"
 
     return (
         "/* hw_config_active.h -- CSDR Hardware Configuration (auto-generated)\n"
@@ -660,7 +682,7 @@ def generate_header(cfg, r):
         " *\n"
         f" * Generated  : {ts}\n"
         f" * Controller : {cfg['lcd_controller']}\n"
-        f" * Orientation: {ORIENT_LABEL[cfg['lcd_orientation']]}\n"
+        f" * Orientation: {ORIENT_LABEL[_resolve_orient(cfg)]}\n"
         f" * FMC width  : {'8-bit' if cfg['fmc_bus_width'] == '8BIT' else '16-bit'}\n"
         f" * GPIO speed : {cfg['gpio_speed']}\n"
         f" * Board      : {BOARD_LABEL[cfg['board_type']]}\n"
@@ -698,6 +720,19 @@ def generate_header(cfg, r):
         "/* -- FMC GPIO drive strength ---------------------------------------------\n"
         " * One of GPIO_SPEED_FREQ_LOW / MEDIUM / HIGH / VERY_HIGH               */\n"
         f"#define HW_FMC_GPIO_SPEED   {r['gpio_speed']}\n"
+        "\n"
+        "/* -- FMC bus data width -------------------------------------------------\n"
+        " * HW_FMC_8BIT / HW_FMC_16BIT: exactly one equals 1.\n"
+        " * HW_FMC_DATA_WIDTH: 8 or 16 (FMC data-bus bits).\n"
+        " * HW_FMC_DATA_ADDR_OFFSET: byte offset from FMC Bank1 NE1 base\n"
+        " *   (0x60000000) to the DATA (RS/DC HIGH) address.\n"
+        " *   8-bit : A16 = CPU bit 16 → offset 0x10000\n"
+        " *   16-bit: A16 = CPU bit 17 (bus width shift) → offset 0x20000\n"
+        " * lcd_bus_fmc.h reads these to set LCD_FMC_DATA_ADDR and lcd_bus_t.  */\n"
+        f"#define HW_FMC_8BIT             {0 if r['fmc_16bit'] else 1}\n"
+        f"#define HW_FMC_16BIT            {1 if r['fmc_16bit'] else 0}\n"
+        f"#define HW_FMC_DATA_WIDTH       {r['fmc_data_width']}U\n"
+        f"#define HW_FMC_DATA_ADDR_OFFSET 0x{r['fmc_data_addr_offset']:05X}UL\n"
         "\n"
         "/* -- LCD DMA push chunk size (spectrum strip height) --------------------\n"
         " * Must be <= SPEC_H (72 for ST7796, 76 for ST7789). Valid range 1-64.  */\n"
@@ -833,6 +868,29 @@ def patch_hse_value(hse_hz):
         print(f"  [!] {SYSTEM_C} not found.", file=sys.stderr)
 
 
+def patch_fmc_bus_width(cfg):
+    """Patch MemoryDataWidth in MX_FMC_Init in Core/Src/main.c."""
+    if not os.path.isfile(MAIN_C):
+        print(f"  [!] {MAIN_C} not found — skipping FMC width patch.", file=sys.stderr)
+        return
+
+    width = cfg.get("fmc_bus_width", "8BIT")
+    const = ("FMC_NORSRAM_MEM_BUS_WIDTH_16"
+             if width == "16BIT"
+             else "FMC_NORSRAM_MEM_BUS_WIDTH_8")
+
+    with open(MAIN_C, encoding="utf-8") as fh:
+        text = fh.read()
+
+    text = _sub1(
+        r"(hsram1\.Init\.MemoryDataWidth\s*=\s*)FMC_NORSRAM_MEM_BUS_WIDTH_\w+;",
+        rf"\g<1>{const};  /* hw_config: {width} */",
+        text, "main.c MemoryDataWidth")
+
+    with open(MAIN_C, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
 # ── State persistence ─────────────────────────────────────────────────────────
 
 def default_config():
@@ -910,6 +968,7 @@ def apply_config(cfg):
 
     patch_main_clock(r)
     patch_hse_value(r["hse_hz"])
+    patch_fmc_bus_width(cfg)
     patch_spi_flash_mode(cfg)
     save_state(cfg)
 
@@ -927,8 +986,9 @@ def apply_config(cfg):
     print(f"  LCD     : {cfg['lcd_controller']}  {r['lcd_w']} x {r['lcd_h']}"
           f"  (HW_LCD_PANEL = {r['panel']})")
     print(f"  MADCTL  : 0x{r['madctl']:02X}  [{r['madctl_desc'].strip()}]")
-    print(f"  FMC     : ADDR_SETUP={t['addr_setup']}  DATA_SETUP={t['data_setup']}"
-          f"  BUS_TURN={t['bus_turn']}")
+    print(f"  FMC     : {r['fmc_data_width']}-bit  ADDR_SETUP={t['addr_setup']}"
+          f"  DATA_SETUP={t['data_setup']}  BUS_TURN={t['bus_turn']}"
+          f"  DATA_OFFSET=0x{r['fmc_data_addr_offset']:05X}")
     print(f"  GPIO    : {r['gpio_speed']}")
     print(f"  DMA     : {r['dma_rows']} rows/strip")
     print(f"  Board   : {BOARD_LABEL[cfg['board_type']]}")
@@ -963,10 +1023,8 @@ def _print_storage_summary(st, cfg):
         spi_mode = cfg.get("spi_flash_mode", "MODE3")
         print(f"            SPI {spi_mode}  (CPOL={'1' if spi_mode == 'MODE3' else '0'}"
               f" CPHA={'1' if spi_mode == 'MODE3' else '0'})")
-    elif st["stype"] == "NONE":
-        print("  NVM     : None")
     else:
-        print(f"  NVM     : {st['label']}  -> HAS_PERSISTENT_STORAGE")
+        print("  NVM     : None")
 
 
 # ── Terminal helpers ──────────────────────────────────────────────────────────
@@ -1170,10 +1228,8 @@ def _storage_resolved_line(r, cfg):
         if st["has_large"]:    flags.append("HAS_LARGE_NVM")
         if st["supports_wf"]:  flags.append("SUPPORTS_WF_CACHE")
         return f"W25Q  {model_str}  {cap}", " ".join(flags)
-    elif st["stype"] == "NONE":
-        return "None", ""
     else:
-        return st["label"], "HAS_PERSISTENT"
+        return "None", ""
 
 
 def print_main_menu(cfg, errors, warnings):

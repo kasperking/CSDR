@@ -5,10 +5,10 @@
   * @brief   SPI flash asset loader — moves large const tables from internal
   *          flash to W25Q SPI NOR, loading them into AXI-SRAM at boot.
   *
-  *  Asset map (mirrors FLASH_ADDR_* in w25q128.h):
-  *   SPI_ASSET_FONTS       @ 0x02C000  ~1652 B  Font6x8 + Font5x8 + Font8x10
-  *   SPI_ASSET_FFT_TWIDDLE @ 0x02D000  4096 B   twiddleCoef_512[1024]
-  *   SPI_ASSET_FFT_BITREV  @ 0x02E000   896 B   armBitRevIndexTable512[448]
+  *  Asset map (mirrors FLASH_ADDR_* in w25q.h):
+  *   SPI_ASSET_FONTS       @ 0x058000  zone 32KB  Font6x8 + Font5x8 + Font8x10 (~1652 B)
+  *   SPI_ASSET_FFT_TWIDDLE @ 0x060000  zone 16KB  twiddleCoef_512[1024] (4096 B)
+  *   SPI_ASSET_FFT_BITREV  @ 0x064000  zone 16KB  armBitRevIndexTable512[448] (896 B)
   *
   *  Fallback flags (set to 0 once SPI flash is programmed to reclaim space):
   *   SPI_ASSETS_FONT_FALLBACK  — keep font const arrays in internal flash
@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 #include "stm32h7xx_hal.h"
-#include "w25q128.h"
+#include "w25q.h"
 #include <stdint.h>
 #include <stdbool.h>
 

@@ -10,8 +10,9 @@ import os
 import sys
 import queue
 import threading
+import hashlib
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 sys.path.insert(0, os.path.dirname(__file__))
 from flash_tool import (
@@ -35,6 +36,9 @@ try:
 except ImportError:
     HAS_PIL = False
 
+# Secret code required to unlock Flash Operations and Assets tabs.
+# To change: replace the bytes literal with sha256(b"your-new-code").hexdigest()
+_UNLOCK_HASH = hashlib.sha256(b"111").hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +186,7 @@ class App(tk.Tk):
 
         self._tool: GUIFlashTool | None = None
         self._busy  = False
+        self._flash_unlocked = False
         self._queue: queue.Queue = queue.Queue()
 
         self._build_ui()
@@ -211,22 +216,25 @@ class App(tk.Tk):
                                   font=("Consolas", 9))
         self._id_lbl.pack(side="left")
 
+        self._lock_btn = ttk.Button(bar, text="🔒", width=3,
+                                     command=self._unlock_flash_tab)
+        self._lock_btn.pack(side="right")
+
         ttk.Separator(self, orient="horizontal").pack(fill="x")
 
         # ── Notebook ────────────────────────────────────────────────────────
-        nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=6, pady=4)
+        self._nb = ttk.Notebook(self)
+        self._nb.pack(fill="both", expand=True, padx=6, pady=4)
 
-        tab_flash  = ttk.Frame(nb, padding=6)
-        tab_logo   = ttk.Frame(nb, padding=6)
-        tab_assets = ttk.Frame(nb, padding=6)
-        nb.add(tab_flash,  text="  Flash Operations  ")
-        nb.add(tab_logo,   text="  Logo  ")
-        nb.add(tab_assets, text="  Assets  ")
+        self._tab_flash  = ttk.Frame(self._nb, padding=6)
+        tab_logo         = ttk.Frame(self._nb, padding=6)
+        self._tab_assets = ttk.Frame(self._nb, padding=6)
+        # Flash Operations and Assets tabs start hidden — unlock with 🔒
+        self._nb.add(tab_logo, text="  Logo  ")
 
-        self._build_flash_tab(tab_flash)
+        self._build_flash_tab(self._tab_flash)
         self._build_logo_tab(tab_logo)
-        self._build_assets_tab(tab_assets)
+        self._build_assets_tab(self._tab_assets)
 
         # ── Progress bar ────────────────────────────────────────────────────
         prog_frame = ttk.Frame(self, padding=(6, 2, 6, 2))
@@ -257,6 +265,29 @@ class App(tk.Tk):
         btn_row.pack(fill="x")
         ttk.Button(btn_row, text="Clear log",
                    command=self._clear_log).pack(side="right")
+
+        self.bind("<Control-Shift-F>", lambda e: self._unlock_flash_tab())
+        self.bind("<Control-Shift-f>", lambda e: self._unlock_flash_tab())
+
+    # -----------------------------------------------------------------------
+    # Flash tab unlock
+    # -----------------------------------------------------------------------
+    def _unlock_flash_tab(self):
+        if self._flash_unlocked:
+            self._nb.select(self._tab_flash)
+            return
+        code = simpledialog.askstring(
+            "Unlock", "Enter secret code:", show="*", parent=self)
+        if code is None:
+            return
+        if hashlib.sha256(code.encode()).hexdigest() == _UNLOCK_HASH:
+            self._nb.insert(0, self._tab_flash, text="  Flash Operations  ")
+            self._nb.add(self._tab_assets, text="  Assets  ")
+            self._nb.select(0)
+            self._lock_btn.configure(text="🔓")
+            self._flash_unlocked = True
+        else:
+            messagebox.showerror("Incorrect", "Wrong secret code.")
 
     def _build_flash_tab(self, parent):
         # ── READ ──────────────────────────────────────────────────────────

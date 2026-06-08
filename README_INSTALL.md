@@ -333,7 +333,7 @@ CSDR/
 │   │   ├── si5351.h            ← QSD/QSE clock (CLK0 × 4)
 │   │   ├── usb_audio.h         ← USB Audio IQ streaming
 │   │   ├── usb_cat.h           ← USB CAT TS-2000 emulation
-│   │   ├── w25q128.h           ← SPI Flash (SPI3)
+│   │   ├── w25q.h           ← SPI Flash (SPI3)
 │   │   └── wm8731.h            ← Audio codec (SAI I²S)
 │   └── Src/
 │       ├── csdr_app.c          ← CSDR_Init, CSDR_Loop, mode dispatch
@@ -358,7 +358,7 @@ CSDR/
 │       ├── si5351.c
 │       ├── usb_audio.c
 │       ├── usb_cat.c
-│       ├── w25q128.c
+│       ├── w25q.c
 │       └── wm8731.c
 ├── Core/
 │   └── Src/

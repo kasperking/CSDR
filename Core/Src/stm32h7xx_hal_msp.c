@@ -721,6 +721,21 @@ static void HAL_FMC_MspInit(void){
     gs.Pin = GPIO_PIN_7;
     HAL_GPIO_Init(GPIOC, &gs);
   }
+#if HW_FMC_16BIT
+  /* 16-bit FMC upper data byte: D8-D12 = PE11-PE15, D13-D15 = PD8-PD10.
+   * GPIOD/GPIOE clocks already enabled above. No CubeMX regen needed. */
+  {
+    GPIO_InitTypeDef gs = {0};
+    gs.Mode      = GPIO_MODE_AF_PP;
+    gs.Pull      = GPIO_NOPULL;
+    gs.Speed     = HW_FMC_GPIO_SPEED;
+    gs.Alternate = GPIO_AF12_FMC;
+    gs.Pin = GPIO_PIN_11|GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15; /* D8-D12 */
+    HAL_GPIO_Init(GPIOE, &gs);
+    gs.Pin = GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10;                           /* D13-D15 */
+    HAL_GPIO_Init(GPIOD, &gs);
+  }
+#endif /* HW_FMC_16BIT */
   /* USER CODE END FMC_MspInit 1 */
 }
 

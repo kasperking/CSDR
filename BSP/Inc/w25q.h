@@ -1,28 +1,30 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    w25q128.h
-  * @brief   W25Q128JV SPI NOR Flash BSP Driver
+  * @file    w25q.h
+  * @brief   W25Q SPI NOR Flash BSP Driver (W25Q16 .. W25Q128)
   *
   *  Hardware: SPI3  (PC10=SCK, PC11=MISO, PC12=MOSI, PD0=CS)
-  *  Capacity: 128Mbit = 16MB
+  *  Capacity: configured by hw_config.py (HW_W25Q_CAPACITY_BYTES)
   *  Sector  : 4KB (4096 byte) → erase unit nhỏ nhất
   *  Page    : 256 byte → write unit
   *  Block   : 64KB (65536 byte)
   *
-  *  Layout flash (ví dụ):
-  *   Sector 0   (0x000000..0x000FFF): Settings / config (4KB)
-  *   Sector 1-2 (0x001000..0x002FFF): SI5351 cal + band settings (8KB)
-  *   Sector 3-N (0x003000..0x028800): Boot logo bitmap 320×240×2B = 153600B
-  *                                   = 150KB (cần 38 sector)
+  *  Layout flash:
+  *   0x000000-0x003FFF  Settings    16KB
+  *   0x004000-0x007FFF  Band cal    16KB
+  *   0x008000-0x052FFF  Logo        300KB max (480x320x2 = 307200 B)
+  *   0x058000-0x05FFFF  Font data   32KB
+  *   0x060000-0x063FFF  FFT twiddle 16KB
+  *   0x064000-0x067FFF  FFT bitrev  16KB
   *
   *  Hỗ trợ: Read, Page Program, Sector/Block/Chip Erase
   ******************************************************************************
   */
 /* USER CODE END Header */
 
-#ifndef __W25Q128_H
-#define __W25Q128_H
+#ifndef __W25Q_H
+#define __W25Q_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,6 +33,7 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include "stm32h7xx_hal.h"
 #include "hw_config_active.h"
+#include "bpf_lpf.h"   /* BAND_COUNT */
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -58,30 +61,43 @@ extern "C" {
 #define W25Q_SR1_BUSY            0x01U
 #define W25Q_SR1_WEL             0x02U
 
-/* Geometry */
-#define W25Q_PAGE_SIZE           256U
-#define W25Q_SECTOR_SIZE         4096U
-#define W25Q_BLOCK32_SIZE        32768U
-#define W25Q_BLOCK64_SIZE        65536U
-#ifdef HW_W25Q_CAPACITY_BYTES
-#  define W25Q_TOTAL_SIZE        HW_W25Q_CAPACITY_BYTES  /* from hw_config */
+/* Geometry — sourced from hw_config_active.h when W25Q is fitted.
+ * hw_config.py emits HW_W25Q_* only when storage_type == W25Q_NOR.
+ * When HW_STORAGE_W25Q == 0 these constants are not used at runtime
+ * (W25Q_Init returns HAL_ERROR immediately), but safe fallbacks are
+ * provided so the driver file compiles in all configurations. */
+#if HW_STORAGE_W25Q
+#  define W25Q_PAGE_SIZE    HW_W25Q_PAGE_SIZE      /* from hw_config (256 for all W25Q) */
+#  define W25Q_SECTOR_SIZE  HW_W25Q_SECTOR_SIZE    /* from hw_config (4096)             */
+#  define W25Q_BLOCK32_SIZE HW_W25Q_BLOCK32_SIZE   /* from hw_config (32768)            */
+#  define W25Q_BLOCK64_SIZE HW_W25Q_BLOCK64_SIZE   /* from hw_config (65536)            */
+#  define W25Q_TOTAL_SIZE   HW_W25Q_CAPACITY_BYTES /* from hw_config (model-specific)   */
 #else
-#  define W25Q_TOTAL_SIZE        (16U * 1024U * 1024U)   /* fallback 16MB */
+#  define W25Q_PAGE_SIZE    256U
+#  define W25Q_SECTOR_SIZE  4096U
+#  define W25Q_BLOCK32_SIZE 32768U
+#  define W25Q_BLOCK64_SIZE 65536U
+#  define W25Q_TOTAL_SIZE   0U
 #endif
 
 /* Flash layout addresses */
 /* Flash layout — DO NOT overlap regions.
- *  Logo: 320×240×2 = 153600 B → 0x003000..0x028800  (38 sectors, 152KB)
- *  Gap:  0x028800..0x02BFFF  (14KB free)
- *  Assets start at 0x02C000, safely after logo end.
- *  WARNING: uploading a logo larger than 320×240 WILL corrupt asset sectors. */
-#define FLASH_ADDR_SETTINGS      0x000000UL   /* 4KB : cài đặt hệ thống */
-#define FLASH_ADDR_BAND_CAL      0x001000UL   /* 4KB : band / SI5351 cal */
-#define FLASH_ADDR_LOGO          0x003000UL   /* 153600B: boot logo 320×240 RGB565 */
-#define FLASH_ADDR_LOGO_END      0x028800UL   /* first byte AFTER logo area */
-#define FLASH_ADDR_FONT_DATA     0x02C000UL   /* 4KB : font bitmaps blob (~1652 B) */
-#define FLASH_ADDR_FFT_TWIDDLE   0x02D000UL   /* 4KB : twiddleCoef_512[1024] float32 */
-#define FLASH_ADDR_FFT_BITREV    0x02E000UL   /* 1KB : armBitRevIndexTable512[448] uint16 */
+ *  0x000000–0x003FFF  Settings   16KB
+ *  0x004000–0x007FFF  Band cal   16KB
+ *  0x008000–0x052FFF  Logo       300KB max (480×320×2 = 307200 B)
+ *  0x053000–0x057FFF  [gap 20KB]
+ *  0x058000–0x05FFFF  Font data  32KB  zone
+ *  0x060000–0x063FFF  FFT twiddle 16KB zone
+ *  0x064000–0x067FFF  FFT bitrev  16KB zone
+ *  0x068000–0xFFFFFF  free (15.6 MB on W25Q128)                    */
+#define FLASH_ADDR_SETTINGS      0x000000UL   /* 16KB: system settings  */
+#define FLASH_ADDR_BAND_CAL      0x004000UL   /* 16KB: band / SI5351 cal */
+#define FLASH_ADDR_LOGO          0x008000UL   /* 300KB max: boot logo up to 480×320 RGB565 */
+#define FLASH_ADDR_LOGO_END      0x053000UL   /* first byte AFTER max logo area */
+#define FLASH_ADDR_FONT_DATA     0x058000UL   /* 32KB zone (0x058000–0x05FFFF): font bitmaps  */
+#define FLASH_ADDR_FFT_TWIDDLE   0x060000UL   /* 16KB zone (0x060000–0x063FFF): twiddle tables */
+#define FLASH_ADDR_FFT_BITREV    0x064000UL   /* 16KB zone (0x064000–0x067FFF): bitrev tables  */
+/* 0x068000 and beyond: free (15.6 MB remaining on W25Q128) */
 
 /* Timeouts */
 #define W25Q_TIMEOUT_SECTOR_MS   400U
@@ -175,6 +191,27 @@ typedef struct {
 
 #define FLASH_SETTINGS_MAGIC     0xFADEFADEUL
 
+/* Per-band calibration block stored at FLASH_ADDR_BAND_CAL.
+ * rx_gain_trim    : int16, dB,  -20..+20  — hardware RX gain correction per band
+ * noise_floor_off : int16, dB,  -20..+20  — per-band S-meter noise floor trim
+ * tx_drive_trim   : int16, %, -50..+50   — TX audio gain: g *= (100+trim)/100
+ * swr_scale       : int16,    50..200    — SWR scale: swr_x100 *= swr_scale/100
+ * Default: rx_gain_trim=0, noise_floor_off=0, tx_drive_trim=0, swr_scale=100 */
+typedef struct {
+  int16_t rx_gain_trim;
+  int16_t noise_floor_off;
+  int16_t tx_drive_trim;
+  int16_t swr_scale;          /* ×0.01 unit: 100 = ×1.0 (no scaling) */
+} BandCal_t;                  /* 8 bytes */
+
+typedef struct {
+  uint32_t  magic;             /* BAND_CAL_MAGIC when valid            */
+  BandCal_t band[BAND_COUNT];  /* BAND_COUNT×8 = 88 bytes              */
+  uint32_t  crc32;             /* CRC covers all bytes before this     */
+} BandCalBlock_t;              /* 4 + 88 + 4 = 96 bytes                */
+
+#define BAND_CAL_MAGIC  0xCA1BCA1BUL
+
 /* Exported variables --------------------------------------------------------*/
 extern W25Q_Handle_t g_flash;
 
@@ -201,13 +238,22 @@ HAL_StatusTypeDef Flash_SaveSettings(W25Q_Handle_t *dev,
 HAL_StatusTypeDef Flash_LoadSettings(W25Q_Handle_t *dev,
                                       Flash_Settings_t *s);
 
+/* Per-band calibration API — reads/writes FLASH_ADDR_BAND_CAL.
+ * Flash_LoadBandCal: on magic/CRC failure, writes safe defaults (swr_scale=100)
+ *                    into band[] and returns HAL_ERROR.
+ * Flash_SaveBandCal: sector-erase + page-write of BandCalBlock_t (96 bytes). */
+HAL_StatusTypeDef Flash_LoadBandCal(W25Q_Handle_t *dev,
+                                     BandCal_t band[BAND_COUNT]);
+HAL_StatusTypeDef Flash_SaveBandCal(W25Q_Handle_t *dev,
+                                     const BandCal_t band[BAND_COUNT]);
+
 /* Boot logo */
 HAL_StatusTypeDef Flash_WriteLogo(W25Q_Handle_t *dev,
                                    const uint8_t *rgb565_data, uint32_t len);
 HAL_StatusTypeDef Flash_ReadLogoScanline(W25Q_Handle_t *dev,
-                                          uint16_t y, uint16_t *line_buf);
+                                          uint16_t y, uint16_t width, uint16_t *line_buf);
 
 #ifdef __cplusplus
 }
 #endif
-#endif /* __W25Q128_H */
+#endif /* __W25Q_H */

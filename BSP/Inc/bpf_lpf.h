@@ -194,6 +194,12 @@ uint32_t BPF_BandToFreq(uint8_t band_idx);
 uint8_t BPF_BandUp(uint8_t current);
 uint8_t BPF_BandDown(uint8_t current);
 
+/**
+  * @brief  Return short band name string (e.g. "20m").
+  * @retval Pointer to a static string; "??m" for out-of-range index.
+  */
+const char *BPF_BandName(uint8_t idx);
+
 #ifdef __cplusplus
 }
 #endif

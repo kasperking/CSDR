@@ -131,6 +131,29 @@ static void MX_TIM17_Init(void);
  *     4. Build, run, test USB audio + LCD before committing
  * ============================================================================
  */
+
+/* ── hw_config_active.h sanity checks ────────────────────────────────────────
+ * These _Static_assert()s turn the "mirror" macros in hw_config_active.h into
+ * real compile-time guards.  They catch the most common mistake: editing the
+ * HSE frequency or PLL dividers in CubeMX / main.c without re-running
+ * python tools/hw_config.py (or vice-versa).
+ *
+ * Asserts fail → re-run:  python tools/hw_config.py  then rebuild.
+ *
+ * (1) HSE_VALUE in stm32h7xx_hal_conf.h must match HW_HSE_FREQ_HZ from the
+ *     active profile.  hw_config.py patches both files together; a mismatch
+ *     means one was edited manually.
+ *
+ * (2) The PLL1 dividers must produce exactly 480 MHz SYSCLK from the configured
+ *     HSE.  Arithmetic: (HSE / M) × N / P = VCO_out / P = SYSCLK.
+ *     VCO_out ≤ 960 MHz so the intermediate product fits in uint32_t.          */
+_Static_assert(HW_HSE_FREQ_HZ == HSE_VALUE,
+    "HSE mismatch: HSE_VALUE in stm32h7xx_hal_conf.h != HW_HSE_FREQ_HZ. "
+    "Re-run: python tools/hw_config.py");
+_Static_assert(
+    (HW_HSE_FREQ_HZ / HW_PLL1_M) * HW_PLL1_N / HW_PLL1_P == 480000000UL,
+    "PLL1 config does not produce 480 MHz SYSCLK. "
+    "Re-run: python tools/hw_config.py");
 /* USER CODE END 0 */
 
 /**
@@ -1025,7 +1048,7 @@ static void MX_FMC_Init(void)
   hsram1.Init.NSBank = FMC_NORSRAM_BANK1;
   hsram1.Init.DataAddressMux = FMC_DATA_ADDRESS_MUX_DISABLE;
   hsram1.Init.MemoryType = FMC_MEMORY_TYPE_SRAM;
-  hsram1.Init.MemoryDataWidth = FMC_NORSRAM_MEM_BUS_WIDTH_8;
+  hsram1.Init.MemoryDataWidth = FMC_NORSRAM_MEM_BUS_WIDTH_16;  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 8BIT */
   hsram1.Init.BurstAccessMode = FMC_BURST_ACCESS_MODE_DISABLE;
   hsram1.Init.WaitSignalPolarity = FMC_WAIT_SIGNAL_POLARITY_LOW;
   hsram1.Init.WaitSignalActive = FMC_WAIT_TIMING_BEFORE_WS;

@@ -37,6 +37,7 @@ extern "C" {
 
 #include "stm32h7xx_hal.h"
 #include "main.h"          /* authoritative GPIO pin defines (CubeMX generated) */
+#include "w25q.h"          /* BandCal_t, BAND_COUNT */
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -123,7 +124,8 @@ typedef struct {
   bool        ext_alc_on;   /*!< Enable external ALC drive reduction from PA feedback voltage  */
 } SDR_State_t;
 
-extern SDR_State_t g_sdr;
+extern SDR_State_t  g_sdr;
+extern BandCal_t    g_band_cal[BAND_COUNT];   /* per-band cal; loaded from flash at boot */
 
 /* ── Application constants ───────────────────────────────── */
 #define CSDR_FREQ_MIN_HZ       100000UL

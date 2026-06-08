@@ -16,7 +16,7 @@
 #include "input_scan.h"
 #include "si5351.h"
 #include "pe4302.h"
-#include "w25q128.h"
+#include "w25q.h"
 #include "bpf_lpf.h"
 #include "fsdr_analog.h"
 #include "usb_cat.h"
@@ -56,6 +56,11 @@ extern ADC_HandleTypeDef  hadc3;
  * ══════════════════════════════════════════════════════════ */
 static DSP_State_t      g_dsp;
 static CWDec_t          g_cw_dec;
+
+BandCal_t g_band_cal[BAND_COUNT] = {
+  {0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100},
+  {0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100}
+};
 
 SDR_State_t g_sdr = {
   .freq_hz       = CSDR_FREQ_DEFAULT_HZ,
@@ -369,6 +374,7 @@ void CSDR_Init(void)
       g_sdr.active_vfo        = fs.active_vfo;
     }
     SPI_Assets_LoadAll(&g_flash);
+    Flash_LoadBandCal(&g_flash, g_band_cal);  /* defaults kept on failure */
   }
   LCD_Render_Init();
   SDR_UI_Init();
@@ -376,21 +382,15 @@ void CSDR_Init(void)
   /* Boot logo — read from SPI flash, center on display, hold 1.5 s.
    * Skipped if flash failed or sector is erased (first pixel == 0xFFFF). */
   if (boot_flash_ok) {
-    static uint16_t s_logo_raw[320];
-    if (Flash_ReadLogoScanline(&g_flash, 0U, s_logo_raw) == HAL_OK
+    static uint16_t s_logo_raw[LCD_W];
+    if (Flash_ReadLogoScanline(&g_flash, 0U, LCD_W, s_logo_raw) == HAL_OK
         && s_logo_raw[0] != 0xFFFFU) {
-      uint16_t *ln        = LCD_GetLineBuf();
-      const uint16_t lx0  = (uint16_t)((LCD_W - 320U) / 2U);
-      const uint16_t ly0  = (uint16_t)((LCD_H - 240U) / 2U);
+      uint16_t *ln = LCD_GetLineBuf();
       LCD_Clear(0x0000U);
-      for (uint16_t y = 0U; y < 240U; y++) {
-        if (y > 0U && Flash_ReadLogoScanline(&g_flash, y, s_logo_raw) != HAL_OK) break;
-        LCD_LineFill(ln, 0U, lx0, 0x0000U);
-        for (uint16_t x = 0U; x < 320U; x++) ln[lx0 + x] = SWAP16(s_logo_raw[x]);
-        if (lx0 + 320U < LCD_W)
-          LCD_LineFill(ln, (uint16_t)(lx0 + 320U), (uint16_t)(LCD_W - lx0 - 320U), 0x0000U);
-        LCD_PushWindow(0U, (uint16_t)(ly0 + y), (uint16_t)(LCD_W - 1U),
-                       (uint16_t)(ly0 + y), ln, LCD_W);
+      for (uint16_t y = 0U; y < LCD_H; y++) {
+        if (y > 0U && Flash_ReadLogoScanline(&g_flash, y, LCD_W, s_logo_raw) != HAL_OK) break;
+        for (uint16_t x = 0U; x < LCD_W; x++) ln[x] = SWAP16(s_logo_raw[x]);
+        LCD_PushWindow(0U, y, (uint16_t)(LCD_W - 1U), y, ln, LCD_W);
       }
       HAL_Delay(1500U);
     }
@@ -452,6 +452,7 @@ void CSDR_Init(void)
   DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
   DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
+  DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
   AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, g_sdr.nb_on, g_sdr.nb_level);
   DSP_SetSquelch(&g_dsp, g_sdr.squelch);
@@ -923,6 +924,13 @@ void CSDR_Loop(void)
   if (now - t_analog >= 100U) {
     t_analog = now;
     Analog_Update();
+    { /* Apply per-band SWR scale correction */
+      int16_t sc = g_band_cal[g_sdr.band_idx].swr_scale;
+      if (sc <  50) sc =  50;
+      if (sc > 200) sc = 200;
+      uint32_t swr_scaled = ((uint32_t)g_analog.swr_x100 * (uint32_t)(uint16_t)sc + 50U) / 100U;
+      g_analog.swr_x100 = (uint16_t)(swr_scaled > 0xFFFFU ? 0xFFFFU : swr_scaled);
+    }
     SDR_UI_UpdateSMeter_SetVoltage((int16_t)(g_analog.voltage_mv / 100));
   }
   if (now - t_fan    >= 1000U){ t_fan    = now; Fan_Update(g_analog.temp_c); }
@@ -1462,7 +1470,7 @@ static void csdr_handle_encoder(void)
             .lo_offset_hz    = g_sdr.lo_offset_hz,
             .pa_watts        = g_sdr.pa_watts,
           };
-          if (Cal_Run(&cp)) {
+          if (Cal_Run(&cp, &g_dsp)) {
             g_sdr.xtal_ppm        = cp.xtal_ppm;
             g_sdr.iq_gain         = cp.iq_gain;
             g_sdr.iq_phase        = cp.iq_phase;
@@ -1477,6 +1485,7 @@ static void csdr_handle_encoder(void)
             { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
               PA_OC_SetCurrentLimit(oc_lut[cp.pa_oc_limit_idx]); }
             DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
+            DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
             DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
             if (g_sdr.si5351_ok) {
               g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
@@ -1484,6 +1493,10 @@ static void csdr_handle_encoder(void)
               SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
             }
             csdr_save_settings();
+          } else {
+            /* Cancelled — restore live DSP state from saved settings */
+            DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
+            DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
           }
         } else if (strcmp(name, "SWR Scan") == 0) {
           SWR_Scan_Run();
@@ -1571,7 +1584,7 @@ static void csdr_handle_keys(void)
             .lo_offset_hz    = g_sdr.lo_offset_hz,
             .pa_watts        = g_sdr.pa_watts,
           };
-          if (Cal_Run(&cp)) {
+          if (Cal_Run(&cp, &g_dsp)) {
             g_sdr.xtal_ppm        = cp.xtal_ppm;
             g_sdr.iq_gain         = cp.iq_gain;
             g_sdr.iq_phase        = cp.iq_phase;
@@ -1586,6 +1599,7 @@ static void csdr_handle_keys(void)
             { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
               PA_OC_SetCurrentLimit(oc_lut[cp.pa_oc_limit_idx]); }
             DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
+            DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
             DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
             if (g_sdr.si5351_ok) {
               g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
@@ -1593,6 +1607,10 @@ static void csdr_handle_keys(void)
               SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
             }
             csdr_save_settings();
+          } else {
+            /* Cancelled — restore live DSP state from saved settings */
+            DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
+            DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
           }
         } else if (strcmp(name, "SWR Scan") == 0) {
           SWR_Scan_Run();
@@ -1698,7 +1716,9 @@ static void csdr_refresh_display(void)
     ui.nr_on     = g_sdr.nr_on;         ui.rit_hz    = g_sdr.rit_hz;
     ui.tx_mode   = g_sdr.tx_mode;
     ui.si5351_ok = g_sdr.si5351_ok;
-    ui.signal_db = g_dsp.signal_power_db;
+    ui.signal_db = g_dsp.signal_power_db + (float)g_sdr.smeter_offset_db
+                 + (float)(g_band_cal[g_sdr.band_idx].rx_gain_trim
+                          + g_band_cal[g_sdr.band_idx].noise_floor_off);
     ui.bw_hz     = g_sdr.bw_hz;         ui.voltage_x10 = (int16_t)(g_analog.voltage_mv / 100);
     ui.att_db    = g_sdr.att_db;
     ui.att_x2    = g_att.current_atten_x2;   /* 0.5 dB precision for sidebar display */
@@ -1762,7 +1782,9 @@ static void csdr_refresh_display(void)
       RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     } else {
       RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
-      SDR_UI_UpdateSMeter(g_dsp.signal_power_db);
+      SDR_UI_UpdateSMeter(g_dsp.signal_power_db + (float)g_sdr.smeter_offset_db
+                        + (float)(g_band_cal[g_sdr.band_idx].rx_gain_trim
+                                 + g_band_cal[g_sdr.band_idx].noise_floor_off));
       RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     }
   }
@@ -2078,10 +2100,12 @@ static void csdr_apply_tx(void)
    * Clamped to [0.01, 1.0]. */
   {
     bool digi = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL);
+    int16_t tx_trim = g_band_cal[g_sdr.band_idx].tx_drive_trim;
     float g = (float)(digi ? g_sdr.digi_gain : g_sdr.mic_gain) * (1.0f / 100.0f)
               * ((float)g_sdr.tx_power            * (1.0f / 100.0f))
               * ((float)PA_Protect_GetDriveLimit() * (1.0f / 100.0f))
-              * ((float)PA_Protect_GetALCDrive()   * (1.0f / 100.0f));
+              * ((float)PA_Protect_GetALCDrive()   * (1.0f / 100.0f))
+              * ((float)(100 + tx_trim)            * (1.0f / 100.0f));
     if (g < 0.01f) g = 0.01f;
     if (g > 1.0f)  g = 1.0f;
     g_dsp.tx.audio_gain = g;

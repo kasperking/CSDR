@@ -1,7 +1,8 @@
 {
-  "lcd_controller": "ST7789",
-  "lcd_orientation": "LANDSCAPE_RGB",
-  "fmc_bus_width": "8BIT",
+  "lcd_controller": "ST7796",
+  "lcd_orientation": "LANDSCAPE",
+  "lcd_color_order": "BGR",
+  "fmc_bus_width": "16BIT",
   "gpio_speed": "MEDIUM",
   "board_type": "TEST",
   "dma_chunk_rows": "8",

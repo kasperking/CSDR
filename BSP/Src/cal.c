@@ -19,14 +19,20 @@
 #include "input_scan.h"
 #include "main.h"
 #include "stm32h7xx_hal.h"
+#include "bpf_lpf.h"
+#include "w25q.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <math.h>
 
 /* ── Key sampling ────────────────────────────────────────────────────────
  * ENC_SW: direct MCU input (PB3) — use main.h macros.
  * F1/F2/F4: PCA9555 expander — use Key_InitPCA with g_pca9555_raw cache. */
 extern TIM_HandleTypeDef htim3;   /* encoder timer (TIM3_CH1/CH2 = PB4/PB5) */
+
+/* DSP pointer set by Cal_Run — used by all auto-cal routines */
+static DSP_State_t *s_dsp;
 
 /* Key_t instances are declared locally in each blocking loop. */
 
@@ -96,6 +102,13 @@ static int32_t pa_watts_to_idx(uint8_t w)
   return 0;
 }
 
+/* ── Band cal working storage ────────────────────────────────────────────── */
+static int32_t v_band_rx_gain;
+static int32_t v_band_nf_off;
+static int32_t v_band_tx_drive;
+static int32_t v_band_swr_scale;
+static char    s_band_cal_title[24] = "Band Cal";
+
 /* ── Value storage ─ mirrors Cal_Params_t fields for live editing ───────── */
 static int32_t v_xtal_ppm;
 static int32_t v_iq_gain;
@@ -137,8 +150,11 @@ static const CalItem_t items_audio[] = {
 };
 
 static const CalItem_t items_rf[] = {
-  { "S-Meter Offs",  CAL_T_INT,    -20,    20,     1, &v_smeter_off},
+  { "S-Meter Offs",  CAL_T_INT,    -60,    60,     1, &v_smeter_off},
   { "LO Offset Hz",  CAL_T_INT,  10000, 25000,   100, &v_lo_offset },
+  { "Auto S-Meter",  CAL_T_ACTION, 0,0,0,            NULL         },
+  { "Auto Noise Flr",CAL_T_ACTION, 0,0,0,            NULL         },
+  { "Auto AGC Ref",  CAL_T_ACTION, 0,0,0,            NULL         },
   { "Exit",          CAL_T_BACK,   0,0,0,            NULL         },
 };
 
@@ -150,15 +166,27 @@ static const CalItem_t items_hw[] = {
   { "Exit",       CAL_T_BACK, 0, 0, 0, NULL,       NULL       },
 };
 
-static const CalSection_t s_sections[] = {
+static const CalItem_t items_band[] = {
+  { "RX Gain Trim",  CAL_T_INT,    -20,  20,  1, &v_band_rx_gain,   NULL },
+  { "Noise Flr Off", CAL_T_INT,    -20,  20,  1, &v_band_nf_off,    NULL },
+  { "TX Drive Trim", CAL_T_INT,    -50,  50,  1, &v_band_tx_drive,  NULL },
+  { "SWR Scale %",   CAL_T_INT,     50, 200,  1, &v_band_swr_scale, NULL },
+  { "Auto Noise",    CAL_T_ACTION,   0,   0,  0, NULL,              NULL },
+  { "Save Band Cal", CAL_T_ACTION,   0,   0,  0, NULL,              NULL },
+  { "Exit",          CAL_T_BACK,     0,   0,  0, NULL,              NULL },
+};
+
+/* s_sections is non-const so the band entry title can be updated at runtime */
+static CalSection_t s_sections[] = {
   { "Frequency Cal",   items_freq,  3U },
   { "IQ Calibration",  items_iq,    4U },
   { "DC Offset",       items_dc,    4U },
   { "Audio Cal",       items_audio, 3U },
-  { "RF / Display Cal",items_rf,    3U },
+  { "RF / Display Cal",items_rf,    6U },
   { "PA Hardware",     items_hw,    3U },
+  { s_band_cal_title,  items_band,  7U },
 };
-#define SECTION_COUNT  6U
+#define SECTION_COUNT  7U
 
 /* Top-level item types */
 #define TOP_SECT   0   /* enter section submenu */
@@ -175,12 +203,13 @@ static const TopItem_t s_top[] = {
   { "Audio Cal",        TOP_SECT  },
   { "RF / Display Cal", TOP_SECT  },
   { "PA Hardware",      TOP_SECT  },
+  { "Band Cal",         TOP_SECT  },
   { "Save Settings",    TOP_SAVE  },
   { "Load Settings",    TOP_LOAD  },
   { "Reset Default",    TOP_RESET },
   { "Exit Calibration", TOP_EXIT  },
 };
-#define TOP_COUNT  10U
+#define TOP_COUNT  11U
 
 /* ── Rendering ──────────────────────────────────────────────────────────── */
 
@@ -284,43 +313,265 @@ static void render_sub_item(const CalItem_t *it, uint8_t idx,
   }
 }
 
-/* ── Auto-calibration stubs ─────────────────────────────────────────────── */
-static void auto_iq_cal(void)
-{
-  v_iq_gain  = 0;
-  v_iq_phase = 0;
+/* ── Auto-calibration helpers ───────────────────────────────────────────── */
 
+/* Progress bar toast: fill bar grows left-to-right over total_ms.
+ * Call in a polling loop; re-renders at most every ~50 ms. */
+static uint32_t s_last_render_tick = 0U;
+static void render_cal_progress(const char *msg,
+                                 uint32_t elapsed_ms, uint32_t total_ms)
+{
+  uint32_t now = HAL_GetTick();
+  if (now - s_last_render_tick < 50U) return;
+  s_last_render_tick = now;
+
+  uint8_t pct = (uint8_t)(elapsed_ms >= total_ms ? 100U
+                           : elapsed_ms * 100U / total_ms);
+  uint16_t bar_w = (uint16_t)((uint32_t)pct * (uint32_t)(CAL_W - 20U) / 100U);
   uint16_t y = (uint16_t)(CAL_Y + 60U);
-  for (uint16_t fr = 0U; fr < 20U; fr++) {
+  for (uint16_t fr = 0U; fr < 28U; fr++) {
     uint16_t *ln = LN;
     LCD_LineFill(ln, 0U, LCD_W, UI_BG);
-    LCD_LineFill(ln, CAL_X, CAL_W,
-                 (fr == 0U || fr == 19U) ? CAL_BORDER : CAL_SEL_BG);
-    if (fr >= 6U && fr < 6U + (uint16_t)Font6x8.height)
-      LCD_LineStr(ln, (uint16_t)(CAL_X + 60U), fr - 6U,
-                  "Auto IQ Cal: done", &Font6x8, 0xFFFFU, CAL_SEL_BG);
+    bool edge = (fr == 0U || fr == 27U);
+    LCD_LineFill(ln, CAL_X, CAL_W, edge ? CAL_BORDER : CAL_SEL_BG);
+    if (!edge) {
+      ln[CAL_X]              = sw16(CAL_BORDER);
+      ln[CAL_X + CAL_W - 1U] = sw16(CAL_BORDER);
+    }
+    if (!edge && fr >= 4U && fr < 4U + (uint16_t)Font6x8.height)
+      LCD_LineStr(ln, (uint16_t)(CAL_X + 8U), fr - 4U,
+                  msg, &Font6x8, 0xFFFFU, CAL_SEL_BG);
+    if (fr >= 17U && fr < 23U)   /* green progress bar */
+      LCD_LineFill(ln, (uint16_t)(CAL_X + 10U), bar_w, 0x07E0U);
     push_ln(y + fr);
   }
-  HAL_Delay(1200);
 }
 
-static void auto_dc_cal(void)
+/* Result toast: two text lines + 1.4 s pause. */
+static void render_cal_result(const char *line1, const char *line2)
 {
-  v_dc_i = 0;
-  v_dc_q = 0;
-
   uint16_t y = (uint16_t)(CAL_Y + 60U);
-  for (uint16_t fr = 0U; fr < 20U; fr++) {
+  for (uint16_t fr = 0U; fr < 28U; fr++) {
     uint16_t *ln = LN;
     LCD_LineFill(ln, 0U, LCD_W, UI_BG);
-    LCD_LineFill(ln, CAL_X, CAL_W,
-                 (fr == 0U || fr == 19U) ? CAL_BORDER : CAL_SEL_BG);
-    if (fr >= 6U && fr < 6U + (uint16_t)Font6x8.height)
-      LCD_LineStr(ln, (uint16_t)(CAL_X + 60U), fr - 6U,
-                  "Auto DC Cal: done", &Font6x8, 0xFFFFU, CAL_SEL_BG);
+    bool edge = (fr == 0U || fr == 27U);
+    LCD_LineFill(ln, CAL_X, CAL_W, edge ? CAL_BORDER : CAL_SAVE_BG);
+    if (!edge) {
+      ln[CAL_X]              = sw16(CAL_BORDER);
+      ln[CAL_X + CAL_W - 1U] = sw16(CAL_BORDER);
+    }
+    if (!edge && fr >= 4U && fr < 4U + (uint16_t)Font6x8.height)
+      LCD_LineStr(ln, (uint16_t)(CAL_X + 8U), fr - 4U,
+                  line1, &Font6x8, CAL_SAVE_FG, CAL_SAVE_BG);
+    if (!edge && fr >= 15U && fr < 15U + (uint16_t)Font6x8.height)
+      LCD_LineStr(ln, (uint16_t)(CAL_X + 8U), fr - 15U,
+                  line2, &Font6x8, 0xFFFFU, CAL_SAVE_BG);
     push_ln(y + fr);
   }
-  HAL_Delay(1000);
+  HAL_Delay(1400U);
+}
+
+/* ── RX DC Offset auto-cal ──────────────────────────────────────────────── */
+static void auto_dc_cal(void)
+{
+  if (!s_dsp) return;
+  s_last_render_tick = 0U;
+
+  /* 8192 samples ≈ 170 ms at 48 kHz — enough for a stable mean */
+  DSP_CalStart(s_dsp, DSP_CAL_DC, 8192U);
+  uint32_t t0 = HAL_GetTick();
+  DSP_CalMeas_t res;
+  bool timed_out = false;
+  while (!DSP_CalPoll(s_dsp, &res)) {
+    uint32_t e = HAL_GetTick() - t0;
+    render_cal_progress("DC Cal: measuring...", e, 200U);
+    if (e > 3000U) { timed_out = true; break; }
+  }
+
+  if (timed_out) {
+    render_cal_result("DC Cal: TIMEOUT", "Check SAI/DMA");
+    return;
+  }
+
+  int32_t di = (int32_t)res.result_dc_i;
+  int32_t dq = (int32_t)res.result_dc_q;
+  if (di < -2048) di = -2048;
+  if (di >  2048) di =  2048;
+  if (dq < -2048) dq = -2048;
+  if (dq >  2048) dq =  2048;
+
+  v_dc_i = di;
+  v_dc_q = dq;
+  DSP_SetDCOffset(s_dsp, di, dq);
+
+  char buf[40];
+  snprintf(buf, sizeof(buf), "I=%+ld  Q=%+ld  ADC counts", (long)di, (long)dq);
+  render_cal_result("DC Cal done:", buf);
+}
+
+/* ── RX IQ Balance auto-cal ─────────────────────────────────────────────── */
+static void auto_iq_cal(void)
+{
+  if (!s_dsp) return;
+  s_last_render_tick = 0U;
+
+  /* Prompt: user must have a real signal present */
+  render_cal_progress("IQ Cal: tune to signal", 0U, 1U);
+  HAL_Delay(600U);
+
+  /* 16384 samples ≈ 341 ms — enough to average out noise */
+  DSP_CalStart(s_dsp, DSP_CAL_IQ, 16384U);
+  uint32_t t0 = HAL_GetTick();
+  DSP_CalMeas_t res;
+  bool timed_out = false;
+  while (!DSP_CalPoll(s_dsp, &res)) {
+    uint32_t e = HAL_GetTick() - t0;
+    render_cal_progress("IQ Cal: measuring...", e, 380U);
+    if (e > 3000U) { timed_out = true; break; }
+  }
+
+  if (timed_out) {
+    render_cal_result("IQ Cal: TIMEOUT", "Check SAI/DMA");
+    return;
+  }
+
+  /* Reject if no signal present (rms_i < -40 dBFS ≈ 0.01) */
+  float cnt   = (float)res.n_count;
+  float rms_i = (cnt > 0.0f) ? sqrtf(res.acc_ii / cnt) : 0.0f;
+  if (rms_i < 0.01f) {
+    render_cal_result("IQ Cal: no signal!", "Need signal > -40dBFS");
+    return;
+  }
+
+  /* Clamp to ±50 milli / ±50 mrad working range */
+  int32_t g = (int32_t)res.result_iq_gain;
+  int32_t p = (int32_t)res.result_iq_phase;
+  if (g < -50) g = -50;
+  if (g >  50) g =  50;
+  if (p < -50) p = -50;
+  if (p >  50) p =  50;
+
+  v_iq_gain  = g;
+  v_iq_phase = p;
+  DSP_SetIQCorr(s_dsp, (int16_t)v_iq_gain, (int16_t)v_iq_phase);
+
+  char buf[40];
+  snprintf(buf, sizeof(buf), "Gain=%+ld  Phase=%+ld mrad", (long)g, (long)p);
+  render_cal_result("IQ Cal done:", buf);
+}
+
+/* ── Noise Floor measurement (display only) ─────────────────────────────── */
+static void auto_noise_floor(void)
+{
+  if (!s_dsp) return;
+  s_last_render_tick = 0U;
+
+  /* Sample signal_power_db for 2 s (IIR α=0.1 per sample → well settled) */
+  uint32_t t0 = HAL_GetTick();
+  while (HAL_GetTick() - t0 < 2000U)
+    render_cal_progress("Noise: sampling (no sig)", HAL_GetTick() - t0, 2000U);
+
+  int16_t floor_i = (int16_t)s_dsp->signal_power_db;
+  char buf[40];
+  snprintf(buf, sizeof(buf), "Floor: %d dBFS", (int)floor_i);
+  render_cal_result("Noise Floor:", buf);
+}
+
+/* ── S-meter Zero auto-cal ──────────────────────────────────────────────── */
+static void auto_smeter_zero(void)
+{
+  if (!s_dsp) return;
+  s_last_render_tick = 0U;
+
+  /* Measure noise floor — disconnect antenna or use terminated input */
+  uint32_t t0 = HAL_GetTick();
+  while (HAL_GetTick() - t0 < 2000U)
+    render_cal_progress("S-Meter: remove antenna", HAL_GetTick() - t0, 2000U);
+
+  float floor_db = s_dsp->signal_power_db;
+
+  /* Want noise to read S0 (bars=0).  S-meter formula:
+   *   bars = (signal_db + smeter_offset_db + 73) / 3
+   * For bars=0 at floor_db: offset = -(floor_db + 73) */
+  int16_t offset = (int16_t)(-(floor_db + 73.0f));
+  if (offset < -60) offset = -60;
+  if (offset >  60) offset =  60;
+
+  v_smeter_off = (int32_t)offset;
+
+  char buf[40];
+  snprintf(buf, sizeof(buf), "Flr=%d dBFS  Off=%+d dB",
+           (int)(int16_t)floor_db, (int)offset);
+  render_cal_result("S-Meter zeroed:", buf);
+}
+
+/* ── AGC Reference auto-cal ─────────────────────────────────────────────── */
+static void auto_agc_ref(void)
+{
+  if (!s_dsp) return;
+  s_last_render_tick = 0U;
+
+  /* Measure noise floor (same 2 s settle) */
+  uint32_t t0 = HAL_GetTick();
+  while (HAL_GetTick() - t0 < 2000U)
+    render_cal_progress("AGC: sampling floor...", HAL_GetTick() - t0, 2000U);
+
+  float noise_db  = s_dsp->signal_power_db;
+  float noise_rms = powf(10.0f, noise_db / 20.0f);
+
+  /* Set max_gain so that noise × max_gain = AGC_target × 0.25 (−12 dB below
+   * target).  This prevents AGC from pumping bare noise to near-full volume
+   * while preserving sensitivity for signals above the noise floor. */
+  float new_max = s_dsp->agc.target * 0.25f / (noise_rms + 1e-10f);
+  if (new_max <  1.0f)   new_max =  1.0f;
+  if (new_max > 200.0f)  new_max = 200.0f;
+  s_dsp->agc.max_gain = new_max;
+
+  char buf[40];
+  snprintf(buf, sizeof(buf), "MaxGain=%d  Flr=%d dBFS",
+           (int)new_max, (int)(int16_t)noise_db);
+  render_cal_result("AGC Ref set:", buf);
+}
+
+/* ── Band-level noise floor auto-cal ────────────────────────────────────── */
+static void auto_band_noise_floor(void)
+{
+  if (!s_dsp) return;
+  s_last_render_tick = 0U;
+
+  uint32_t t0 = HAL_GetTick();
+  while (HAL_GetTick() - t0 < 2000U)
+    render_cal_progress("BandNF: no signal...", HAL_GetTick() - t0, 2000U);
+
+  float floor_db = s_dsp->signal_power_db;
+  /* Solve for noise_floor_off so that S-meter reads S0 at the noise floor:
+   *   signal_power_db + smeter_offset + rx_gain_trim + noise_floor_off = -73
+   *   noise_floor_off = -(floor_db + smeter_offset + rx_gain_trim + 73)    */
+  int16_t off = (int16_t)(-(floor_db
+                           + (float)v_smeter_off
+                           + (float)v_band_rx_gain
+                           + 73.0f));
+  if (off < -20) off = -20;
+  if (off >  20) off =  20;
+  v_band_nf_off = (int32_t)off;
+
+  char buf[40];
+  snprintf(buf, sizeof(buf), "Flr=%d dBFS  Off=%+d",
+           (int)(int16_t)floor_db, (int)off);
+  render_cal_result("Band NF zeroed:", buf);
+}
+
+/* ── Save per-band cal to flash ─────────────────────────────────────────── */
+static void save_band_cal(void)
+{
+  uint8_t bi = g_sdr.band_idx;
+  if (bi >= BAND_COUNT) return;
+  g_band_cal[bi].rx_gain_trim    = (int16_t)v_band_rx_gain;
+  g_band_cal[bi].noise_floor_off = (int16_t)v_band_nf_off;
+  g_band_cal[bi].tx_drive_trim   = (int16_t)v_band_tx_drive;
+  g_band_cal[bi].swr_scale       = (int16_t)v_band_swr_scale;
+  Flash_SaveBandCal(&g_flash, g_band_cal);
+  render_cal_result("Band Cal saved:", BPF_BandName(bi));
 }
 
 /* ── Encoder delta helper ────────────────────────────────────────────────── */
@@ -401,6 +652,11 @@ static void run_section(uint8_t sect_idx)
       } else if (it->type == CAL_T_ACTION) {
         if (sect_idx == 1U && cursor == 2U) auto_iq_cal();
         if (sect_idx == 2U && cursor == 2U) auto_dc_cal();
+        if (sect_idx == 4U && cursor == 2U) auto_smeter_zero();
+        if (sect_idx == 4U && cursor == 3U) auto_noise_floor();
+        if (sect_idx == 4U && cursor == 4U) auto_agc_ref();
+        if (sect_idx == 6U && cursor == 4U) auto_band_noise_floor();
+        if (sect_idx == 6U && cursor == 5U) save_band_cal();
       }
       render_sublevel(sect_idx, cursor, editing, scroll);
     }
@@ -457,8 +713,10 @@ static void render_toplevel(uint8_t cursor, uint8_t scroll)
 }
 
 /* ── Cal_Run ────────────────────────────────────────────────────────────── */
-bool Cal_Run(Cal_Params_t *params)
+bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
 {
+  s_dsp = dsp;   /* expose to all auto-cal routines */
+
   /* Copy params into working storage */
   v_xtal_ppm   = params->xtal_ppm;
   v_iq_gain    = (int32_t)params->iq_gain;
@@ -496,6 +754,17 @@ bool Cal_Run(Cal_Params_t *params)
       const TopItem_t *it = &s_top[cursor];
 
       if (it->kind == TOP_SECT) {
+        if (cursor == 6U) {
+          /* Load current band's cal into working vars and update section title */
+          uint8_t bi = g_sdr.band_idx;
+          v_band_rx_gain   = (int32_t)g_band_cal[bi].rx_gain_trim;
+          v_band_nf_off    = (int32_t)g_band_cal[bi].noise_floor_off;
+          v_band_tx_drive  = (int32_t)g_band_cal[bi].tx_drive_trim;
+          v_band_swr_scale = (int32_t)g_band_cal[bi].swr_scale;
+          snprintf(s_band_cal_title, sizeof(s_band_cal_title),
+                   "Band Cal [%s]", BPF_BandName(bi));
+          s_sections[6U].title = s_band_cal_title;
+        }
         run_section((uint8_t)cursor);
         render_toplevel(cursor, scroll);
 

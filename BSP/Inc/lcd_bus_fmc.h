@@ -1,25 +1,31 @@
 /* USER CODE BEGIN Header */
 /**
  * @file  lcd_bus_fmc.h
- * @brief FMC 8080-mode LCD bus driver for STM32H750 – ST7796S 480×320.
+ * @brief FMC 8080-mode LCD bus driver for STM32H750 – ST7796S/ST7789.
  *
- *  FMC Bank1 NE1 memory-mapped access.  No SPI, no DMA — pure FMC.
+ *  FMC Bank1 NE1 memory-mapped access.  No SPI — pure FMC.
  *  A16 (PD11) drives LCD RS/DC:
- *    write to LCD_FMC_CMD_ADDR  (0x60000000) → A16=0 → command
- *    write to LCD_FMC_DATA_ADDR (0x60010000) → A16=1 → data/pixel
+ *    write to LCD_FMC_CMD_ADDR  → A16=0 → command
+ *    write to LCD_FMC_DATA_ADDR → A16=1 → data/pixel
  *
- *  Address mapping detail (8-bit mode):
- *    FMC Bank1 NE1 base = 0x60000000
- *    A16 = CPU address bit 16 = offset 0x10000
- *    CMD  = base + 0x00000 = 0x60000000  (A16=0 → RS/DC LOW  → command)
- *    DATA = base + 0x10000 = 0x60010000  (A16=1 → RS/DC HIGH → data)
- *    Any byte write to CMD_ADDR: FMC pulses NWE, keeps A16 LOW.
- *    Any byte write to DATA_ADDR: FMC pulses NWE, keeps A16 HIGH.
+ *  Bus width is selected by hw_config.py (HW_FMC_8BIT / HW_FMC_16BIT):
  *
- *  Bus width: 8-bit.  Each 16-bit pixel = 2 consecutive byte writes, MSB first.
+ *  8-bit mode:
+ *    DATA = 0x60000000 + 0x10000  (A16 = CPU bit 16)
+ *    lcd_bus_t = uint8_t.  Each RGB565 pixel = 2 byte-writes, MSB first.
+ *    MPU Region 1 covers 128 KB (0x60000000–0x6001FFFF).
  *
- *  IMPORTANT: LCD_Bus_Init() configures MPU Region 1 (0x60000000–0x6001FFFF)
- *  as Strongly-Ordered (TEX=0,C=0,B=0).  D-Cache must not buffer FMC writes.
+ *  16-bit mode:
+ *    DATA = 0x60000000 + 0x20000  (A16 = CPU bit 17; bus-width address shift)
+ *    lcd_bus_t = uint16_t.  Each RGB565 pixel = 1 halfword-write.
+ *    MPU Region 1 covers 256 KB (0x60000000–0x6003FFFF).
+ *    LCD_WriteData8 casts to uint16_t (DB15-DB8 = 0x00 → don't-care for params).
+ *    LCD_WriteData16 collapses to a single write.
+ *    LCD_PushWindow un-does the SWAP16 buffer convention per pixel (bswap16).
+ *    DMA pixel path falls back to CPU (see lcd_dma.c).
+ *
+ *  IMPORTANT: LCD_Bus_Init() configures MPU Region 1 as Strongly-Ordered
+ *  (TEX=0,C=0,B=0).  D-Cache must not buffer FMC writes.
  */
 /* USER CODE END Header */
 
@@ -32,18 +38,36 @@ extern "C" {
 
 #include <stdint.h>
 #include <stddef.h>
+#include "hw_config_active.h"
 
 /* ── Bus width ───────────────────────────────────────────────────────────────
- * Only 8-bit implemented.  Reserve define for future 16-bit migration.
- */
-#define LCD_BUS_WIDTH   8
+ * Derived from HW_FMC_8BIT / HW_FMC_16BIT in hw_config_active.h.
+ *
+ * 8-bit mode:  lcd_bus_t = uint8_t,  DATA offset = 0x10000 (A16 = CPU bit 16)
+ * 16-bit mode: lcd_bus_t = uint16_t, DATA offset = 0x20000 (A16 = CPU bit 17,
+ *              because each FMC address word is 2 bytes wide).
+ *
+ * lcd_bus_fmc.c casts writes to lcd_bus_t so both modes compile cleanly.
+ * LCD_WriteData16 collapses to a single write in 16-bit mode (1 pixel per WR).
+ * hw_config_active.h is included above so these macros are visible immediately. */
+#if HW_FMC_16BIT
+#  define LCD_BUS_WIDTH    16
+   typedef volatile uint16_t lcd_bus_t;
+#else
+#  define LCD_BUS_WIDTH    8
+   typedef volatile uint8_t lcd_bus_t;
+#endif
 
 /* ── FMC Bank1 NE1 address map ───────────────────────────────────────────────
- * CMD  → 0x60000000  (A16=0)
- * DATA → 0x60010000  (A16=1, offset = 1<<16)
+ * CMD  → 0x60000000              (A16=0 → RS/DC LOW  → command)
+ * DATA → 0x60000000 + DATA_OFFSET (A16=1 → RS/DC HIGH → data/pixel)
+ *
+ * HW_FMC_DATA_ADDR_OFFSET comes from hw_config_active.h:
+ *   8-bit  → 0x10000  (offset = 1<<16)
+ *   16-bit → 0x20000  (offset = 1<<17, due to bus-width address shift)
  */
-#define LCD_FMC_CMD_ADDR   ((volatile uint8_t *)0x60000000UL)
-#define LCD_FMC_DATA_ADDR  ((volatile uint8_t *)0x60010000UL)
+#define LCD_FMC_CMD_ADDR   ((lcd_bus_t *)0x60000000UL)
+#define LCD_FMC_DATA_ADDR  ((lcd_bus_t *)(0x60000000UL + HW_FMC_DATA_ADDR_OFFSET))
 
 /* ── Screen geometry ──────────────────────────────────────────────────────── *
  * LCD_W and LCD_H are defined by lcd_panel_config.h.                         *
@@ -112,11 +136,17 @@ void LCD_Bus_Init(void);
 void LCD_WriteCmd(uint8_t cmd);
 void LCD_WriteData8(uint8_t data);
 
-/* 16-bit pixel: two 8-bit writes, MSB first */
+/* 16-bit pixel write.
+ * 8-bit mode : two byte-writes, MSB first.
+ * 16-bit mode: single halfword-write (one WR pulse = one pixel). */
 static inline void LCD_WriteData16(uint16_t data)
 {
-    *LCD_FMC_DATA_ADDR = (uint8_t)(data >> 8);
-    *LCD_FMC_DATA_ADDR = (uint8_t)(data);
+#if HW_FMC_16BIT
+    *LCD_FMC_DATA_ADDR = (lcd_bus_t)data;
+#else
+    *LCD_FMC_DATA_ADDR = (lcd_bus_t)(data >> 8);
+    *LCD_FMC_DATA_ADDR = (lcd_bus_t)(data);
+#endif
 }
 
 /* Core LCD operations — colors are raw RGB565 (no byte-swap) */

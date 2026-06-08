@@ -1,15 +1,15 @@
 /* USER CODE BEGIN Header */
 /**
-  * @file w25q128.c
-  * @brief W25Q128JV SPI Flash Driver
+  * @file w25q.c
+  * @brief W25Q SPI NOR Flash Driver
   */
 /* USER CODE END Header */
 
-#include "w25q128.h"
+#include "w25q.h"
 #include <string.h>
 
 /* USER CODE BEGIN PV */
-W25Q_Handle_t g_flash;
+W25Q_Handle_t g_flash;   /* zero-init → present=false; real init only when HW_STORAGE_W25Q==1 */
 /* USER CODE END PV */
 
 /* USER CODE BEGIN 0 */
@@ -68,6 +68,12 @@ HAL_StatusTypeDef W25Q_Init(W25Q_Handle_t *dev, SPI_HandleTypeDef *hspi,
                              GPIO_TypeDef *cs_port, uint16_t cs_pin)
 {
   /* USER CODE BEGIN W25Q_Init_0 */
+#if !HW_STORAGE_W25Q
+  /* No W25Q fitted per hw_config (HW_STORAGE_W25Q == 0). */
+  (void)hspi; (void)cs_port; (void)cs_pin;
+  dev->present = false;
+  return HAL_ERROR;
+#endif
   dev->hspi = hspi;
   dev->cs_port = cs_port;
   dev->cs_pin  = cs_pin;
@@ -257,12 +263,11 @@ HAL_StatusTypeDef Flash_LoadSettings(W25Q_Handle_t *dev,
 }
 
 HAL_StatusTypeDef Flash_ReadLogoScanline(W25Q_Handle_t *dev,
-                                          uint16_t y, uint16_t *line_buf)
+                                          uint16_t y, uint16_t width, uint16_t *line_buf)
 {
   /* USER CODE BEGIN Flash_ReadLogoScanline_0 */
-  /* Logo là RGB565, 320px × 240 dòng → mỗi dòng 640 byte */
-  uint32_t offset = FLASH_ADDR_LOGO + (uint32_t)y * 320U * 2U;
-  return W25Q_Read(dev, offset, (uint8_t*)line_buf, 320U * 2U);
+  uint32_t offset = FLASH_ADDR_LOGO + (uint32_t)y * width * 2U;
+  return W25Q_Read(dev, offset, (uint8_t*)line_buf, (uint32_t)width * 2U);
   /* USER CODE END Flash_ReadLogoScanline_0 */
 }
 
@@ -288,6 +293,43 @@ HAL_StatusTypeDef W25Q_WriteSR1(W25Q_Handle_t *dev, uint8_t new_sr)
   uint8_t cmd[2] = { W25Q_CMD_WRITE_STATUS, new_sr };
   _CS_L(dev); spi_tx(dev, cmd, 2U); _CS_H(dev);
   return W25Q_WaitBusy(dev, 50U);
+}
+
+HAL_StatusTypeDef Flash_LoadBandCal(W25Q_Handle_t *dev,
+                                     BandCal_t band[BAND_COUNT])
+{
+  BandCalBlock_t blk;
+  bool ok = (W25Q_Read(dev, FLASH_ADDR_BAND_CAL,
+                        (uint8_t*)&blk, sizeof(blk)) == HAL_OK)
+            && (blk.magic == BAND_CAL_MAGIC)
+            && (crc32_simple((const uint8_t*)&blk,
+                              sizeof(blk) - sizeof(blk.crc32)) == blk.crc32);
+  if (ok) {
+    memcpy(band, blk.band, sizeof(blk.band));
+  } else {
+    /* Defaults: no gain trim, swr_scale=100 (×1.0 = no scaling) */
+    for (uint8_t i = 0; i < BAND_COUNT; i++) {
+      band[i].rx_gain_trim    = 0;
+      band[i].noise_floor_off = 0;
+      band[i].tx_drive_trim   = 0;
+      band[i].swr_scale       = 100;
+    }
+  }
+  return ok ? HAL_OK : HAL_ERROR;
+}
+
+HAL_StatusTypeDef Flash_SaveBandCal(W25Q_Handle_t *dev,
+                                     const BandCal_t band[BAND_COUNT])
+{
+  BandCalBlock_t blk;
+  blk.magic = BAND_CAL_MAGIC;
+  memcpy(blk.band, band, sizeof(blk.band));
+  blk.crc32 = crc32_simple((const uint8_t*)&blk,
+                             sizeof(blk) - sizeof(blk.crc32));
+  HAL_StatusTypeDef r = W25Q_SectorErase(dev, FLASH_ADDR_BAND_CAL);
+  if (r != HAL_OK) return r;
+  return W25Q_Write(dev, FLASH_ADDR_BAND_CAL,
+                    (const uint8_t*)&blk, sizeof(blk));
 }
 
 /* USER CODE END 1 */

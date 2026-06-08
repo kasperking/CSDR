@@ -6,6 +6,7 @@ extern "C" {
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "sdr_dsp.h"
 
 /**
  * @file  cal.h
@@ -15,6 +16,9 @@ extern "C" {
  *  calibration parameters.  Returns true when the user chooses
  *  "Save Settings"; caller is responsible for persisting to flash and
  *  applying the new values.
+ *
+ *  dsp: pointer to the live DSP state used by the auto-cal routines
+ *  (DC offset measurement, IQ mismatch estimation, noise floor sampling).
  */
 
 typedef struct {
@@ -48,8 +52,10 @@ typedef struct {
 /* Run the calibration overlay.  Blocks until the user exits.
  * Returns true  → user chose Save; caller should apply + persist params.
  * Returns false → user cancelled; params may have been modified locally
- *                 by Reset Default but should be discarded by caller. */
-bool Cal_Run(Cal_Params_t *params);
+ *                 by Reset Default but should be discarded by caller.
+ * dsp: live DSP state; auto-cal routines read signal_power_db and arm
+ *      DSP_CalStart/DSP_CalPoll via this pointer. */
+bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp);
 
 #ifdef __cplusplus
 }

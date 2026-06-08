@@ -578,6 +578,12 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->iq_g_inv = 1.0f;
   dsp->iq_p     = 0.0f;
 
+  /* Static DC offset: 0 until DSP_SetDCOffset() is called */
+  dsp->dc_i_static       = 0.0f;
+  dsp->dc_q_static       = 0.0f;
+  dsp->cal_meas.mode     = DSP_CAL_IDLE;
+  dsp->cal_meas.done     = false;
+
   AGC_Init(&dsp->agc, sample_rate);
   FFT_Hann_Window(dsp->fft_window, DSP_FFT_SIZE);
 
@@ -731,6 +737,43 @@ void DSP_SetBW(DSP_State_t *dsp, float bw_hz)
   FIR_Init_LPF(&dsp->fir_q, bw_norm, FIR_MAX_TAPS);
 }
 
+/* ── Static DC offset ───────────────────────────────────────────────────────
+ * Call after loading cal from flash.  dc_i / dc_q are in ADC count units
+ * (same units as the int32_t dc_i_offset stored in Flash_Settings_t). */
+void DSP_SetDCOffset(DSP_State_t *dsp, int32_t dc_i, int32_t dc_q)
+{
+  dsp->dc_i_static = (float)dc_i;
+  dsp->dc_q_static = (float)dc_q;
+}
+
+/* ── Cal measurement ────────────────────────────────────────────────────────
+ * DSP_CalStart: arm accumulator (DSP fills it from ISR context).
+ * DSP_CalPoll : returns true + copies result when measurement is complete.
+ *              Clears cal_meas.mode so DSP stops accumulating after poll. */
+void DSP_CalStart(DSP_State_t *dsp, DSP_CalMode_t mode, uint32_t n_samples)
+{
+  dsp->cal_meas.mode     = DSP_CAL_IDLE;  /* disarm first */
+  dsp->cal_meas.n_target = n_samples;
+  dsp->cal_meas.n_count  = 0U;
+  dsp->cal_meas.acc_i    = 0.0f;
+  dsp->cal_meas.acc_q    = 0.0f;
+  dsp->cal_meas.acc_ii   = 0.0f;
+  dsp->cal_meas.acc_qq   = 0.0f;
+  dsp->cal_meas.acc_iq   = 0.0f;
+  dsp->cal_meas.done     = false;
+  __DMB();
+  dsp->cal_meas.mode     = mode;  /* arm: DSP begins accumulating next call */
+}
+
+bool DSP_CalPoll(DSP_State_t *dsp, DSP_CalMeas_t *out)
+{
+  if (!dsp->cal_meas.done) return false;
+  __DMB();
+  if (out) *out = dsp->cal_meas;
+  dsp->cal_meas.mode = DSP_CAL_IDLE;
+  return true;
+}
+
 /* Load IQ calibration values into DSP state.
  * gain_millis: Q amplitude error × 1000  (-50 → Q is 5% weak, +50 → Q is 5% strong)
  * phase_mrad : phase error in milliradians (-50..+50, ≈ ±2.9°)
@@ -769,10 +812,27 @@ void DSP_Process(DSP_State_t *dsp,
     /* ── 1. Read: SAI RX stores 16-bit data right-justified in bits[15:0].
      *           (STM32H7 SAI: DataSize < SlotSize → RX right-justified, TX left-justified)
      *           Standard IQ convention: Q = +sin(2πft) for a signal at +f (USB side). */
-    float raw_i = (float)((int16_t)(uint16_t)iq_in[n * 2U + 0U]) * DSP_INV_32767;
-    float raw_q =  (float)((int16_t)(uint16_t)iq_in[n * 2U + 1U]) * DSP_INV_32767;
+    int16_t adc_i = (int16_t)(uint16_t)iq_in[n * 2U + 0U];
+    int16_t adc_q = (int16_t)(uint16_t)iq_in[n * 2U + 1U];
 
-    /* ── 2. Pre-mix DC block (ADC DC offset) */
+    /* ── 1b. Cal: DC measurement — raw ADC counts before any processing.
+     *         Accumulates the static ADC bias so auto_dc_cal can measure it. */
+    if (dsp->cal_meas.mode == DSP_CAL_DC && !dsp->cal_meas.done) {
+      dsp->cal_meas.acc_i += (float)adc_i;
+      dsp->cal_meas.acc_q += (float)adc_q;
+      if (++dsp->cal_meas.n_count >= dsp->cal_meas.n_target) {
+        float cnt = (float)dsp->cal_meas.n_count;
+        dsp->cal_meas.result_dc_i = dsp->cal_meas.acc_i / cnt;
+        dsp->cal_meas.result_dc_q = dsp->cal_meas.acc_q / cnt;
+        dsp->cal_meas.done = true;
+      }
+    }
+
+    /* ── 1c. Static DC offset subtraction + normalize to ±1.0 */
+    float raw_i = ((float)adc_i - dsp->dc_i_static) * DSP_INV_32767;
+    float raw_q = ((float)adc_q - dsp->dc_q_static) * DSP_INV_32767;
+
+    /* ── 2. Pre-mix DC block (removes remaining LF / residual ADC bias) */
     raw_i = IIR_DCBlock_Process(&dsp->dc_block_i, raw_i);
     raw_q = IIR_DCBlock_Process(&dsp->dc_block_q, raw_q);
 
@@ -787,6 +847,30 @@ void DSP_Process(DSP_State_t *dsp,
      *        that survives the pre-mix blocker and would appear as center spike */
     mix_i = IIR_DCBlock_Process(&dsp->dc_postmix_i, mix_i);
     mix_q = IIR_DCBlock_Process(&dsp->dc_postmix_q, mix_q);
+
+    /* ── 3b+. Cal: IQ mismatch measurement — post-DC-block, pre-correction.
+     *          Accumulates I²/Q²/I·Q to compute gain and phase imbalance.
+     *          A real signal must be present for a meaningful result. */
+    if (dsp->cal_meas.mode == DSP_CAL_IQ && !dsp->cal_meas.done) {
+      dsp->cal_meas.acc_ii += mix_i * mix_i;
+      dsp->cal_meas.acc_qq += mix_q * mix_q;
+      dsp->cal_meas.acc_iq += mix_i * mix_q;
+      if (++dsp->cal_meas.n_count >= dsp->cal_meas.n_target) {
+        float cnt   = (float)dsp->cal_meas.n_count;
+        float rms_i = sqrtf(dsp->cal_meas.acc_ii / cnt);
+        float rms_q = sqrtf(dsp->cal_meas.acc_qq / cnt);
+        float cross  = dsp->cal_meas.acc_iq / cnt;
+        float denom  = rms_i * rms_q + 1e-10f;
+        /* Gain error: (Q_rms / I_rms - 1) × 1000 */
+        dsp->cal_meas.result_iq_gain  = (rms_q / (rms_i + 1e-10f) - 1.0f) * 1000.0f;
+        /* Phase error: asin(E[I·Q] / (I_rms × Q_rms)) × 1000 (milliradians) */
+        float pa = cross / denom;
+        if (pa >  0.9999f) pa =  0.9999f;
+        if (pa < -0.9999f) pa = -0.9999f;
+        dsp->cal_meas.result_iq_phase = asinf(pa) * 1000.0f;
+        dsp->cal_meas.done = true;
+      }
+    }
 
     /* ── 3c. IQ mismatch correction (Gram-Schmidt orthogonalization).
      *        Corrects QSD amplitude and phase imbalance to improve image rejection.

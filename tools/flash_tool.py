@@ -64,13 +64,13 @@ SECTOR_SIZE    = 4096         # bytes
 BLOCK64_SIZE   = 65536        # bytes
 FLASH_SIZE     = 16 * 1024 * 1024
 
-# Flash layout (mirrors w25q128.h)
-FLASH_ADDR_SETTINGS    = 0x000000
-FLASH_ADDR_BAND_CAL    = 0x001000
-FLASH_ADDR_LOGO        = 0x003000
-FLASH_ADDR_FONT_DATA   = 0x02C000
-FLASH_ADDR_FFT_TWIDDLE = 0x02D000
-FLASH_ADDR_FFT_BITREV  = 0x02E000
+# Flash layout (mirrors w25q.h)
+FLASH_ADDR_SETTINGS    = 0x000000   # 16KB zone (0x000000-0x003FFF)
+FLASH_ADDR_BAND_CAL    = 0x004000   # 16KB zone (0x004000-0x007FFF)
+FLASH_ADDR_LOGO        = 0x008000   # 300KB max (0x008000-0x052FFF, up to 480×320×2)
+FLASH_ADDR_FONT_DATA   = 0x058000   # 32KB zone (0x058000-0x05FFFF)
+FLASH_ADDR_FFT_TWIDDLE = 0x060000   # 16KB zone (0x060000-0x063FFF)
+FLASH_ADDR_FFT_BITREV  = 0x064000   # 16KB zone (0x064000-0x067FFF)
 
 # Asset geometry (mirrors spi_assets.h)
 FONT_GLYPH_COUNT  = 59          # ASCII 32..90
@@ -298,7 +298,7 @@ class FlashTool:
                 f"0x{FLASH_ADDR_FONT_DATA:06X}. "
                 f"Max logo size for this layout: "
                 f"{FLASH_ADDR_FONT_DATA - FLASH_ADDR_LOGO} B "
-                f"(e.g. 320×240).")
+                f"(e.g. 480×320).")
         if verbose:
             print(f"Converting {image_path} → {width}×{height} RGB565 "
                   f"({total_bytes} bytes)...")

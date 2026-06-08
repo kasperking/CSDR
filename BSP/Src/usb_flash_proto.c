@@ -4,7 +4,7 @@
  */
 
 #include "usb_flash_proto.h"
-#include "w25q128.h"
+#include "w25q.h"
 #include <string.h>
 
 /* ── CDC transmit helpers (avoid cross-directory includes) ──────────────── */

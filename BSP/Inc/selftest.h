@@ -12,7 +12,7 @@
   *  (SDR_UI_DrawHeader reads g_selftest directly).
   *
   *  Items tested:
-  *    FLASH — W25Q128 SPI flash   (settings persistence)
+  *    FLASH — W25Q SPI flash   (settings persistence)
   *    CODEC — WM8731 audio codec  (RX/TX audio)
   *    PLL   — SI5351 oscillator   (VFO / LO synthesis)
   *    INA   — INA226 PA current   (overcurrent protection)
