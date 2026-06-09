@@ -22,6 +22,7 @@
 #include "usb_cat.h"
 #include "usb_audio.h"
 #include "menu.h"
+#include "band_sel.h"
 #include "cal.h"
 #include "sdr_scan.h"
 #include "runtime_diag.h"
@@ -1471,6 +1472,11 @@ static void csdr_handle_encoder(void)
 {
   int32_t delta = Encoder_GetDelta(&g_encoder);
   if (delta != 0) {
+    if (BandSel_IsOpen()) {
+      if (delta > 0) BandSel_CursorDown(); else BandSel_CursorUp();
+      BandSel_Render();
+      return;
+    }
     if (Menu_IsOpen(&g_menu)) { Menu_EncoderEdit(&g_menu, delta); return; }
     int64_t f = (int64_t)g_sdr.freq_hz + (int64_t)delta*(int64_t)g_sdr.step;
     if (f < CSDR_FREQ_MIN_HZ) f = CSDR_FREQ_MIN_HZ;
@@ -1483,6 +1489,13 @@ static void csdr_handle_encoder(void)
     g_sdr.display_dirty |= DIRTY_VFO;
   }
   if (Encoder_GetButton(&g_encoder)) {
+    if (BandSel_IsOpen()) {
+      uint8_t b = BandSel_Cursor();
+      BandSel_Close();
+      csdr_apply_band(b);
+      g_sdr.display_dirty |= DIRTY_ALL;
+      return;
+    }
     if (Menu_IsOpen(&g_menu)) {
       /* Check if selected item is ACTION type (Calibration or SWR Scan) */
       { MenuItem_t *_cur = Menu_CurrentItem(&g_menu);
@@ -1581,6 +1594,23 @@ static void csdr_handle_keys(void)
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
   }
 
+  /* Band-sel overlay input — intercepts F1/F2/F3/F4 and band key */
+  if (BandSel_IsOpen()) {
+    if (Key_PressOrRepeat(&k_f1)) { BandSel_CursorUp();   BandSel_Render(); }
+    if (Key_PressOrRepeat(&k_f2)) { BandSel_CursorDown(); BandSel_Render(); }
+    if (Key_Press(&k_f3)) {
+      uint8_t b = BandSel_Cursor();
+      BandSel_Close();
+      csdr_apply_band(b);
+      g_sdr.display_dirty |= DIRTY_ALL;
+    }
+    if (Key_Press(&k_f4) || Key_Press(&k_band)) {
+      BandSel_Close();
+      g_sdr.display_dirty |= DIRTY_ALL;
+    }
+    return;  /* consume all remaining key processing this frame */
+  }
+
   /* F1: menu UP / Volume Down */
   if (Key_PressOrRepeat(&k_f1)) {
     if (Menu_IsOpen(&g_menu)) {
@@ -1673,8 +1703,19 @@ static void csdr_handle_keys(void)
   }
 
 
-  if (Key_Press(&k_band))
-    csdr_apply_band(BPF_BandUp(g_sdr.band_idx));
+  /* BAND key: short press = BandUp on release; long hold = open overlay.
+   * Key_Press fires ~20ms into a press; Key_Hold fires at 600ms.
+   * Using pending flag so BandUp only applies if no hold fired (short press). */
+  { static bool s_band_pending = false;
+    if (Key_Press(&k_band))   { s_band_pending = true; }
+    if (Key_Hold(&k_band))    { s_band_pending = false;
+                                 g_sdr.display_dirty = 0U;
+                                 BandSel_Open(g_sdr.band_idx, g_sdr.band_idx);
+                                 BandSel_Render(); }
+    if (Key_Release(&k_band)) { if (s_band_pending) {
+                                   csdr_apply_band(BPF_BandUp(g_sdr.band_idx)); }
+                                 s_band_pending = false; }
+  }
 
   if (Key_Press(&k_mode)) {
     SDR_Mode_t old_mode_key = g_sdr.mode;
@@ -1768,7 +1809,9 @@ static void csdr_refresh_display(void)
     ui.freq_b_hz = g_sdr.vfo_b.freq_hz; /* inactive VFO shown in sub-line */
     ui.active_vfo = g_sdr.active_vfo;
 
-    if (menu_open) {
+    if (BandSel_IsOpen()) {
+      BandSel_Render();
+    } else if (menu_open) {
       /* Menu đang mở: re-render để đảm bảo không bị xóa */
       Menu_Render(&g_menu);
     } else if (g_sdr.tx_mode) {
@@ -1812,7 +1855,7 @@ static void csdr_refresh_display(void)
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
       }
     }
-  } else if (!menu_open) {
+  } else if (!menu_open && !BandSel_IsOpen()) {
     if (g_sdr.tx_mode) {
       RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
       SDR_UI_UpdateTXMeters((int32_t)g_analog.alc_percent,

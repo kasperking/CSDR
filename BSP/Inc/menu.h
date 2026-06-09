@@ -18,8 +18,9 @@
   *   ├─ [RX]     → AGC / NB / NR / ATT / Squelch / RIT / Span
   *   ├─ [Audio]  → Volume / Mic Gain / Digi Drive
   *   ├─ [Tuning] → Step / Band / Mode
-  *   ├─ [TX]     → RF Power / Ext ALC / TX Low / TX High
-  *   └─ [System] → Backlight / USB / Calibration / SWR Scan
+  *   ├─ [TX]     → RF Power / Ext ALC / TX Low / TX High / VOX / VOX Gain / VOX Delay
+  *   ├─ [System] → Backlight / USB / Calibration
+  *   └─ SWR Scan  (root action)
   *
   *  Renderer: overlay trên vùng Spectrum (Y=ZONE_SPEC_Y)
   *  Scanline-based: mỗi item = 16px cao, width MENU_W, x=MENU_X

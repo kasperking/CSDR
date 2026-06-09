@@ -193,7 +193,7 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[28] = (MenuItem_t){ "Backlight",  MENU_TYPE_INT,   0,100,10,&_bl_val, NULL,    0U,NULL,NULL,4 };
   m->items[29] = (MenuItem_t){ "USB",        MENU_TYPE_ENUM,  0,0,0,   &_usb_val,usb_strs,3U,NULL,NULL,4 };
   m->items[30] = (MenuItem_t){ "Calibration",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,0U,NULL,NULL,4 };
-  m->items[31] = (MenuItem_t){ "SWR Scan",   MENU_TYPE_ACTION,0,0,0,   NULL,NULL,0U,NULL,NULL,4 };
+  m->items[31] = (MenuItem_t){ "SWR Scan",   MENU_TYPE_ACTION,0,0,0,   NULL,NULL,0U,NULL,NULL,-1 };
 
   Menu_BuildView(m);
   /* USER CODE END Menu_Init_0 */
