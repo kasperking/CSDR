@@ -94,6 +94,7 @@ typedef struct {
   int16_t     if_shift_hz;
   uint8_t     display_dirty;
   uint8_t     usb_mode;
+  uint8_t     backlight;   /*!< LCD backlight 0-100% → TIM8_CH4 CCR          */
   /* Calibration */
   int32_t     xtal_ppm;
   int16_t     iq_gain;
@@ -111,6 +112,18 @@ typedef struct {
   /* Dual VFO */
   VFO_State_t vfo_b;
   uint8_t     active_vfo;
+  /* ── CW settings ───────────────────────────────────────────── */
+  uint16_t    cw_pitch_hz;      /*!< BFO pitch Hz 300-900; default 700         */
+  uint8_t     cw_wpm;           /*!< Keyer speed 5-40 WPM; default 20          */
+  uint8_t     cw_keyer_mode;    /*!< 0=Straight 1=IambicA 2=IambicB            */
+  bool        cw_paddle_rev;    /*!< Swap DIT/DAH paddles                       */
+  uint8_t     cw_sidetone_vol;  /*!< Sidetone volume 0-100; default 50          */
+  uint8_t     cw_bkin_mode;     /*!< 0=Off 1=Semi 2=Full                        */
+  uint16_t    cw_bk_delay_ms;   /*!< BK-IN QSX delay ms; default 150            */
+  bool        cw_reverse;       /*!< Reverse sideband (−2×pitch IF offset)      */
+  uint16_t    cw_filter_hz;     /*!< CW RX filter BW Hz; 0=auto (500 Hz)        */
+  uint16_t    tx_audio_low_hz;  /*!< TX Low-cut  (HPF) Hz: 100-500               */
+  uint16_t    tx_audio_high_hz; /*!< TX High-cut (LPF) Hz: 2200-3500             */
   /* CAT deferred-hardware flags — set by CAT handlers, cleared by CSDR_Loop */
   bool        cat_freq_dirty; /* FA SET: apply SI5351 + DSP NCO outside CAT context */
   bool        cat_vol_dirty;  /* AG SET: apply WM8731 volume outside CAT context    */

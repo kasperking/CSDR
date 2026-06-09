@@ -48,6 +48,13 @@ void CWDec_Init(CWDec_t *cw)
     cw->mbits  = 1U;    /* sentinel */
 }
 
+void CWDec_SetWPM(CWDec_t *cw, uint8_t wpm)
+{
+    if (wpm < 5U)  wpm = 5U;
+    if (wpm > 60U) wpm = 60U;
+    cw->dit_ms = 1200U / wpm;
+}
+
 void CWDec_Reset(CWDec_t *cw)
 {
     cw->prev_keyed  = false;

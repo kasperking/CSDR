@@ -76,19 +76,19 @@ extern "C" {
 #define SBL_Y2 120U
 
 #define SBR_W   80U
-#define SBR_X  400U          /* LCD_W - SBR_W = 480 - 80 */
+#define SBR_X  (LCD_W - SBR_W)
 #define SBR_Y   24U
 #define SBR_H   96U
 #define SBR_Y2 120U
 
 #define VFO_X   80U
-#define VFO_W  320U
+#define VFO_W  (LCD_W - SBL_W - SBR_W)
 #define VFO_Y   24U
 #define VFO_H   64U
 #define VFO_Y2  88U
 
 #define MTR_X   80U
-#define MTR_W  320U
+#define MTR_W  (LCD_W - SBL_W - SBR_W)
 #define MTR_Y   88U
 #define MTR_H   32U
 #define MTR_Y2 120U
@@ -99,20 +99,20 @@ extern "C" {
 #define INFO_Y2 144U
 
 #define SPEC_X    0U
-#define SPEC_W  480U
+#define SPEC_W  LCD_W
 #define SPEC_Y  144U
 #define SPEC_H   72U
 #define SPEC_Y2 216U
 
 #define WF_X     0U
-#define WF_W   480U
+#define WF_W   LCD_W
 #define WF_Y   216U
 #define WF_H    72U
 #define WF_Y2  288U
 
 #define FTR_Y  288U
 #define FTR_H   32U
-#define FTR_Y2 320U
+#define FTR_Y2 LCD_H
 
 /* S-meter ruler (ST7796 32-row MTR zone):
  *   rows  1– 8: scale labels + inline S-value (Font5x8)

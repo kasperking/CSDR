@@ -1492,13 +1492,27 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         /* SET MPnnnn; — ACK-only */
     }
 
-    /* KS — CW keyer speed (WPM).  flrig TS-480 queries this during init;
-     * returning ?; without a guard check in flrig would stoi("") → crash. */
+    /* KS — CW keyer speed (WPM).
+     *   GET  KS;      → KSnnn; (3-digit, 005-040)
+     *   SET  KSnnn;   → apply immediately to keyer + decoder */
     else if (cmd[0] == 'K' && cmd[1] == 'S') {
         if (cmd[2] == '\0') {
-            cat_copy(resp, "KS010;");   /* 10 WPM stub */
+            uint8_t wpm = cat->cb.get_cw_wpm ? cat->cb.get_cw_wpm() : 20U;
+            if (wpm < 5U)  wpm = 5U;
+            if (wpm > 40U) wpm = 40U;
+            resp[0]='K'; resp[1]='S';
+            resp[2]=(char)('0' + wpm/100U);
+            resp[3]=(char)('0' + (wpm%100U)/10U);
+            resp[4]=(char)('0' + wpm%10U);
+            resp[5]=';'; resp[6]='\0';
+        } else if (cmd[2] >= '0' && cmd[2] <= '9' && cmd[3] >= '0' && cmd[3] <= '9' && cmd[4] >= '0' && cmd[4] <= '9') {
+            uint8_t wpm = (uint8_t)((cmd[2]-'0')*100U + (uint8_t)((cmd[3]-'0')*10U) + (uint8_t)(cmd[4]-'0'));
+            if (wpm < 5U)  wpm = 5U;
+            if (wpm > 40U) wpm = 40U;
+            if (cat->cb.set_cw_wpm) cat->cb.set_cw_wpm(wpm);
+        } else {
+            cat_mark_malformed(cmd); cat_copy(resp, "?;");
         }
-        /* SET KSnnn; — ACK-only */
     }
 
     /* LK — panel lock query/set.  Stub: always unlocked */

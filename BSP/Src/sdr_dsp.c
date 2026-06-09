@@ -239,6 +239,25 @@ void IIR_DCBlock_Init(IIR_Biquad_t *f)
   /* USER CODE END IIR_DCBlock_Init_0 */
 }
 
+/* ============================================================
+ *  IIR 1st-order Highpass  (bilinear-transform Butterworth)
+ *  alpha = 1/(1+K),  K = tan(pi*fc/fs)
+ *  b0=alpha, b1=-alpha, a1=(K-1)/(K+1)
+ *  Reuses IIR_DCBlock_Process (same b2=a2=0 path).
+ * ============================================================ */
+void IIR_HP1_Init(IIR_Biquad_t *f, float fc_hz, uint32_t sample_rate)
+{
+  float K     = tanf(3.14159265f * fc_hz / (float)sample_rate);
+  float alpha = 1.0f / (1.0f + K);
+  f->b0 = alpha;
+  f->b1 = -alpha;
+  f->b2 = 0.0f;
+  f->a1 = (K - 1.0f) * alpha;   /* = (K-1)/(K+1) */
+  f->a2 = 0.0f;
+  f->x1 = 0.0f; f->x2 = 0.0f;
+  f->y1 = 0.0f; f->y2 = 0.0f;
+}
+
 float IIR_DCBlock_Process(IIR_Biquad_t *f, float x)
 {
   /* USER CODE BEGIN IIR_DCBlock_Process_0 */
@@ -317,6 +336,50 @@ void DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level)
 
   dsp->nb.level   = level;
   dsp->nb.enabled = enabled;
+}
+
+/* ── LMS Adaptive Noise Reducer ───────────────────────────────────────────
+ *  Wiener-LMS predictor: delays input D samples (decorrelates white noise
+ *  while preserving speech/CW correlation), then adaptively predicts the
+ *  current sample from its past.  The prediction is the noise-reduced output.
+ *
+ *  NR_TAPS = 64, NR_DELAY = 8 → 544 bytes RAM, ~128 MACs/sample @ 48kHz.
+ */
+
+static float NR_Process(NR_State_t *nr, float in)
+{
+  nr->x[nr->idx] = in;
+
+  /* Sum: y = Σ w[k] · x[idx - DELAY - k]  (circular, k = 0..NR_TAPS-1) */
+  float y = 0.0f;
+  uint16_t xi = (uint16_t)(nr->idx + NR_LEN - NR_DELAY) % NR_LEN;
+  for (uint16_t k = 0U; k < NR_TAPS; k++) {
+    y += nr->w[k] * nr->x[xi];
+    xi = (xi == 0U) ? (uint16_t)(NR_LEN - 1U) : (uint16_t)(xi - 1U);
+  }
+
+  /* LMS weight update: w[k] += mu * e * x[...] */
+  float e    = in - y;
+  float mu_e = nr->mu * e;
+  xi = (uint16_t)(nr->idx + NR_LEN - NR_DELAY) % NR_LEN;
+  for (uint16_t k = 0U; k < NR_TAPS; k++) {
+    nr->w[k] += mu_e * nr->x[xi];
+    xi = (xi == 0U) ? (uint16_t)(NR_LEN - 1U) : (uint16_t)(xi - 1U);
+  }
+
+  nr->idx = (nr->idx + 1U >= NR_LEN) ? 0U : (uint16_t)(nr->idx + 1U);
+  return y;
+}
+
+void DSP_NR_Set(DSP_State_t *dsp, bool enabled)
+{
+  if (enabled && !dsp->nr.enabled) {
+    memset(dsp->nr.w, 0, sizeof(dsp->nr.w));
+    memset(dsp->nr.x, 0, sizeof(dsp->nr.x));
+    dsp->nr.idx = 0U;
+    dsp->nr.mu  = 0.02f;
+  }
+  dsp->nr.enabled = enabled;
 }
 
 /* Set mode-specific AGC timing and bypass.  Primary configuration entry point.
@@ -605,8 +668,11 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->tx.delay_idx    = 0;
   dsp->tx.fm_phase     = 0.0f;
   dsp->tx.cw_phase_acc = 0;
-  dsp->tx.audio_gain   = 1.0f;
-  FIR_Init_LPF(&dsp->tx.fir_audio, 4000.0f / (float)sample_rate, 32U);
+  dsp->tx.audio_gain = 1.0f;
+  dsp->tx.tx_lp_hz   = 2800.0f;
+  dsp->tx.tx_hp_hz   = 200.0f;
+  FIR_Init_LPF(&dsp->tx.fir_audio, 2800.0f / (float)sample_rate, 32U);
+  IIR_HP1_Init(&dsp->tx.hp_audio, 200.0f, sample_rate);
   IIR_DCBlock_Init(&dsp->tx.dc_block);
   dsp->tx.comp_env    = 0.0f;
   dsp->tx.comp_attack = expf(-1.0f / (0.001f * (float)sample_rate)); /* 1 ms  */
@@ -632,6 +698,14 @@ void DSP_SetFrequency(DSP_State_t *dsp, uint32_t lo_offset_hz, uint32_t sample_r
    * (because NCO_Step applies exp(−j·ω·t)). */
   NCO_SetFrequency(&dsp->nco, -(int32_t)lo_offset_hz, sample_rate);
   /* USER CODE END DSP_SetFrequency_0 */
+}
+
+void DSP_SetCWPitch(DSP_State_t *dsp, uint16_t pitch_hz, uint32_t sample_rate)
+{
+  if (pitch_hz < 100U)  pitch_hz = 100U;
+  if (pitch_hz > 3000U) pitch_hz = 3000U;
+  dsp->cw_bfo_inc = (uint32_t)((int64_t)pitch_hz
+                    * (int64_t)4294967296LL / (int64_t)sample_rate);
 }
 
 /* sq=0 → disabled; sq=1-100 → threshold -70 to 0 dBFS (S1 to clipping) */
@@ -735,6 +809,19 @@ void DSP_SetBW(DSP_State_t *dsp, float bw_hz)
   float bw_norm = bw_hz / (float)sr;
   FIR_Init_LPF(&dsp->fir_i, bw_norm, FIR_MAX_TAPS);
   FIR_Init_LPF(&dsp->fir_q, bw_norm, FIR_MAX_TAPS);
+}
+
+void DSP_SetTxPassband(DSP_State_t *dsp, float hp_hz, float lp_hz)
+{
+  uint32_t sr = dsp->sample_rate ? dsp->sample_rate : 48000U;
+  if (hp_hz <  100.0f) hp_hz =  100.0f;
+  if (hp_hz >  500.0f) hp_hz =  500.0f;
+  if (lp_hz < 2000.0f) lp_hz = 2000.0f;
+  if (lp_hz > 4000.0f) lp_hz = 4000.0f;
+  dsp->tx.tx_hp_hz = hp_hz;
+  dsp->tx.tx_lp_hz = lp_hz;
+  IIR_HP1_Init(&dsp->tx.hp_audio, hp_hz, sr);
+  FIR_Init_LPF(&dsp->tx.fir_audio, lp_hz / (float)sr, 32U);
 }
 
 /* ── Static DC offset ───────────────────────────────────────────────────────
@@ -1017,7 +1104,17 @@ void DSP_Process(DSP_State_t *dsp,
       case MODE_DIGU: audio = Demod_USB(filt_i_d, filt_q_h);                    break;
       case MODE_LSB:
       case MODE_DIGL: audio = Demod_LSB(filt_i_d, filt_q_h);                    break;
-      case MODE_CW:   audio = Demod_CW(filt_i, filt_q, &dsp->cw_phase_acc, dsp->cw_bfo_inc); break;
+      case MODE_CW:
+        {
+          /* CW reverse: use LSB-sideband extraction (hears signals on opposite side of carrier) */
+          float env = dsp->cw_rev ? fabsf(Demod_LSB(filt_i_d, filt_q_h))
+                                  : Demod_AM(filt_i, filt_q);
+          dsp->cw_phase_acc += dsp->cw_bfo_inc;
+          uint32_t _ci = dsp->cw_phase_acc >> (32U - NCO_LUT_BITS);
+          float _bfo   = s_nco_sin_lut[(_ci + (NCO_LUT_SIZE / 4U)) & NCO_LUT_MASK];
+          audio = env * _bfo;
+        }
+        break;
       default:        audio = filt_i;                                             break;
     }
 
@@ -1031,6 +1128,10 @@ void DSP_Process(DSP_State_t *dsp,
 
     /* ── 8. AGC */
     audio = AGC_Process(&dsp->agc, audio);
+
+    /* ── 8b. NR – LMS adaptive noise reducer (post-AGC, disabled by default) */
+    if (dsp->nr.enabled)
+      audio = NR_Process(&dsp->nr, audio);
 
     /* ── 9. Write: right-justified 16-bit sample into 32-bit DAC word bits[15:0] */
     int32_t out_val = (int32_t)(audio * 32767.0f);
@@ -1176,6 +1277,9 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
     /* ── 2. Audio DC block – remove mic/line DC offset before Hilbert.
      *       DC in audio produces a carrier tone at the TX LO frequency. */
     audio = IIR_DCBlock_Process(&dsp->tx.dc_block, audio);
+
+    /* ── 2b. TX Low-cut HPF – removes mic rumble / proximity effect */
+    audio = IIR_DCBlock_Process(&dsp->tx.hp_audio, audio);
 
     /* ── 3. TX audio gain */
     audio *= dsp->tx.audio_gain;

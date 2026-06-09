@@ -24,7 +24,7 @@
 
 /* ── DWT cycle counter ───────────────────────────────────────────────────── */
 
-#define DWT_CPU_MHZ  480U   /* adjust if CPU clock differs */
+#define DWT_CPU_MHZ  (HW_HSE_FREQ_HZ / HW_PLL1_M * HW_PLL1_N / HW_PLL1_P / 1000000UL)
 
 static void dwt_enable(void)
 {

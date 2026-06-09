@@ -117,7 +117,7 @@ typedef struct {
 
 /* Settings structure stored in flash sector 0.
  * Layout: 4-byte fields first, 2-byte next, 1-byte/bool last → zero implicit
- * padding.  crc32 covers all bytes except itself (last 4).  Struct size = 132 B.
+ * padding.  crc32 covers all bytes except itself (last 4).  Struct size = 136 B.
  * Changing any field breaks backward compat (CRC mismatch → defaults loaded). */
 typedef struct {
   /* ── always first ───────────────────────────────────────────── */
@@ -182,8 +182,21 @@ typedef struct {
 
   /* ── Extended flags (carved from reserved; same struct size) ─── */
   uint8_t    ext_alc_on;         /* External ALC enable: 0=off 1=on      */
-  /* ── Reserved / padding to align crc32 to 4-byte boundary ───── */
-  uint8_t    reserved[11];       /* crc32 lands at offset 128    */
+  uint8_t    usb_mode;           /* USB operating mode: 0=Off 1=CAT 2=CAT+Audio */
+  uint8_t    backlight;          /* LCD backlight 0-100%           */
+  uint8_t    settings_flags;     /* bit 0: usb_mode explicitly saved (0=legacy/default-ON) */
+  /* ── CW settings ────────────────────────────────────────────── */
+  uint16_t   cw_pitch_hz;        /* BFO pitch 300-900 Hz; default 700     */
+  uint16_t   cw_bk_delay_ms;     /* BK-IN QSX delay ms; default 150       */
+  uint16_t   cw_filter_hz;       /* CW RX filter BW Hz; 0=auto (500 Hz)   */
+  uint16_t   tx_audio_low_hz;   /* TX Low-cut  HPF Hz: 100-500; 0=default(200)  */
+  uint16_t   tx_audio_high_hz;  /* TX High-cut LPF Hz: 2200-3500; 0=default(2800) */
+  uint8_t    cw_wpm;             /* Keyer speed 5-40 WPM; default 20      */
+  uint8_t    cw_keyer_mode;      /* 0=Straight 1=IambicA 2=IambicB        */
+  uint8_t    cw_paddle_rev;      /* Paddle reverse 0/1                    */
+  uint8_t    cw_sidetone_vol;    /* Sidetone volume 0-100; default 50     */
+  uint8_t    cw_bkin_mode;       /* 0=Off 1=Semi 2=Full                   */
+  uint8_t    cw_reverse;         /* CW sideband reverse 0/1               */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;

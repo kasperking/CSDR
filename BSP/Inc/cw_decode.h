@@ -56,6 +56,10 @@ void CWEnv_Init(CWEnv_t *env, uint32_t sample_rate);
 /* Initialise decoder state; call once and on mode reset */
 void CWDec_Init(CWDec_t *cw);
 
+/* Set decoder speed from WPM; updates dit_ms = 1200/wpm (standard formula).
+ * Does not reset the timing state so a speed change mid-QSO is smooth. */
+void CWDec_SetWPM(CWDec_t *cw, uint8_t wpm);
+
 /* Reset only the timing/accumulator state (text ring is preserved) */
 void CWDec_Reset(CWDec_t *cw);
 

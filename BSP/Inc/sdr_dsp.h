@@ -102,6 +102,18 @@ typedef struct {
   float    current_threshold_sq; /*!< floor_sq × threshold_ratio_sq, last sample  */
 } NoiseBlanker_t;
 
+/** LMS Adaptive Noise Reducer */
+#define NR_TAPS   64U
+#define NR_DELAY   8U
+#define NR_LEN    (NR_TAPS + NR_DELAY)   /* 72 */
+typedef struct {
+  bool     enabled;
+  float    mu;                 /*!< LMS step size (0.005–0.04)    */
+  float    w[NR_TAPS];         /*!< Adaptive weights (64 floats)  */
+  float    x[NR_LEN];          /*!< Delay line       (72 floats)  */
+  uint16_t idx;                /*!< Write pointer into x[]        */
+} NR_State_t;
+
 /** FM Demodulator (phân biệt pha tức thời) */
 typedef struct {
   float        prev_re;
@@ -128,7 +140,10 @@ typedef struct {
   float        fm_phase;                   /*!< FM modulator phase accumulator */
   uint32_t     cw_phase_acc;               /*!< CW tone NCO */
   float        audio_gain;                 /*!< TX audio gain (0..1) */
-  FIR_Filter_t fir_audio;                 /*!< TX-private audio LPF (separate from RX) */
+  float        tx_lp_hz;                  /*!< TX High-cut (LPF) Hz */
+  float        tx_hp_hz;                  /*!< TX Low-cut  (HPF) Hz */
+  FIR_Filter_t fir_audio;                 /*!< TX-private audio LPF – High-cut */
+  IIR_Biquad_t hp_audio;                  /*!< TX-private audio HPF – Low-cut  */
   IIR_Biquad_t dc_block;                  /*!< TX-private audio DC blocker (separate from RX) */
   /* Compressor/limiter – applied after FIR LPF, before modulator.
    * Bypassed automatically when dsp->mode is MODE_DIGU or MODE_DIGL. */
@@ -155,6 +170,7 @@ typedef struct {
   FM_Demod_t   fm;
   AGC_t        agc;
   NoiseBlanker_t nb;  /*!< HF impulse noise blanker (disabled by default) */
+  NR_State_t     nr;  /*!< LMS adaptive noise reducer (disabled by default) */
 
   /* Static ADC DC offset (from auto-cal, applied pre-IIR in DSP_Process) */
   float         dc_i_static;   /*!< ADC count units subtracted from raw I */
@@ -186,6 +202,7 @@ typedef struct {
   /* CW BFO – RX demodulator */
   uint32_t   cw_phase_acc;   /*!< RX CW BFO phase accumulator */
   uint32_t   cw_bfo_inc;     /*!< RX CW BFO phase increment (sample-rate-derived) */
+  bool       cw_rev;         /*!< CW reverse: LSB-sideband demod instead of USB  */
 
   /* CW keying envelope – pre-AGC tap for decoder */
   CWEnv_t    cw_env;
@@ -205,10 +222,12 @@ typedef struct {
 /* Exported functions prototypes ---------------------------------------------*/
 void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate);
 void DSP_SetSquelch(DSP_State_t *dsp, uint8_t sq);
+void DSP_SetCWPitch(DSP_State_t *dsp, uint16_t pitch_hz, uint32_t sample_rate);
 void DSP_SetFrequency(DSP_State_t *dsp, uint32_t lo_offset_hz, uint32_t sample_rate);
 void DSP_SetIFShift(DSP_State_t *dsp, int32_t if_shift_hz, uint32_t sample_rate);
 void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate);
 void DSP_SetBW(DSP_State_t *dsp, float bw_hz);
+void DSP_SetTxPassband(DSP_State_t *dsp, float hp_hz, float lp_hz);
 void DSP_Process(DSP_State_t *dsp,
                   const int32_t *iq_in,
                   int32_t       *audio_out,
@@ -239,6 +258,7 @@ float FIR_Process(FIR_Filter_t *fir, float x);
 
 /* IIR */
 void  IIR_DCBlock_Init(IIR_Biquad_t *f);
+void  IIR_HP1_Init(IIR_Biquad_t *f, float fc_hz, uint32_t sample_rate);
 float IIR_DCBlock_Process(IIR_Biquad_t *f, float x);
 
 /* AGC */
@@ -249,6 +269,9 @@ float AGC_Process(AGC_t *agc, float x);
 
 /* Noise Blanker */
 void  DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level);
+
+/* Noise Reducer */
+void  DSP_NR_Set(DSP_State_t *dsp, bool enabled);
 
 /* IQ correction */
 void  DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad);

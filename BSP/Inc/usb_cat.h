@@ -55,7 +55,7 @@
   *  │ XT   │ XIT on/off                   │ STUB   │ XT0; (fixed off)      │
   *  │ MN   │ Menu item select             │ STUB   │ MN000; (fixed)        │
   *  │ MP   │ Menu parameter               │ STUB   │ MP0000; (fixed)       │
-  *  │ KS   │ CW keyer speed               │ STUB   │ KS010; (no keyer)     │
+  *  │ KS   │ CW keyer speed               │ REAL   │ KSnnn; live WPM       │
   *  │ LK   │ Panel lock                   │ STUB   │ LK0; (fixed unlock)   │
   *  │ MG   │ Mic gain                     │ STUB   │ MG050; (fixed)        │
   *  │ EX   │ Extended menu (TS-480)       │ STUB   │ echo + '0' suffix     │
@@ -163,6 +163,9 @@ typedef struct {
   /* TX output power — PC command */
   void     (*set_tx_power)(uint8_t pct);   /*!< PCnnn: 0-100 percent     */
   uint8_t  (*get_tx_power)(void);
+  /* CW keyer speed — KS command */
+  void     (*set_cw_wpm)(uint8_t wpm);     /*!< KSnnn: 5-40 WPM          */
+  uint8_t  (*get_cw_wpm)(void);
 } CAT_Callbacks_t;
 
 /** CAT driver state */
@@ -459,7 +462,7 @@ uint8_t CAT_CatModeToSDR(uint8_t cat_mode);
 #define CAT_HAS_DUAL_VFO    1   /* VS/FR/DC trigger real VFO swap + deferred LO retune  */
 #define CAT_HAS_SPLIT       1   /* SP/FT route TX to inactive VFO via csdr_apply_tx     */
 #define CAT_HAS_RIT         1   /* RT/RC/RU/RD update rit_hz + apply via DSP nco_if     */
-#define CAT_HAS_CW          0   /* No CW keyer: KS stub 10 WPM                          */
+#define CAT_HAS_CW          1   /* CW keyer: KS real WPM get/set via callbacks          */
 #define CAT_HAS_MEMORY      0   /* No channel memories: MR/MW are ACK-only              */
 #define CAT_HAS_AI_PUSH     1   /* AI unsolicited IF: fires on freq/mode/TX change       */
 #define CAT_HAS_PREAMP      0   /* No hardware preamp: PA always PA0                    */

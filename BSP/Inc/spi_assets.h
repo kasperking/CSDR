@@ -59,10 +59,10 @@ typedef enum {
  * 1 = keep embedded fallback in internal flash (safe while SPI not yet     *
  *     programmed).  Set to 0 after write-assets to reclaim ~6.7 KB.        */
 #ifndef SPI_ASSETS_FONT_FALLBACK
-#  define SPI_ASSETS_FONT_FALLBACK  1
+#  define SPI_ASSETS_FONT_FALLBACK  0
 #endif
 #ifndef SPI_ASSETS_FFT_FALLBACK
-#  define SPI_ASSETS_FFT_FALLBACK   1
+#  define SPI_ASSETS_FFT_FALLBACK   0
 #endif
 
 /* ── API ────────────────────────────────────────────────────────────────── */
