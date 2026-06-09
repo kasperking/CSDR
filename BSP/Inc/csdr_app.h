@@ -122,6 +122,16 @@ typedef struct {
   bool        rf_agc_on;     /*!< Automatic PE4302 RF attenuator control (overload prevention) */
   /* External PA ALC feedback (PC1 / ADC2_INP11) */
   bool        ext_alc_on;   /*!< Enable external ALC drive reduction from PA feedback voltage  */
+  /* TX audio passband */
+  uint16_t    tx_audio_low_hz;   /*!< TX Low-cut (HPF) Hz: 100-500  */
+  uint16_t    tx_audio_high_hz;  /*!< TX High-cut (LPF) Hz: 2200-3500 */
+  /* Notch filter */
+  bool        notch_on;          /*!< Audio notch filter enable */
+  int16_t     notch_hz;          /*!< Notch center frequency Hz: 100-4000 */
+  /* VOX */
+  bool        vox_on;            /*!< VOX enable */
+  uint8_t     vox_gain;          /*!< VOX sensitivity 0-100 (100=most sensitive) */
+  uint16_t    vox_delay;         /*!< VOX hang time ms: 100-2000 */
 } SDR_State_t;
 
 extern SDR_State_t  g_sdr;

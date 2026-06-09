@@ -80,6 +80,13 @@ SDR_State_t g_sdr = {
   .digi_gain     = 70,
   .tx_power      = 100,
   .pa_watts      = 0,
+  .tx_audio_low_hz  = 200U,
+  .tx_audio_high_hz = 2800U,
+  .notch_on  = false,
+  .notch_hz  = 1000,
+  .vox_on    = false,
+  .vox_gain  = 50U,
+  .vox_delay = 500U,
   .vfo_b         = {
     .freq_hz     = 14200000UL,   /* VFO B default: 20m */
     .mode        = MODE_USB,
@@ -215,6 +222,7 @@ static void csdr_update_spectrum(void);
 static void csdr_update_waterfall(void);
 static void csdr_refresh_display(void);
 static void menu_apply_cb(void);
+static void csdr_vox_poll(void);
 static uint32_t default_bw_for_mode(SDR_Mode_t m);
 static void csdr_apply_nco_if(void);
 static void csdr_vfo_swap(void);
@@ -269,8 +277,15 @@ static void csdr_save_settings(void)
   /* TX / audio */
   fs.mic_gain        = g_sdr.mic_gain;
   fs.digi_gain       = g_sdr.digi_gain;
-  fs.tx_power        = g_sdr.tx_power;
-  fs.pa_watts        = g_sdr.pa_watts;
+  fs.tx_power           = g_sdr.tx_power;
+  fs.pa_watts           = g_sdr.pa_watts;
+  fs.tx_audio_low_hz    = g_sdr.tx_audio_low_hz;
+  fs.tx_audio_high_hz   = g_sdr.tx_audio_high_hz;
+  fs.notch_on           = g_sdr.notch_on ? 1U : 0U;
+  fs.notch_hz           = g_sdr.notch_hz;
+  fs.vox_on             = g_sdr.vox_on ? 1U : 0U;
+  fs.vox_gain           = g_sdr.vox_gain;
+  fs.vox_delay_ms       = g_sdr.vox_delay;
   fs.pa_oc_limit_idx = g_sdr.pa_oc_limit_idx;
   fs.audio_gain_db   = g_sdr.audio_gain_db;
 
@@ -354,6 +369,15 @@ void CSDR_Init(void)
       g_sdr.tx_power        = fs.tx_power ? fs.tx_power : 100U; /* default 100 for old EEPROM */
       g_sdr.pa_watts        = fs.pa_watts;
       g_sdr.pa_oc_limit_idx = (fs.pa_oc_limit_idx <= 4U) ? fs.pa_oc_limit_idx : 3U;
+      g_sdr.tx_audio_low_hz  = (fs.tx_audio_low_hz  >= 100U && fs.tx_audio_low_hz  <= 500U)
+                               ? fs.tx_audio_low_hz  : 200U;
+      g_sdr.tx_audio_high_hz = (fs.tx_audio_high_hz >= 2200U && fs.tx_audio_high_hz <= 3500U)
+                               ? fs.tx_audio_high_hz : 2800U;
+      g_sdr.notch_on  = (fs.notch_on != 0U);
+      g_sdr.notch_hz  = (fs.notch_hz >= 100 && fs.notch_hz <= 4000) ? fs.notch_hz : 1000;
+      g_sdr.vox_on    = (fs.vox_on != 0U);
+      g_sdr.vox_gain  = (fs.vox_gain  <= 100U) ? fs.vox_gain  : 50U;
+      g_sdr.vox_delay = (fs.vox_delay_ms >= 100U && fs.vox_delay_ms <= 2000U) ? fs.vox_delay_ms : 500U;
       g_sdr.audio_gain_db = fs.audio_gain_db;
       /* Calibration */
       g_sdr.xtal_ppm         = fs.xtal_ppm;
@@ -447,6 +471,8 @@ void CSDR_Init(void)
 
   /* DSP */
   DSP_Init(&g_dsp, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetTxPassband(&g_dsp, (float)g_sdr.tx_audio_low_hz, (float)g_sdr.tx_audio_high_hz);
+  DSP_SetNotch(&g_dsp, g_sdr.notch_on, (float)g_sdr.notch_hz);
   DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetIFShift(&g_dsp, (int32_t)g_sdr.if_shift_hz, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
@@ -919,6 +945,7 @@ void CSDR_Loop(void)
   static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0, t_spec=0, t_tx_spec=0;
   static uint32_t t_rfagc = 0U;
   static uint32_t t_pa_prot = 0U;
+  static uint32_t t_vox = 0U;
   uint32_t now = HAL_GetTick();
 
   if (now - t_analog >= 100U) {
@@ -942,6 +969,12 @@ void CSDR_Loop(void)
   if (now - t_pa_prot >= 20U) {
     t_pa_prot = now;
     PA_Protect_Update();
+  }
+
+  /* VOX poll: every 20 ms; non-destructive peek at USB TX ring level. */
+  if (now - t_vox >= 20U) {
+    t_vox = now;
+    csdr_vox_poll();
   }
 
   /* RF AGC: update PE4302 attenuation from DSP signal level, RX only.
@@ -1452,9 +1485,9 @@ static void csdr_handle_encoder(void)
   if (Encoder_GetButton(&g_encoder)) {
     if (Menu_IsOpen(&g_menu)) {
       /* Check if selected item is ACTION type (Calibration or SWR Scan) */
-      if (g_menu.cursor < g_menu.item_count &&
-          g_menu.items[g_menu.cursor].type == MENU_TYPE_ACTION) {
-        const char *name = g_menu.items[g_menu.cursor].label;
+      { MenuItem_t *_cur = Menu_CurrentItem(&g_menu);
+      if (_cur && _cur->type == MENU_TYPE_ACTION) {
+        const char *name = _cur->label;
         Menu_Toggle(&g_menu);
         g_sdr.display_dirty |= DIRTY_ALL;
         if (strcmp(name, "Calibration") == 0) {
@@ -1505,6 +1538,7 @@ static void csdr_handle_encoder(void)
       } else {
         Menu_Select(&g_menu);
       }
+      } /* end MenuItem_t *_cur block */
       return;
     }
     SDR_Mode_t old_mode_enc = g_sdr.mode;
@@ -1539,7 +1573,10 @@ static void csdr_handle_keys(void)
         g_sdr.squelch, (uint32_t)g_sdr.step,
         g_sdr.att_db, g_sdr.band_idx, (uint8_t)g_sdr.mode,
         g_sdr.usb_mode, SDR_UI_GetSpecZoom(),
-        g_sdr.ext_alc_on, g_sdr.tx_power, g_sdr.pa_watts, menu_apply_cb);
+        g_sdr.ext_alc_on, g_sdr.tx_power, g_sdr.pa_watts,
+        g_sdr.tx_audio_low_hz, g_sdr.tx_audio_high_hz,
+        g_sdr.if_shift_hz, g_sdr.notch_on, g_sdr.notch_hz,
+        g_sdr.vox_on, g_sdr.vox_gain, g_sdr.vox_delay, menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
   }
@@ -1566,9 +1603,9 @@ static void csdr_handle_keys(void)
   /* F3: menu confirm / VFO A↔B swap */
   if (Key_Press(&k_f3)) {
     if (Menu_IsOpen(&g_menu)) {
-      if (g_menu.cursor < g_menu.item_count &&
-          g_menu.items[g_menu.cursor].type == MENU_TYPE_ACTION) {
-        const char *name = g_menu.items[g_menu.cursor].label;
+      { MenuItem_t *_cur2 = Menu_CurrentItem(&g_menu);
+      if (_cur2 && _cur2->type == MENU_TYPE_ACTION) {
+        const char *name = _cur2->label;
         Menu_Toggle(&g_menu);
         g_sdr.display_dirty |= DIRTY_ALL;
         if (strcmp(name, "Calibration") == 0) {
@@ -1619,6 +1656,7 @@ static void csdr_handle_keys(void)
       } else {
         Menu_Confirm(&g_menu);
       }
+      } /* end MenuItem_t *_cur2 block */
     } else {
       csdr_vfo_swap();   /* F3 outside menu: swap VFO A↔B */
     }
@@ -1806,11 +1844,30 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m)
 
 static void menu_apply_cb(void)
 {
-  bool agc, nb, nr, ext_alc; int16_t rit;
-  uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr; uint32_t step;
+  bool agc, nb, nr, ext_alc, notch_en, vox_en; int16_t rit, rxshift, notch_f;
+  uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr, vox_gain; uint32_t step;
+  uint16_t tx_low, tx_high, vox_delay;
   Menu_SaveToSDR(&g_menu, &agc, &nb, &nr, &rit,
                   &vol, &mic, &digi, &sq, &step, &att, &band, &mode, &usb, &zoom,
-                  &ext_alc, &rfpwr);
+                  &ext_alc, &rfpwr, &tx_low, &tx_high, &rxshift, &notch_en, &notch_f,
+                  &vox_en, &vox_gain, &vox_delay);
+  if (tx_low != g_sdr.tx_audio_low_hz || tx_high != g_sdr.tx_audio_high_hz) {
+    g_sdr.tx_audio_low_hz  = tx_low;
+    g_sdr.tx_audio_high_hz = tx_high;
+    DSP_SetTxPassband(&g_dsp, (float)tx_low, (float)tx_high);
+  }
+  if (rxshift != g_sdr.if_shift_hz) {
+    g_sdr.if_shift_hz = rxshift;
+    csdr_apply_nco_if();
+  }
+  if (notch_en != g_sdr.notch_on || notch_f != g_sdr.notch_hz) {
+    g_sdr.notch_on = notch_en;
+    g_sdr.notch_hz = notch_f;
+    DSP_SetNotch(&g_dsp, notch_en, (float)notch_f);
+  }
+  g_sdr.vox_on    = vox_en;
+  g_sdr.vox_gain  = vox_gain;
+  g_sdr.vox_delay = vox_delay;
   g_sdr.ext_alc_on = ext_alc;
   if (rfpwr != g_sdr.tx_power) {
     g_sdr.tx_power = rfpwr;
@@ -1847,6 +1904,56 @@ static void menu_apply_cb(void)
   if (zoom != SDR_UI_GetSpecZoom()) SDR_UI_SetSpecZoom(zoom);
   g_sdr.display_dirty |= DIRTY_ALL;
   csdr_save_settings();
+}
+
+/* ══════════════════════════════════════════════════════════
+ *  VOX (Voice-Operated eXchange)
+ * ══════════════════════════════════════════════════════════ */
+static bool     s_vox_active         = false;
+static uint32_t s_vox_hang_remaining = 0U;
+
+static float csdr_vox_peek_level(void)
+{
+  uint16_t avail = g_usb_audio.tx_count;
+  if (avail < 4U) return 0.0f;
+  uint32_t n_samp = avail / 4U;
+  if (n_samp > 48U) n_samp = 48U;
+  float peak = 0.0f;
+  uint16_t rd = g_usb_audio.tx_rd;
+  for (uint32_t i = 0U; i < n_samp; i++) {
+    uint16_t pos = (uint16_t)((rd + i * 4U) % USB_AUDIO_RING_SIZE);
+    uint16_t pos1 = (uint16_t)((pos + 1U) % USB_AUDIO_RING_SIZE);
+    int16_t s = (int16_t)((uint16_t)g_usb_audio.tx_ring[pos]
+                         | ((uint16_t)g_usb_audio.tx_ring[pos1] << 8U));
+    float fs = (s < 0) ? -(float)s : (float)s;
+    if (fs > peak) peak = fs;
+  }
+  return peak;
+}
+
+static void csdr_vox_poll(void)
+{
+  if (!g_sdr.vox_on) { s_vox_active = false; s_vox_hang_remaining = 0U; return; }
+  float peak = csdr_vox_peek_level();
+  float t = 1.0f - (float)g_sdr.vox_gain / 100.0f;
+  float threshold = t * t * t * 32767.0f;
+  if (peak >= threshold) {
+    s_vox_hang_remaining = (uint32_t)g_sdr.vox_delay;
+    if (!s_vox_active && !g_sdr.tx_mode) {
+      s_vox_active = true;
+      g_sdr.tx_mode = true;
+      g_sdr.cat_tx_dirty = true;
+    }
+  } else if (s_vox_active) {
+    if (s_vox_hang_remaining > 20U) {
+      s_vox_hang_remaining -= 20U;
+    } else {
+      s_vox_hang_remaining = 0U;
+      s_vox_active = false;
+      g_sdr.tx_mode = false;
+      g_sdr.cat_tx_dirty = true;
+    }
+  }
 }
 
 /* ══════════════════════════════════════════════════════════

@@ -180,10 +180,16 @@ typedef struct {
   /* ── SI5351 per-band calibration (future) ───────────────────── */
   uint8_t    si5351_cal[32];
 
-  /* ── Extended flags (carved from reserved; same struct size) ─── */
+  /* ── TX audio passband + notch + extended flags (carved from reserved) ── */
+  uint16_t   tx_audio_low_hz;    /* TX Low-cut HPF Hz: 100-500; 0=default(200)   */
+  uint16_t   tx_audio_high_hz;   /* TX High-cut LPF Hz: 2200-3500; 0=default(2800) */
+  int16_t    notch_hz;           /* Notch center Hz: 100-4000; 0=default(1000)   */
   uint8_t    ext_alc_on;         /* External ALC enable: 0=off 1=on      */
-  /* ── Reserved / padding to align crc32 to 4-byte boundary ───── */
-  uint8_t    reserved[11];       /* crc32 lands at offset 128    */
+  uint8_t    notch_on;           /* Audio notch filter: 0=off 1=on       */
+  uint8_t    vox_on;             /* VOX enable: 0=off 1=on               */
+  uint8_t    vox_gain;           /* VOX sensitivity 0-100 (100=hot)      */
+  uint16_t   vox_delay_ms;       /* VOX hang time 100-2000 ms            */
+  /* no reserved — all bytes accounted for; crc32 lands at offset 128 */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;

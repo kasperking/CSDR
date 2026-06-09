@@ -250,6 +250,35 @@ float IIR_DCBlock_Process(IIR_Biquad_t *f, float x)
   /* USER CODE END IIR_DCBlock_Process_0 */
 }
 
+void IIR_HP1_Init(IIR_Biquad_t *f, float fc_hz, uint32_t sample_rate)
+{
+  float K     = tanf(3.14159265f * fc_hz / (float)sample_rate);
+  float alpha = 1.0f / (1.0f + K);
+  f->b0 = alpha;  f->b1 = -alpha;  f->b2 = 0.0f;
+  f->a1 = (K - 1.0f) * alpha;  f->a2 = 0.0f;
+  f->x1 = f->x2 = f->y1 = f->y2 = 0.0f;
+}
+
+float IIR_Biquad_Process(IIR_Biquad_t *f, float x)
+{
+  float y = f->b0*x + f->b1*f->x1 + f->b2*f->x2
+           - f->a1*f->y1 - f->a2*f->y2;
+  f->x2 = f->x1; f->x1 = x;
+  f->y2 = f->y1; f->y1 = y;
+  return y;
+}
+
+void Notch_Init(IIR_Biquad_t *f, float fc_hz, uint32_t sample_rate)
+{
+  /* Standard biquad notch: zeros at ±jω₀, poles at r·e^±jω₀ (r=0.97 → narrow) */
+  float r  = 0.97f;
+  float w0 = 2.0f * 3.14159265f * fc_hz / (float)sample_rate;
+  float c  = cosf(w0);
+  f->b0 = 1.0f;  f->b1 = -2.0f * c;  f->b2 = 1.0f;
+  f->a1 = -2.0f * r * c;              f->a2 = r * r;
+  f->x1 = f->x2 = f->y1 = f->y2 = 0.0f;
+}
+
 /* ============================================================
  *  AGC
  * ============================================================ */
@@ -606,8 +635,11 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->tx.fm_phase     = 0.0f;
   dsp->tx.cw_phase_acc = 0;
   dsp->tx.audio_gain   = 1.0f;
-  FIR_Init_LPF(&dsp->tx.fir_audio, 4000.0f / (float)sample_rate, 32U);
+  dsp->tx.tx_lp_hz     = 2800.0f;
+  dsp->tx.tx_hp_hz     = 200.0f;
+  FIR_Init_LPF(&dsp->tx.fir_audio, 2800.0f / (float)sample_rate, 32U);
   IIR_DCBlock_Init(&dsp->tx.dc_block);
+  IIR_HP1_Init(&dsp->tx.hp_audio, 200.0f, sample_rate);
   dsp->tx.comp_env    = 0.0f;
   dsp->tx.comp_attack = expf(-1.0f / (0.001f * (float)sample_rate)); /* 1 ms  */
   dsp->tx.comp_decay  = expf(-1.0f / (0.050f * (float)sample_rate)); /* 50 ms */
@@ -621,6 +653,9 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->signal_power_db      = -120.0f;
   dsp->squelch_threshold_db = -200.0f;
   dsp->squelch_open         = true;
+  dsp->notch_on = false;
+  dsp->notch_hz = 1000.0f;
+  Notch_Init(&dsp->notch, 1000.0f, sample_rate);
   /* USER CODE END DSP_Init_0 */
 }
 
@@ -735,6 +770,29 @@ void DSP_SetBW(DSP_State_t *dsp, float bw_hz)
   float bw_norm = bw_hz / (float)sr;
   FIR_Init_LPF(&dsp->fir_i, bw_norm, FIR_MAX_TAPS);
   FIR_Init_LPF(&dsp->fir_q, bw_norm, FIR_MAX_TAPS);
+}
+
+void DSP_SetNotch(DSP_State_t *dsp, bool on, float hz)
+{
+  if (hz < 100.0f)  hz = 100.0f;
+  if (hz > 4000.0f) hz = 4000.0f;
+  dsp->notch_on = on;
+  dsp->notch_hz = hz;
+  uint32_t sr = dsp->sample_rate ? dsp->sample_rate : 48000U;
+  Notch_Init(&dsp->notch, hz, sr);
+}
+
+void DSP_SetTxPassband(DSP_State_t *dsp, float hp_hz, float lp_hz)
+{
+  if (hp_hz < 100.0f) hp_hz = 100.0f;
+  if (hp_hz > 500.0f) hp_hz = 500.0f;
+  if (lp_hz < 2000.0f) lp_hz = 2000.0f;
+  if (lp_hz > 4000.0f) lp_hz = 4000.0f;
+  dsp->tx.tx_hp_hz = hp_hz;
+  dsp->tx.tx_lp_hz = lp_hz;
+  uint32_t sr = dsp->sample_rate ? dsp->sample_rate : 48000U;
+  IIR_HP1_Init(&dsp->tx.hp_audio, hp_hz, sr);
+  FIR_Init_LPF(&dsp->tx.fir_audio, lp_hz / (float)sr, 32U);
 }
 
 /* ── Static DC offset ───────────────────────────────────────────────────────
@@ -1029,6 +1087,10 @@ void DSP_Process(DSP_State_t *dsp,
      *        signal that is inaudible through AC-coupled headphone outputs. */
     audio = IIR_DCBlock_Process(&dsp->dc_block_audio, audio);
 
+    /* ── 7c. Notch filter – narrow-band rejection before AGC */
+    if (dsp->notch_on)
+      audio = IIR_Biquad_Process(&dsp->notch, audio);
+
     /* ── 8. AGC */
     audio = AGC_Process(&dsp->agc, audio);
 
@@ -1176,6 +1238,7 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
     /* ── 2. Audio DC block – remove mic/line DC offset before Hilbert.
      *       DC in audio produces a carrier tone at the TX LO frequency. */
     audio = IIR_DCBlock_Process(&dsp->tx.dc_block, audio);
+    audio = IIR_DCBlock_Process(&dsp->tx.hp_audio, audio);  /* TX Low-cut HPF */
 
     /* ── 3. TX audio gain */
     audio *= dsp->tx.audio_gain;

@@ -128,8 +128,11 @@ typedef struct {
   float        fm_phase;                   /*!< FM modulator phase accumulator */
   uint32_t     cw_phase_acc;               /*!< CW tone NCO */
   float        audio_gain;                 /*!< TX audio gain (0..1) */
+  float        tx_lp_hz;                  /*!< TX High-cut (LPF) Hz */
+  float        tx_hp_hz;                  /*!< TX Low-cut (HPF) Hz  */
   FIR_Filter_t fir_audio;                 /*!< TX-private audio LPF (separate from RX) */
   IIR_Biquad_t dc_block;                  /*!< TX-private audio DC blocker (separate from RX) */
+  IIR_Biquad_t hp_audio;                  /*!< TX Low-cut HPF (1st-order Butterworth) */
   /* Compressor/limiter – applied after FIR LPF, before modulator.
    * Bypassed automatically when dsp->mode is MODE_DIGU or MODE_DIGL. */
   float        comp_env;     /*!< Compressor peak envelope            */
@@ -182,6 +185,11 @@ typedef struct {
   /* Squelch */
   float      squelch_threshold_db;  /* -200 = disabled */
   bool       squelch_open;          /* current gate state */
+
+  /* Notch filter (audio-domain, post-demod, pre-AGC) */
+  IIR_Biquad_t notch;
+  bool         notch_on;
+  float        notch_hz;
 
   /* CW BFO – RX demodulator */
   uint32_t   cw_phase_acc;   /*!< RX CW BFO phase accumulator */
@@ -240,12 +248,21 @@ float FIR_Process(FIR_Filter_t *fir, float x);
 /* IIR */
 void  IIR_DCBlock_Init(IIR_Biquad_t *f);
 float IIR_DCBlock_Process(IIR_Biquad_t *f, float x);
+void  IIR_HP1_Init(IIR_Biquad_t *f, float fc_hz, uint32_t sample_rate);
+float IIR_Biquad_Process(IIR_Biquad_t *f, float x);
+void  Notch_Init(IIR_Biquad_t *f, float fc_hz, uint32_t sample_rate);
 
 /* AGC */
 void  AGC_Init(AGC_t *agc, uint32_t sample_rate);
 void  AGC_SetMode(AGC_t *agc, SDR_Mode_t mode, bool fast, uint32_t sample_rate);
 void  AGC_SetSpeed(AGC_t *agc, bool fast, uint32_t sample_rate);
 float AGC_Process(AGC_t *agc, float x);
+
+/* TX passband */
+void  DSP_SetTxPassband(DSP_State_t *dsp, float hp_hz, float lp_hz);
+
+/* Notch filter */
+void  DSP_SetNotch(DSP_State_t *dsp, bool on, float hz);
 
 /* Noise Blanker */
 void  DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level);
