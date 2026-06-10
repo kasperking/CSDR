@@ -172,6 +172,7 @@ static volatile uint8_t dbg_disable_lcd_dma = 0;
 /* Forward declarations for functions used before their definition */
 static void csdr_apply_volume(uint8_t vol);
 static void csdr_apply_tx(void);
+static void csdr_factory_reset(void);
 
 #define CSDR_UI_SPEC_RX_PERIOD_MS    75U    /* ~13 fps spectrum in RX — decoupled from waterfall */
 #define CSDR_UI_WF_RX_PERIOD_MS      75U    /* ~13 fps waterfall in RX */
@@ -228,7 +229,6 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m);
 static void csdr_apply_nco_if(void);
 static void csdr_vfo_swap(void);
 static void csdr_on_mode_changed(SDR_Mode_t old_mode);
-static void csdr_vfo_copy_to_b(void);
 /* CAT VFO-B callbacks */
 static void     cat_set_lo_cut(uint32_t hz);
 static uint32_t cat_get_lo_cut(void);
@@ -1468,6 +1468,87 @@ static void csdr_apply_band(uint8_t band)
   g_sdr.display_dirty |= (DIRTY_HDR | DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
 }
 
+static void csdr_factory_reset(void)
+{
+  /* Preserve hardware calibration — these survive factory reset */
+  int32_t  sv_xtal_ppm        = g_sdr.xtal_ppm;
+  int32_t  sv_dc_i_offset     = g_sdr.dc_i_offset;
+  int32_t  sv_dc_q_offset     = g_sdr.dc_q_offset;
+  uint32_t sv_lo_offset_hz    = g_sdr.lo_offset_hz;
+  int16_t  sv_smeter_offset   = g_sdr.smeter_offset_db;
+  int16_t  sv_iq_gain         = g_sdr.iq_gain;
+  int16_t  sv_iq_phase        = g_sdr.iq_phase;
+  int16_t  sv_audio_gain_db   = g_sdr.audio_gain_db;
+  uint8_t  sv_pa_watts        = g_sdr.pa_watts;
+  uint8_t  sv_pa_oc_limit_idx = g_sdr.pa_oc_limit_idx;
+
+  /* Reset operating state to factory defaults */
+  g_sdr.freq_hz          = CSDR_FREQ_DEFAULT_HZ;
+  g_sdr.mode             = MODE_USB;
+  g_sdr.band_idx         = 3U;
+  g_sdr.volume           = 78U;
+  g_sdr.bw_hz            = 3000U;
+  g_sdr.sl_hz            = 0U;
+  g_sdr.if_shift_hz      = 0;
+  g_sdr.squelch          = 0U;
+  g_sdr.att_db           = 0U;
+  g_sdr.step             = STEP_100;
+  g_sdr.agc_fast         = true;
+  g_sdr.nb_on            = false;
+  g_sdr.nb_level         = 50U;
+  g_sdr.nr_on            = false;
+  g_sdr.rf_agc_on        = false;
+  g_sdr.ext_alc_on       = false;
+  g_sdr.mic_gain         = 50;
+  g_sdr.digi_gain        = 70;
+  g_sdr.tx_power         = 100U;
+  g_sdr.tx_audio_low_hz  = 200U;
+  g_sdr.tx_audio_high_hz = 2800U;
+  g_sdr.notch_on         = false;
+  g_sdr.notch_hz         = 1000;
+  g_sdr.vox_on           = false;
+  g_sdr.vox_gain         = 50U;
+  g_sdr.vox_delay        = 500U;
+  g_sdr.rit_hz           = 0;
+  g_sdr.active_vfo       = 0U;
+  g_sdr.vfo_b.freq_hz    = 14200000UL;
+  g_sdr.vfo_b.mode       = MODE_USB;
+  g_sdr.vfo_b.band_idx   = 5U;
+  g_sdr.vfo_b.step       = STEP_100;
+  g_sdr.vfo_b.rit_hz     = 0;
+  g_sdr.vfo_b.bw_hz      = 3000U;
+  g_sdr.vfo_b.sl_hz      = 0U;
+  g_sdr.vfo_b.if_shift_hz = 0;
+
+  /* Restore calibration */
+  g_sdr.xtal_ppm         = sv_xtal_ppm;
+  g_sdr.dc_i_offset      = sv_dc_i_offset;
+  g_sdr.dc_q_offset      = sv_dc_q_offset;
+  g_sdr.lo_offset_hz     = sv_lo_offset_hz;
+  g_sdr.smeter_offset_db = sv_smeter_offset;
+  g_sdr.iq_gain          = sv_iq_gain;
+  g_sdr.iq_phase         = sv_iq_phase;
+  g_sdr.audio_gain_db    = sv_audio_gain_db;
+  g_sdr.pa_watts         = sv_pa_watts;
+  g_sdr.pa_oc_limit_idx  = sv_pa_oc_limit_idx;
+
+  /* Apply to hardware and DSP */
+  csdr_apply_band(3U);
+  PE4302_SetAttn_dB(&g_att, 0U);
+  DSP_SetTxPassband(&g_dsp, 200.0f, 2800.0f);
+  DSP_SetNotch(&g_dsp, false, 1000.0f);
+  DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetIFShift(&g_dsp, 0, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetMode(&g_dsp, MODE_USB, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetBW(&g_dsp, 3000.0f);
+  AGC_SetMode(&g_dsp.agc, MODE_USB, true, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_NB_Set(&g_dsp, false, 50U);
+  DSP_SetSquelch(&g_dsp, 0U);
+  csdr_apply_volume(78U);
+  csdr_save_settings();
+  g_sdr.display_dirty |= DIRTY_ALL;
+}
+
 static void csdr_handle_encoder(void)
 {
   int32_t delta = Encoder_GetDelta(&g_encoder);
@@ -1546,6 +1627,8 @@ static void csdr_handle_encoder(void)
           }
         } else if (strcmp(name, "SWR Scan") == 0) {
           SWR_Scan_Run();
+        } else if (strcmp(name, "Fct Reset") == 0) {
+          csdr_factory_reset();
         }
         g_sdr.display_dirty |= DIRTY_ALL;
       } else {
@@ -1554,16 +1637,13 @@ static void csdr_handle_encoder(void)
       } /* end MenuItem_t *_cur block */
       return;
     }
-    SDR_Mode_t old_mode_enc = g_sdr.mode;
-    g_sdr.mode   = (SDR_Mode_t)((g_sdr.mode + 1U) % MODE_COUNT);
-    g_sdr.bw_hz  = default_bw_for_mode(g_sdr.mode);
-    g_sdr.sl_hz  = 0U;
-    DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
-    DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
-    AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
-    csdr_apply_nco_if();
-    csdr_on_mode_changed(old_mode_enc);
-    g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL);
+    static const FreqStep_t step_cycle[] = {
+      STEP_1, STEP_10, STEP_100, STEP_1K, STEP_10K, STEP_100K
+    };
+    uint8_t si = 0U;
+    for (uint8_t i = 0U; i < 6U; i++) { if (step_cycle[i] == g_sdr.step) { si = i; break; } }
+    g_sdr.step = step_cycle[(si + 1U) % 6U];
+    g_sdr.display_dirty |= DIRTY_VFO;
   }
   if (Encoder_GetLongPress(&g_encoder)) {
     /* Long press: cycle spectrum zoom ±24k → ±18k → ±12k → ±6k → ±3k → ±24k */
@@ -1681,6 +1761,8 @@ static void csdr_handle_keys(void)
           }
         } else if (strcmp(name, "SWR Scan") == 0) {
           SWR_Scan_Run();
+        } else if (strcmp(name, "Fct Reset") == 0) {
+          csdr_factory_reset();
         }
         g_sdr.display_dirty |= DIRTY_ALL;
       } else {
@@ -1692,13 +1774,14 @@ static void csdr_handle_keys(void)
     }
   }
 
-  /* F4: Back / Exit menu  –or–  copy active VFO to inactive */
+  /* F4: Back / Exit menu  –or–  quick SWR scan */
   if (Key_Press(&k_f4)) {
     if (Menu_IsOpen(&g_menu)) {
       Menu_Back(&g_menu);
       if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
     } else {
-      csdr_vfo_copy_to_b();  /* F4 outside menu: copy active → inactive VFO */
+      SWR_Scan_Run();
+      g_sdr.display_dirty |= DIRTY_ALL;
     }
   }
 
@@ -2056,20 +2139,6 @@ static void csdr_vfo_swap(void)
   DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
   g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
-}
-
-/* Copy active VFO state into the inactive VFO slot (A→B when A active, B→A when B active) */
-static void csdr_vfo_copy_to_b(void)
-{
-  g_sdr.vfo_b.freq_hz     = g_sdr.freq_hz;
-  g_sdr.vfo_b.mode        = g_sdr.mode;
-  g_sdr.vfo_b.band_idx    = g_sdr.band_idx;
-  g_sdr.vfo_b.step        = g_sdr.step;
-  g_sdr.vfo_b.rit_hz      = g_sdr.rit_hz;
-  g_sdr.vfo_b.bw_hz       = g_sdr.bw_hz;
-  g_sdr.vfo_b.sl_hz       = g_sdr.sl_hz;
-  g_sdr.vfo_b.if_shift_hz = g_sdr.if_shift_hz;
-  g_sdr.display_dirty     |= DIRTY_VFO;
 }
 
 /* ── VFO-B + active-VFO CAT callbacks ──────────────────────────────────────

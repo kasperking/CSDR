@@ -7,6 +7,7 @@
 
 #include "menu.h"
 #include "sdr_ui.h"
+#include "build_info.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -53,6 +54,10 @@ static const char *usb_strs[]  = { "Off","CAT","Audio" };
 static const char *zoom_strs[] = { "+/-24k","+/-12k","+/-6k","+/-3k" };
 
 static MenuApplyFn s_apply_cb = NULL;
+
+/* About info strings */
+static const char *about_ver_strs[]  = { FW_VERSION_STR };
+static const char *about_date_strs[] = { FW_BUILD_DATE };
 /* USER CODE END PV */
 
 /* USER CODE BEGIN 0 */
@@ -93,6 +98,8 @@ static void render_item(Menu_Handle_t *m, uint8_t vi, uint16_t abs_y)
     snprintf(val, sizeof(val), " >");
   } else if (it->type == MENU_TYPE_ACTION) {
     snprintf(val, sizeof(val), ">> RUN");
+  } else if (it->type == MENU_TYPE_INFO) {
+    snprintf(val, sizeof(val), "%s", (it->enum_strs && it->enum_strs[0]) ? it->enum_strs[0] : "");
   } else if (it->type == MENU_TYPE_INT) {
     snprintf(val, sizeof(val), "%ld%s",
              (long)*it->value_ptr, it->suffix ? it->suffix : "");
@@ -121,7 +128,9 @@ static void render_item(Menu_Handle_t *m, uint8_t vi, uint16_t abs_y)
     if (!top && !bot && fr >= 4U && fr < 4U + (uint16_t)Font6x8.height) {
       uint16_t row = fr - 4U;
       LCD_LineStr(ln, (uint16_t)(MENU_X + 4U), row, it->label, &Font6x8, lbl_clr, bg);
-      uint16_t vcol = (sel && m->editing) ? MENU_EDIT_COLOR : MENU_VAL_COLOR;
+      uint16_t vcol = (sel && m->editing)           ? MENU_EDIT_COLOR
+                    : (it->type == MENU_TYPE_INFO)   ? MENU_LBL_COLOR
+                    : MENU_VAL_COLOR;
       if (is_group) vcol = 0x0000U;
       LCD_LineStr(ln, (uint16_t)(MENU_X + MENU_W - 24U), row, val, &Font6x8, vcol, bg);
     }
@@ -149,6 +158,7 @@ void Menu_Init(Menu_Handle_t *m)
   memset(m, 0, sizeof(*m));
   m->item_count    = MENU_ITEM_COUNT;
   m->current_group = -1;
+  m->prev_group    = -1;
   _bl_val          = 80;
 
   /* ── Groups (parent = -1) ───────────────────────────────── */
@@ -192,8 +202,12 @@ void Menu_Init(Menu_Handle_t *m)
   /* ── System group (parent = 4) ──────────────────────────── */
   m->items[28] = (MenuItem_t){ "Backlight",  MENU_TYPE_INT,   0,100,10,&_bl_val, NULL,    0U,NULL,NULL,4 };
   m->items[29] = (MenuItem_t){ "USB",        MENU_TYPE_ENUM,  0,0,0,   &_usb_val,usb_strs,3U,NULL,NULL,4 };
-  m->items[30] = (MenuItem_t){ "Calibration",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,0U,NULL,NULL,4 };
-  m->items[31] = (MenuItem_t){ "SWR Scan",   MENU_TYPE_ACTION,0,0,0,   NULL,NULL,0U,NULL,NULL,-1 };
+  m->items[30] = (MenuItem_t){ "Calibration",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,4  };
+  m->items[31] = (MenuItem_t){ "Fct Reset",  MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,4  };
+  m->items[32] = (MenuItem_t){ "About",      MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,4  };
+  m->items[33] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0,   NULL,about_ver_strs, 1U,NULL,NULL,32 };
+  m->items[34] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0,   NULL,about_date_strs,1U,NULL,NULL,32 };
+  m->items[35] = (MenuItem_t){ "SWR Scan",   MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,-1 };
 
   Menu_BuildView(m);
   /* USER CODE END Menu_Init_0 */
@@ -205,6 +219,7 @@ void Menu_Toggle(Menu_Handle_t *m)
   m->open = !m->open;
   m->editing = false;
   m->current_group = -1;
+  m->prev_group    = -1;
   Menu_BuildView(m);
   m->cursor = 0U;
   m->scroll = 0U;
@@ -262,13 +277,14 @@ void Menu_Select(Menu_Handle_t *m)
   MenuItem_t *it = Menu_CurrentItem(m);
   if (!it) return;
   if (it->type == MENU_TYPE_GROUP) {
-    uint8_t gidx = m->view[m->cursor];
+    uint8_t gidx     = m->view[m->cursor];
+    m->prev_group    = m->current_group;
     m->current_group = (int8_t)gidx;
     m->editing = false;
     Menu_BuildView(m);
     m->cursor = 0U;
     m->scroll = 0U;
-  } else if (it->type != MENU_TYPE_ACTION) {
+  } else if (it->type != MENU_TYPE_ACTION && it->type != MENU_TYPE_INFO) {
     m->editing = !m->editing;
     if (!m->editing && s_apply_cb) s_apply_cb();
   }
@@ -291,7 +307,8 @@ void Menu_Back(Menu_Handle_t *m)
     Menu_Render(m);
   } else if (m->current_group >= 0) {
     int8_t was_group = m->current_group;
-    m->current_group = -1;
+    m->current_group = m->prev_group;
+    m->prev_group    = -1;
     m->editing = false;
     Menu_BuildView(m);
     for (uint8_t i = 0U; i < m->view_count; i++) {

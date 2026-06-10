@@ -19,7 +19,8 @@
   *   ├─ [Audio]  → Volume / Mic Gain / Digi Drive
   *   ├─ [Tuning] → Step / Band / Mode
   *   ├─ [TX]     → RF Power / Ext ALC / TX Low / TX High / VOX / VOX Gain / VOX Delay
-  *   ├─ [System] → Backlight / USB / Calibration
+  *   ├─ [System] → Backlight / USB / Calibration / Fct Reset / About
+  *   │                └─ [About] → Version / Build Date
   *   └─ SWR Scan  (root action)
   *
   *  Renderer: overlay trên vùng Spectrum (Y=ZONE_SPEC_Y)
@@ -43,7 +44,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      32U   /* 5 groups + 27 leaf items */
+#define MENU_ITEM_COUNT      36U   /* 6 groups + 30 leaf items */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -72,6 +73,7 @@ typedef enum {
   MENU_TYPE_ENUM,       /* Fixed string options */
   MENU_TYPE_ACTION,     /* Immediate action (no value editing) */
   MENU_TYPE_GROUP,      /* Sub-menu group header */
+  MENU_TYPE_INFO,       /* Read-only info string (enum_strs[0]) */
 } MenuItemType_t;
 
 typedef struct {
@@ -94,6 +96,7 @@ typedef struct {
   uint8_t      scroll;         /*!< Scroll offset               */
   bool         editing;        /*!< Đang chỉnh sửa giá trị      */
   int8_t       current_group;  /*!< -1 = root; ≥0 = group index */
+  int8_t       prev_group;     /*!< Parent of current_group for Back nav */
   uint8_t      view[MENU_ITEM_COUNT]; /*!< Filtered item indices */
   uint8_t      view_count;     /*!< Number of items in view[]   */
   uint8_t      item_count;     /*!< Always MENU_ITEM_COUNT       */
