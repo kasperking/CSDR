@@ -34,6 +34,7 @@
 #include "hw_fault.h"
 #include "spi_assets.h"
 #include "cw_decode.h"
+#include "cw_keyer.h"
 #include <string.h>
 #include <math.h>
 
@@ -57,6 +58,7 @@ extern ADC_HandleTypeDef  hadc3;
  * ══════════════════════════════════════════════════════════ */
 static DSP_State_t      g_dsp;
 static CWDec_t          g_cw_dec;
+static CWKeyer_t        g_cw_keyer;
 
 BandCal_t g_band_cal[BAND_COUNT] = {
   {0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100},
@@ -88,6 +90,16 @@ SDR_State_t g_sdr = {
   .vox_on    = false,
   .vox_gain  = 50U,
   .vox_delay = 500U,
+  .cw_decode_on   = false,
+  .cw_pitch_hz    = 700U,
+  .cw_wpm         = 20U,
+  .keyer_mode     = 0U,   /* Straight */
+  .paddle_reverse = false,
+  .sidetone_vol   = 50U,
+  .cw_bkin        = 0U,   /* BK-IN Off */
+  .cw_bk_delay_ms = 200U,
+  .cw_reverse     = false,
+  .cw_filter_hz   = 500U,
   .vfo_b         = {
     .freq_hz     = 14200000UL,   /* VFO B default: 20m */
     .mode        = MODE_USB,
@@ -246,6 +258,8 @@ static void     cat_set_rf_agc(bool on);
 static bool     cat_get_rf_agc(void);
 static void     cat_set_tx_power(uint8_t pct);
 static uint8_t  cat_get_tx_power(void);
+static void     cat_set_cw_wpm(uint8_t wpm);
+static uint8_t  cat_get_cw_wpm(void);
 
 /* ── Settings persistence helper ──────────────────────────
  * Serialises g_sdr to Flash_Settings_t and calls Flash_SaveSettings.
@@ -288,6 +302,17 @@ static void csdr_save_settings(void)
   fs.vox_gain           = g_sdr.vox_gain;
   fs.vox_delay_ms       = g_sdr.vox_delay;
   fs.pa_oc_limit_idx = g_sdr.pa_oc_limit_idx;
+  /* CW settings */
+  fs.cw_pitch_hz    = g_sdr.cw_pitch_hz;
+  fs.cw_wpm         = g_sdr.cw_wpm;
+  fs.keyer_mode     = g_sdr.keyer_mode;
+  fs.paddle_reverse = g_sdr.paddle_reverse ? 1U : 0U;
+  fs.sidetone_vol   = g_sdr.sidetone_vol;
+  fs.cw_bkin        = g_sdr.cw_bkin;
+  fs.cw_bk_delay_ms = g_sdr.cw_bk_delay_ms;
+  fs.cw_reverse     = g_sdr.cw_reverse ? 1U : 0U;
+  fs.cw_filter_hz   = g_sdr.cw_filter_hz;
+  fs.cw_decode_on   = g_sdr.cw_decode_on ? 1U : 0U;
   fs.audio_gain_db   = g_sdr.audio_gain_db;
 
   /* Calibration */
@@ -380,6 +405,17 @@ void CSDR_Init(void)
       g_sdr.vox_gain  = (fs.vox_gain  <= 100U) ? fs.vox_gain  : 50U;
       g_sdr.vox_delay = (fs.vox_delay_ms >= 100U && fs.vox_delay_ms <= 2000U) ? fs.vox_delay_ms : 500U;
       g_sdr.audio_gain_db = fs.audio_gain_db;
+      /* CW settings */
+      g_sdr.cw_pitch_hz    = (fs.cw_pitch_hz  >= 300U && fs.cw_pitch_hz  <= 900U)  ? fs.cw_pitch_hz    : 700U;
+      g_sdr.cw_wpm         = (fs.cw_wpm        >= 5U   && fs.cw_wpm        <= 40U)  ? fs.cw_wpm          : 20U;
+      g_sdr.keyer_mode     = (fs.keyer_mode    <= 2U)                               ? fs.keyer_mode      : 0U;
+      g_sdr.paddle_reverse = (fs.paddle_reverse != 0U);
+      g_sdr.sidetone_vol   = (fs.sidetone_vol  <= 100U)                             ? fs.sidetone_vol    : 50U;
+      g_sdr.cw_bkin        = (fs.cw_bkin       <= 2U)                               ? fs.cw_bkin         : 0U;
+      g_sdr.cw_bk_delay_ms = (fs.cw_bk_delay_ms >= 50U && fs.cw_bk_delay_ms <= 2000U) ? fs.cw_bk_delay_ms : 200U;
+      g_sdr.cw_reverse     = (fs.cw_reverse    != 0U);
+      g_sdr.cw_filter_hz   = (fs.cw_filter_hz  >= 50U  && fs.cw_filter_hz  <= 500U) ? fs.cw_filter_hz   : 500U;
+      g_sdr.cw_decode_on   = (fs.cw_decode_on  != 0U);
       /* Calibration */
       g_sdr.xtal_ppm         = fs.xtal_ppm;
       g_sdr.dc_i_offset      = fs.dc_i_offset;
@@ -483,7 +519,21 @@ void CSDR_Init(void)
   AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_fast, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, g_sdr.nb_on, g_sdr.nb_level);
   DSP_SetSquelch(&g_dsp, g_sdr.squelch);
+  /* CW-specific DSP init (after DSP_Init which seeds 700 Hz) */
+  DSP_SetCWPitch(&g_dsp, g_sdr.cw_pitch_hz, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetCWReverse(&g_dsp, g_sdr.cw_reverse);
+  DSP_SetSidetoneVol(&g_dsp, g_sdr.sidetone_vol);
+  if (g_sdr.mode == MODE_CW)
+    DSP_SetBW(&g_dsp, (float)g_sdr.cw_filter_hz);
   CWDec_Init(&g_cw_dec);
+  g_cw_dec.dit_ms = 1200U / (uint32_t)g_sdr.cw_wpm;
+  /* Keyer init */
+  g_cw_keyer.mode          = (CWKeyerMode_t)g_sdr.keyer_mode;
+  g_cw_keyer.paddle_reverse= g_sdr.paddle_reverse;
+  g_cw_keyer.wpm           = g_sdr.cw_wpm;
+  g_cw_keyer.bkin          = (CWBkin_t)g_sdr.cw_bkin;
+  g_cw_keyer.bk_delay_ms   = g_sdr.cw_bk_delay_ms;
+  CWKeyer_Init(&g_cw_keyer);
 
   /* Encoder – TIM3 quadrature (PB4/PB5), initialised as encoder in MX_TIM3_Init */
   Encoder_Init(&g_encoder, &htim3);
@@ -557,6 +607,8 @@ void CSDR_Init(void)
     .get_rf_agc      = cat_get_rf_agc,
     .set_tx_power    = cat_set_tx_power,
     .get_tx_power    = cat_get_tx_power,
+    .set_cw_wpm      = cat_set_cw_wpm,
+    .get_cw_wpm      = cat_get_cw_wpm,
   };
   CAT_Init(&g_cat, &cb);
 
@@ -889,8 +941,25 @@ void CSDR_PrepareShutdown(void)
 static void csdr_on_mode_changed(SDR_Mode_t old_mode)
 {
     CWDec_Reset(&g_cw_dec);
-    if (old_mode == MODE_CW && g_sdr.mode != MODE_CW)
+    if (g_sdr.mode == MODE_CW) {
+        /* Entering CW: apply CW-specific filter and pitch */
+        DSP_SetBW(&g_dsp, (float)g_sdr.cw_filter_hz);
+        g_sdr.bw_hz = (float)g_sdr.cw_filter_hz;
+        DSP_SetCWPitch(&g_dsp, g_sdr.cw_pitch_hz, CSDR_AUDIO_SAMPLE_RATE);
+        /* Seed the decoder WPM */
+        g_cw_dec.dit_ms = 1200U / (uint32_t)g_sdr.cw_wpm;
+        /* Reset keyer — avoids phantom key-down from previous mode */
+        g_cw_keyer.ky_state = KY_IDLE;
+        g_cw_keyer.key_down = false;
+        g_cw_keyer.ptt_out  = false;
+        g_dsp.cw_key_out    = false;
+    } else {
+        g_dsp.cw_key_out = false;
+    }
+    if (old_mode == MODE_CW && g_sdr.mode != MODE_CW) {
+        g_sdr.cw_decode_on = false;
         SDR_UI_ClearCWText();
+    }
 }
 
 void CSDR_Loop(void)
@@ -931,10 +1000,37 @@ void CSDR_Loop(void)
   csdr_handle_encoder();
   csdr_handle_keys();
 
+  /* CW keyer: update state machine, feed key_out to DSP (volatile write) */
+  if (g_sdr.mode == MODE_CW) {
+    CWKeyer_Update(&g_cw_keyer);
+    g_dsp.cw_key_out = g_cw_keyer.key_down;
+    /* BK-IN PTT: assert/deassert TX based on keyer ptt_out */
+    if (g_sdr.cw_bkin != BKIN_OFF) {
+      static bool s_keyer_ptt_prev = false;
+      if (g_cw_keyer.ptt_out != s_keyer_ptt_prev) {
+        s_keyer_ptt_prev = g_cw_keyer.ptt_out;
+        /* Only take control when manual PTT is not already held */
+        bool manual_ptt = (k_ptt.state == KS_PRESSED || k_ptt.state == KS_HELD);
+        if (!manual_ptt) {
+          bool want_tx = g_cw_keyer.ptt_out;
+          if (want_tx != g_sdr.tx_mode) {
+            g_sdr.tx_mode = want_tx;
+            g_sdr.display_dirty |= want_tx
+              ? (uint8_t)(DIRTY_HDR | DIRTY_VFO | DIRTY_SBR)
+              : (uint8_t)DIRTY_ALL;
+            csdr_apply_tx();
+          }
+        }
+      }
+    }
+  } else {
+    g_dsp.cw_key_out = false;
+  }
+
   /* CW decoder – main-loop timing decoder, runs every loop iteration.
    * CWDec_Update is cheap (a few compares + HAL_GetTick); no timer guard needed.
    * Decoded text is pushed to the INFO strip when the buffer changes. */
-  if (g_sdr.mode == MODE_CW && !g_sdr.tx_mode) {
+  if (g_sdr.cw_decode_on && g_sdr.mode == MODE_CW && !g_sdr.tx_mode) {
     if (CWDec_Update(&g_cw_dec, g_dsp.cw_env.keyed)) {
       char cw_buf[CWDEC_TEXT_LEN + 1U];
       CWDec_GetText(&g_cw_dec, cw_buf, (uint8_t)(LCD_W / 6U));
@@ -1669,7 +1765,14 @@ static void csdr_handle_keys(void)
         g_sdr.ext_alc_on, g_sdr.tx_power, g_sdr.pa_watts,
         g_sdr.tx_audio_low_hz, g_sdr.tx_audio_high_hz,
         g_sdr.if_shift_hz, g_sdr.notch_on, g_sdr.notch_hz,
-        g_sdr.vox_on, g_sdr.vox_gain, g_sdr.vox_delay, menu_apply_cb);
+        g_sdr.vox_on, g_sdr.vox_gain, g_sdr.vox_delay,
+        g_sdr.cw_decode_on,
+        g_sdr.cw_pitch_hz, g_sdr.cw_wpm,
+        g_sdr.keyer_mode, g_sdr.paddle_reverse,
+        g_sdr.sidetone_vol, g_sdr.cw_bkin,
+        g_sdr.cw_bk_delay_ms, g_sdr.cw_reverse,
+        g_sdr.cw_filter_hz,
+        menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
   }
@@ -1770,8 +1873,16 @@ static void csdr_handle_keys(void)
       }
       } /* end MenuItem_t *_cur2 block */
     } else {
-      csdr_vfo_swap();   /* F3 outside menu: swap VFO A↔B */
+      /* F3 outside menu: short press = VFO A↔B swap */
+      csdr_vfo_swap();
     }
+  }
+
+  /* F3 hold outside menu: toggle CW decode (only in CW mode) */
+  if (!Menu_IsOpen(&g_menu) && Key_Hold(&k_f3) && g_sdr.mode == MODE_CW) {
+    g_sdr.cw_decode_on = !g_sdr.cw_decode_on;
+    if (!g_sdr.cw_decode_on) SDR_UI_ClearCWText();
+    CWDec_Reset(&g_cw_dec);
   }
 
   /* F4: Back / Exit menu  –or–  quick SWR scan */
@@ -1970,13 +2081,16 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m)
 
 static void menu_apply_cb(void)
 {
-  bool agc, nb, nr, ext_alc, notch_en, vox_en; int16_t rit, rxshift, notch_f;
+  bool agc, nb, nr, ext_alc, notch_en, vox_en, cw_dec, paddle_rev, cw_rev; int16_t rit, rxshift, notch_f;
   uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr, vox_gain; uint32_t step;
   uint16_t tx_low, tx_high, vox_delay;
+  uint16_t cw_pitch, cw_filter, cw_bk_delay; uint8_t cw_wpm, keyer_mode, sidetone, cw_bkin;
   Menu_SaveToSDR(&g_menu, &agc, &nb, &nr, &rit,
                   &vol, &mic, &digi, &sq, &step, &att, &band, &mode, &usb, &zoom,
                   &ext_alc, &rfpwr, &tx_low, &tx_high, &rxshift, &notch_en, &notch_f,
-                  &vox_en, &vox_gain, &vox_delay);
+                  &vox_en, &vox_gain, &vox_delay, &cw_dec,
+                  &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
+                  &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter);
   if (tx_low != g_sdr.tx_audio_low_hz || tx_high != g_sdr.tx_audio_high_hz) {
     g_sdr.tx_audio_low_hz  = tx_low;
     g_sdr.tx_audio_high_hz = tx_high;
@@ -2028,6 +2142,42 @@ static void menu_apply_cb(void)
   }
   g_sdr.usb_mode = usb;
   if (zoom != SDR_UI_GetSpecZoom()) SDR_UI_SetSpecZoom(zoom);
+  if (cw_dec != g_sdr.cw_decode_on) {
+    /* CW decode can only be enabled when in CW mode */
+    bool effective = cw_dec && (g_sdr.mode == MODE_CW);
+    g_sdr.cw_decode_on = effective;
+    if (!effective) SDR_UI_ClearCWText();
+  }
+  /* CW settings apply */
+  if (cw_pitch != g_sdr.cw_pitch_hz) {
+    g_sdr.cw_pitch_hz = cw_pitch;
+    DSP_SetCWPitch(&g_dsp, cw_pitch, CSDR_AUDIO_SAMPLE_RATE);
+  }
+  if (cw_rev != g_sdr.cw_reverse) {
+    g_sdr.cw_reverse = cw_rev;
+    DSP_SetCWReverse(&g_dsp, cw_rev);
+  }
+  if (sidetone != g_sdr.sidetone_vol) {
+    g_sdr.sidetone_vol = sidetone;
+    DSP_SetSidetoneVol(&g_dsp, sidetone);
+  }
+  if (cw_filter != g_sdr.cw_filter_hz) {
+    g_sdr.cw_filter_hz = cw_filter;
+    if (g_sdr.mode == MODE_CW) DSP_SetBW(&g_dsp, (float)cw_filter);
+  }
+  if (cw_wpm != g_sdr.cw_wpm) {
+    g_sdr.cw_wpm    = cw_wpm;
+    g_cw_dec.dit_ms = 1200U / (uint32_t)cw_wpm;
+    CWKeyer_SetWPM(&g_cw_keyer, cw_wpm);
+  }
+  g_sdr.keyer_mode      = keyer_mode;
+  g_sdr.paddle_reverse  = paddle_rev;
+  g_sdr.cw_bkin         = cw_bkin;
+  g_sdr.cw_bk_delay_ms  = cw_bk_delay;
+  g_cw_keyer.mode          = (CWKeyerMode_t)keyer_mode;
+  g_cw_keyer.paddle_reverse= paddle_rev;
+  g_cw_keyer.bkin          = (CWBkin_t)cw_bkin;
+  g_cw_keyer.bk_delay_ms   = cw_bk_delay;
   g_sdr.display_dirty |= DIRTY_ALL;
   csdr_save_settings();
 }
@@ -2296,8 +2446,9 @@ static void csdr_apply_tx(void)
                    (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL)  ? base - 0.3f : base;
       if (lim < 1.0f) lim = 1.0f;
       PA_OC_SetCurrentLimit(lim); }
-    /* RX → TX: mute headphone first (TX IQ is not audio), then switch hardware. */
-    WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, true);
+    /* RX → TX: mute headphone in voice/digi modes (TX IQ is not audio).
+     * In CW mode: leave unmuted so the sidetone NCO is audible. */
+    if (g_sdr.mode != MODE_CW) WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, true);
     BPF_SetMode(RF_MODE_TX);
     /* Split: retune LO to TX VFO (inactive slot) before gating RF */
     if (g_cat.split_on && g_sdr.si5351_ok)
@@ -2463,6 +2614,17 @@ static void cat_set_tx_power(uint8_t pct)
   csdr_save_settings();
 }
 static uint8_t cat_get_tx_power(void) { return g_sdr.tx_power; }
+
+static void cat_set_cw_wpm(uint8_t wpm)
+{
+  if (wpm < 5U)  wpm = 5U;
+  if (wpm > 40U) wpm = 40U;
+  g_sdr.cw_wpm = wpm;
+  CWKeyer_SetWPM(&g_cw_keyer, wpm);
+  g_cw_dec.dit_ms = 1200U / wpm;
+  csdr_save_settings();
+}
+static uint8_t cat_get_cw_wpm(void) { return g_sdr.cw_wpm; }
 
 int32_t *CSDR_GetTxBuf(void) { return s_tx_buf; }
 int32_t *CSDR_GetRxBuf(void) { return s_rx_buf; }

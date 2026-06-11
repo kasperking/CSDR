@@ -27,6 +27,11 @@ Menu_Handle_t g_menu;
 static int32_t _agc_val, _nb_val, _nr_val, _rit_val;
 static int32_t _att_val, _sq_val, _zoom_val;
 static int32_t _rxshift_val, _notch_val, _notchhz_val;
+static int32_t _cwdec_val;
+
+/* CW group */
+static int32_t _cw_pitch_val, _cw_wpm_val, _keyer_val, _paddlerev_val;
+static int32_t _sidetone_val, _bkin_val, _bkdelay_val, _cwrev_val, _cwfilter_val;
 
 /* Audio group */
 static int32_t _vol_val, _mic_val, _digi_val;
@@ -44,8 +49,10 @@ static int32_t _bl_val, _usb_val;
 /* Misc */
 static uint8_t s_pa_watts = 0U;
 
-static const char *agc_strs[]  = { "SLOW", "FAST" };
-static const char *onoff_strs[]= { "OFF",  "ON"   };
+static const char *agc_strs[]   = { "SLOW", "FAST" };
+static const char *onoff_strs[] = { "OFF",  "ON"   };
+static const char *keyer_strs[] = { "STRAIGHT", "IAMBIC-A", "IAMBIC-B" };
+static const char *bkin_strs[]  = { "OFF", "SEMI", "FULL" };
 static const char *step_strs[] = { "1Hz","10Hz","100Hz","1KHz","10KHz","100KHz" };
 static const char *band_strs[] = { "160m","80m","60m","40m","30m",
                                     "20m","17m","15m","12m","10m","6m" };
@@ -208,6 +215,21 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[33] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0,   NULL,about_ver_strs, 1U,NULL,NULL,32 };
   m->items[34] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0,   NULL,about_date_strs,1U,NULL,NULL,32 };
   m->items[35] = (MenuItem_t){ "SWR Scan",   MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,-1 };
+
+  /* ── CW group (parent = -1, root level) ─────────────────────── */
+  m->items[37] = (MenuItem_t){ "CW",         MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,-1 };
+
+  /* ── CW items (parent = 37) ─────────────────────────────────── */
+  m->items[36] = (MenuItem_t){ "CW Decode",  MENU_TYPE_ENUM,  0,0,0,   &_cwdec_val,     onoff_strs, 2U, NULL,NULL,37 };
+  m->items[38] = (MenuItem_t){ "Pitch",      MENU_TYPE_INT,   300,900,50,&_cw_pitch_val, NULL,       0U, NULL,"Hz",37 };
+  m->items[39] = (MenuItem_t){ "Speed",      MENU_TYPE_INT,   5,  40, 1, &_cw_wpm_val,  NULL,       0U, NULL,"WPM",37 };
+  m->items[40] = (MenuItem_t){ "Keyer",      MENU_TYPE_ENUM,  0,0,0,   &_keyer_val,     keyer_strs, 3U, NULL,NULL,37 };
+  m->items[41] = (MenuItem_t){ "Paddle Rev", MENU_TYPE_ENUM,  0,0,0,   &_paddlerev_val, onoff_strs, 2U, NULL,NULL,37 };
+  m->items[42] = (MenuItem_t){ "Sidetone",   MENU_TYPE_INT,   0,100,5, &_sidetone_val,  NULL,       0U, NULL,"%", 37 };
+  m->items[43] = (MenuItem_t){ "BK-IN",      MENU_TYPE_ENUM,  0,0,0,   &_bkin_val,      bkin_strs,  3U, NULL,NULL,37 };
+  m->items[44] = (MenuItem_t){ "BK Delay",   MENU_TYPE_INT,   50,2000,50,&_bkdelay_val, NULL,       0U, NULL,"ms",37 };
+  m->items[45] = (MenuItem_t){ "CW Rev",     MENU_TYPE_ENUM,  0,0,0,   &_cwrev_val,     onoff_strs, 2U, NULL,NULL,37 };
+  m->items[46] = (MenuItem_t){ "Filter",     MENU_TYPE_INT,   50,500,50,&_cwfilter_val, NULL,       0U, NULL,"Hz",37 };
 
   Menu_BuildView(m);
   /* USER CODE END Menu_Init_0 */
@@ -395,6 +417,12 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        int16_t rx_shift_hz,
                        bool notch_on, int16_t notch_hz,
                        bool vox_on, uint8_t vox_gain, uint16_t vox_delay,
+                       bool cw_decode_on,
+                       uint16_t cw_pitch_hz, uint8_t cw_wpm,
+                       uint8_t keyer_mode, bool paddle_reverse,
+                       uint8_t sidetone_vol, uint8_t cw_bkin,
+                       uint16_t cw_bk_delay_ms, bool cw_reverse,
+                       uint16_t cw_filter_hz,
                        MenuApplyFn apply_cb)
 {
   /* USER CODE BEGIN Menu_LoadFromSDR_0 */
@@ -425,6 +453,18 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _vox_val      = vox_on ? 1 : 0;
   _voxgain_val  = (vox_gain  <= 100U) ? (int32_t)vox_gain  : 50;
   _voxdelay_val = (vox_delay >= 100U && vox_delay <= 2000U) ? (int32_t)vox_delay : 500;
+  _cwdec_val    = cw_decode_on ? 1 : 0;
+
+  /* CW settings */
+  _cw_pitch_val  = (cw_pitch_hz  >= 300U && cw_pitch_hz  <= 900U)  ? (int32_t)cw_pitch_hz  : 700;
+  _cw_wpm_val    = (cw_wpm       >= 5U   && cw_wpm       <= 40U)   ? (int32_t)cw_wpm        : 20;
+  _keyer_val     = (keyer_mode   <= 2U)                             ? (int32_t)keyer_mode    : 0;
+  _paddlerev_val = paddle_reverse ? 1 : 0;
+  _sidetone_val  = (sidetone_vol <= 100U)                           ? (int32_t)sidetone_vol  : 50;
+  _bkin_val      = (cw_bkin      <= 2U)                             ? (int32_t)cw_bkin       : 0;
+  _bkdelay_val   = (cw_bk_delay_ms >= 50U && cw_bk_delay_ms <= 2000U) ? (int32_t)cw_bk_delay_ms : 200;
+  _cwrev_val     = cw_reverse ? 1 : 0;
+  _cwfilter_val  = (cw_filter_hz >= 50U && cw_filter_hz <= 500U)   ? (int32_t)cw_filter_hz  : 500;
 
   /* RF Power: Watts when PA configured, else percent */
   s_pa_watts = pa_watts;
@@ -460,7 +500,13 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint16_t *tx_audio_low_hz, uint16_t *tx_audio_high_hz,
                      int16_t *rx_shift_hz,
                      bool *notch_on, int16_t *notch_hz,
-                     bool *vox_on, uint8_t *vox_gain, uint16_t *vox_delay)
+                     bool *vox_on, uint8_t *vox_gain, uint16_t *vox_delay,
+                     bool *cw_decode_on,
+                     uint16_t *cw_pitch_hz, uint8_t *cw_wpm,
+                     uint8_t *keyer_mode, bool *paddle_reverse,
+                     uint8_t *sidetone_vol, uint8_t *cw_bkin,
+                     uint16_t *cw_bk_delay_ms, bool *cw_reverse,
+                     uint16_t *cw_filter_hz)
 {
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
@@ -497,6 +543,16 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   }
   *tx_audio_low_hz  = (uint16_t)_tx_low_val;
   *tx_audio_high_hz = (uint16_t)_tx_high_val;
+  *cw_decode_on     = (_cwdec_val != 0);
+  *cw_pitch_hz      = (uint16_t)(_cw_pitch_val >= 300 && _cw_pitch_val <= 900 ? _cw_pitch_val : 700);
+  *cw_wpm           = (uint8_t) (_cw_wpm_val   >= 5   && _cw_wpm_val   <= 40  ? _cw_wpm_val   : 20);
+  *keyer_mode       = (uint8_t) (_keyer_val     >= 0   && _keyer_val    <= 2   ? _keyer_val    : 0);
+  *paddle_reverse   = (_paddlerev_val != 0);
+  *sidetone_vol     = (uint8_t) (_sidetone_val  >= 0   && _sidetone_val <= 100 ? _sidetone_val : 50);
+  *cw_bkin          = (uint8_t) (_bkin_val      >= 0   && _bkin_val     <= 2   ? _bkin_val     : 0);
+  *cw_bk_delay_ms   = (uint16_t)(_bkdelay_val   >= 50  && _bkdelay_val  <= 2000 ? _bkdelay_val : 200);
+  *cw_reverse       = (_cwrev_val != 0);
+  *cw_filter_hz     = (uint16_t)(_cwfilter_val  >= 50  && _cwfilter_val <= 500  ? _cwfilter_val : 500);
   /* USER CODE END Menu_SaveToSDR_0 */
 }
 

@@ -132,6 +132,18 @@ typedef struct {
   bool        vox_on;            /*!< VOX enable */
   uint8_t     vox_gain;          /*!< VOX sensitivity 0-100 (100=most sensitive) */
   uint16_t    vox_delay;         /*!< VOX hang time ms: 100-2000 */
+  /* CW decode */
+  bool        cw_decode_on;      /*!< CW decoder active (RX, CW mode only)         */
+  /* CW keyer / TX */
+  uint16_t    cw_pitch_hz;       /*!< BFO / sidetone pitch Hz: 300-900, default 700 */
+  uint8_t     cw_wpm;            /*!< Keyer speed WPM: 5-40, default 20             */
+  uint8_t     keyer_mode;        /*!< 0=Straight 1=Iambic-A 2=Iambic-B             */
+  bool        paddle_reverse;    /*!< Swap DIT/DAH paddles                          */
+  uint8_t     sidetone_vol;      /*!< Sidetone volume 0-100%, default 50            */
+  uint8_t     cw_bkin;           /*!< 0=Off 1=Semi 2=Full break-in                  */
+  uint16_t    cw_bk_delay_ms;    /*!< BK-IN hang delay ms: 50-2000, default 200     */
+  bool        cw_reverse;        /*!< CW reverse sideband selection                 */
+  uint16_t    cw_filter_hz;      /*!< CW filter bandwidth Hz: 50-500, default 500   */
 } SDR_State_t;
 
 extern SDR_State_t  g_sdr;

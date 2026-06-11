@@ -532,9 +532,11 @@ float Demod_FM(FM_Demod_t *fm, float i, float q)
 float Demod_USB(float i, float hq) { return (i - hq) * 0.5f; }
 float Demod_LSB(float i, float hq) { return (i + hq) * 0.5f; }
 
-float Demod_CW(float i, float q, uint32_t *phase_acc, uint32_t phase_inc)
+float Demod_CW(float i, float q, uint32_t *phase_acc, uint32_t phase_inc, bool reverse)
 {
   /* USER CODE BEGIN Demod_CW_0 */
+  /* reverse: negate Q to mirror spectrum (sideband selection hook) */
+  if (reverse) q = -q;
   float amp = Demod_AM(i, q);
   *phase_acc += phase_inc;
   uint32_t idx = *phase_acc >> (32U - NCO_LUT_BITS);
@@ -633,7 +635,10 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   memset(dsp->tx.audio_delay, 0, sizeof(dsp->tx.audio_delay));
   dsp->tx.delay_idx    = 0;
   dsp->tx.fm_phase     = 0.0f;
-  dsp->tx.cw_phase_acc = 0;
+  dsp->tx.cw_phase_acc    = 0;
+  dsp->tx.cw_bfo_inc      = (uint32_t)((int64_t)700 * (int64_t)4294967296LL / (int64_t)sample_rate);
+  dsp->tx.cw_sidetone_amp = 0.35f;  /* 50% vol default → 0.35 of 0.7 max */
+  dsp->tx.cw_env_amp      = 0.0f;
   dsp->tx.audio_gain   = 1.0f;
   dsp->tx.tx_lp_hz     = 2800.0f;
   dsp->tx.tx_hp_hz     = 200.0f;
@@ -751,8 +756,9 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   dsp->agc.gain       = 1.0f;
   dsp->agc.hang_timer = 0U;
 
-  /* Recompute CW BFO increment for the current sample rate */
-  dsp->cw_bfo_inc = (uint32_t)((int64_t)700 * (int64_t)4294967296LL / (int64_t)sample_rate);
+  /* CW BFO increment: recompute from stored TX bfo_inc (same pitch, keyed to sample rate).
+   * Caller must call DSP_SetCWPitch after DSP_SetMode if pitch differs from 700 Hz. */
+  dsp->cw_bfo_inc    = dsp->tx.cw_bfo_inc;  /* inherit TX pitch → RX BFO matches sidetone */
 
   /* Reset CW keying envelope so the decoder starts fresh after a mode change */
   dsp->cw_env.env_sq   = 0.0f;
@@ -793,6 +799,28 @@ void DSP_SetTxPassband(DSP_State_t *dsp, float hp_hz, float lp_hz)
   uint32_t sr = dsp->sample_rate ? dsp->sample_rate : 48000U;
   IIR_HP1_Init(&dsp->tx.hp_audio, hp_hz, sr);
   FIR_Init_LPF(&dsp->tx.fir_audio, lp_hz / (float)sr, 32U);
+}
+
+/* ── CW pitch / reverse / sidetone ─────────────────────────────────────────*/
+
+void DSP_SetCWPitch(DSP_State_t *dsp, uint16_t pitch_hz, uint32_t sample_rate)
+{
+  if (pitch_hz < 300U) pitch_hz = 300U;
+  if (pitch_hz > 900U) pitch_hz = 900U;
+  uint32_t inc = (uint32_t)((int64_t)pitch_hz * (int64_t)4294967296LL / (int64_t)sample_rate);
+  dsp->cw_bfo_inc    = inc;
+  dsp->tx.cw_bfo_inc = inc;
+}
+
+void DSP_SetCWReverse(DSP_State_t *dsp, bool reverse)
+{
+  dsp->cw_reverse = reverse;
+}
+
+void DSP_SetSidetoneVol(DSP_State_t *dsp, uint8_t vol_pct)
+{
+  if (vol_pct > 100U) vol_pct = 100U;
+  dsp->tx.cw_sidetone_amp = (float)vol_pct * (0.7f / 100.0f);
 }
 
 /* ── Static DC offset ───────────────────────────────────────────────────────
@@ -1075,7 +1103,7 @@ void DSP_Process(DSP_State_t *dsp,
       case MODE_DIGU: audio = Demod_USB(filt_i_d, filt_q_h);                    break;
       case MODE_LSB:
       case MODE_DIGL: audio = Demod_LSB(filt_i_d, filt_q_h);                    break;
-      case MODE_CW:   audio = Demod_CW(filt_i, filt_q, &dsp->cw_phase_acc, dsp->cw_bfo_inc); break;
+      case MODE_CW:   audio = Demod_CW(filt_i, filt_q, &dsp->cw_phase_acc, dsp->cw_bfo_inc, dsp->cw_reverse); break;
       default:        audio = filt_i;                                             break;
     }
 
@@ -1310,8 +1338,22 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         tx_i = 0.5f + 0.5f * audio_lp;   /* carrier + DSB-AM */
         tx_q = 0.0f;
         break;
+      case MODE_CW: {
+        /* Keyed CW carrier at LO+pitch Hz (USB sideband) with click-free envelope.
+         * cw_key_out is written by the main-loop keyer; volatile for ISR safety. */
+        float env_tgt = dsp->cw_key_out ? dsp->tx.cw_sidetone_amp : 0.0f;
+        /* Attack ~3 ms, release ~6 ms at 48 kHz (1 sample ≈ 0.021 ms) */
+        float coeff = (env_tgt > dsp->tx.cw_env_amp) ? 0.9994f : 0.9988f;
+        dsp->tx.cw_env_amp = dsp->tx.cw_env_amp * coeff + env_tgt * (1.0f - coeff);
+        dsp->tx.cw_phase_acc += dsp->tx.cw_bfo_inc;
+        uint32_t cw_idx = dsp->tx.cw_phase_acc >> (32U - NCO_LUT_BITS);
+        float cw_cos = s_nco_sin_lut[(cw_idx + (NCO_LUT_SIZE / 4U)) & NCO_LUT_MASK];
+        float cw_sin = s_nco_sin_lut[cw_idx & NCO_LUT_MASK];
+        tx_i = cw_cos * dsp->tx.cw_env_amp;
+        tx_q = cw_sin * dsp->tx.cw_env_amp;
+        break;
+      }
       case MODE_FM:
-      case MODE_CW:
       default:
         tx_i = audio_lp * 0.7f;
         tx_q = 0.0f;

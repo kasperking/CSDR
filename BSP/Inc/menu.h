@@ -44,7 +44,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      36U   /* 6 groups + 30 leaf items */
+#define MENU_ITEM_COUNT      47U   /* 7 groups + 40 leaf items */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -60,10 +60,12 @@ extern "C" {
 #define MENU_VAL_COLOR      0xFFFFU   /* White value          */
 #define MENU_BORDER_COLOR   0x10A2U   /* Dark subtle border   */
 
-/* Well-known item indices (leaf items in the TX group) */
+/* Well-known item indices */
 #define MENU_IDX_RFPOWER    21U
 #define MENU_IDX_TXLOW      23U
 #define MENU_IDX_TXHIGH     24U
+#define MENU_IDX_CW_GROUP   37U   /* CW root group                   */
+#define MENU_IDX_CWDEC      36U   /* CW Decode (parent = CW group)   */
 
 /* Exported types ------------------------------------------------------------*/
 
@@ -145,6 +147,12 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        int16_t rx_shift_hz,
                        bool notch_on, int16_t notch_hz,
                        bool vox_on, uint8_t vox_gain, uint16_t vox_delay,
+                       bool cw_decode_on,
+                       uint16_t cw_pitch_hz, uint8_t cw_wpm,
+                       uint8_t keyer_mode, bool paddle_reverse,
+                       uint8_t sidetone_vol, uint8_t cw_bkin,
+                       uint16_t cw_bk_delay_ms, bool cw_reverse,
+                       uint16_t cw_filter_hz,
                        MenuApplyFn apply_cb);
 
 /**
@@ -160,7 +168,13 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint16_t *tx_audio_low_hz, uint16_t *tx_audio_high_hz,
                      int16_t *rx_shift_hz,
                      bool *notch_on, int16_t *notch_hz,
-                     bool *vox_on, uint8_t *vox_gain, uint16_t *vox_delay);
+                     bool *vox_on, uint8_t *vox_gain, uint16_t *vox_delay,
+                     bool *cw_decode_on,
+                     uint16_t *cw_pitch_hz, uint8_t *cw_wpm,
+                     uint8_t *keyer_mode, bool *paddle_reverse,
+                     uint8_t *sidetone_vol, uint8_t *cw_bkin,
+                     uint16_t *cw_bk_delay_ms, bool *cw_reverse,
+                     uint16_t *cw_filter_hz);
 
 #ifdef __cplusplus
 }

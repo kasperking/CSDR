@@ -189,7 +189,19 @@ typedef struct {
   uint8_t    vox_on;             /* VOX enable: 0=off 1=on               */
   uint8_t    vox_gain;           /* VOX sensitivity 0-100 (100=hot)      */
   uint16_t   vox_delay_ms;       /* VOX hang time 100-2000 ms            */
-  /* no reserved — all bytes accounted for; crc32 lands at offset 128 */
+
+  /* ── CW keyer / TX settings ─────────────────────────────────── */
+  uint16_t   cw_pitch_hz;        /* BFO/sidetone Hz: 300-900, def 700    */
+  uint16_t   cw_bk_delay_ms;     /* BK-IN hang delay ms: 50-2000, def 200*/
+  uint16_t   cw_filter_hz;       /* CW filter BW Hz: 50-500, def 500     */
+  uint8_t    cw_wpm;             /* Keyer speed WPM: 5-40, def 20        */
+  uint8_t    keyer_mode;         /* 0=Straight 1=IambicA 2=IambicB       */
+  uint8_t    sidetone_vol;       /* Sidetone volume 0-100%, def 50       */
+  uint8_t    cw_bkin;            /* 0=Off 1=Semi 2=Full break-in         */
+  bool       paddle_reverse;     /* Swap DIT/DAH paddles                 */
+  bool       cw_reverse;         /* CW reverse sideband flag             */
+  bool       cw_decode_on;       /* CW decoder enable                    */
+  uint8_t    _cw_pad;            /* alignment padding                    */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;

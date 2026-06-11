@@ -55,7 +55,7 @@
   *  │ XT   │ XIT on/off                   │ STUB   │ XT0; (fixed off)      │
   *  │ MN   │ Menu item select             │ STUB   │ MN000; (fixed)        │
   *  │ MP   │ Menu parameter               │ STUB   │ MP0000; (fixed)       │
-  *  │ KS   │ CW keyer speed               │ STUB   │ KS010; (no keyer)     │
+  *  │ KS   │ CW keyer speed               │ REAL   │ KSnnn; live WPM       │
   *  │ LK   │ Panel lock                   │ STUB   │ LK0; (fixed unlock)   │
   *  │ MG   │ Mic gain                     │ STUB   │ MG050; (fixed)        │
   *  │ EX   │ Extended menu (TS-480)       │ STUB   │ echo + '0' suffix     │
@@ -163,6 +163,9 @@ typedef struct {
   /* TX output power — PC command */
   void     (*set_tx_power)(uint8_t pct);   /*!< PCnnn: 0-100 percent     */
   uint8_t  (*get_tx_power)(void);
+  /* CW keyer speed — KS command */
+  void     (*set_cw_wpm)(uint8_t wpm);     /*!< KSnnn: 5-40 WPM          */
+  uint8_t  (*get_cw_wpm)(void);
 } CAT_Callbacks_t;
 
 /** CAT driver state */

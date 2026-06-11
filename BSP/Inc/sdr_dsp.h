@@ -126,7 +126,10 @@ typedef struct {
   float        audio_delay[HILBERT_TAPS];  /*!< Match delay cho I channel */
   uint16_t     delay_idx;
   float        fm_phase;                   /*!< FM modulator phase accumulator */
-  uint32_t     cw_phase_acc;               /*!< CW tone NCO */
+  uint32_t     cw_phase_acc;               /*!< CW tone NCO phase accumulator       */
+  uint32_t     cw_bfo_inc;                 /*!< CW sidetone NCO increment            */
+  float        cw_sidetone_amp;            /*!< Target sidetone amplitude (0..0.7)   */
+  float        cw_env_amp;                 /*!< Smoothed keying envelope (click-free)*/
   float        audio_gain;                 /*!< TX audio gain (0..1) */
   float        tx_lp_hz;                  /*!< TX High-cut (LPF) Hz */
   float        tx_hp_hz;                  /*!< TX Low-cut (HPF) Hz  */
@@ -192,8 +195,10 @@ typedef struct {
   float        notch_hz;
 
   /* CW BFO – RX demodulator */
-  uint32_t   cw_phase_acc;   /*!< RX CW BFO phase accumulator */
-  uint32_t   cw_bfo_inc;     /*!< RX CW BFO phase increment (sample-rate-derived) */
+  uint32_t      cw_phase_acc;    /*!< RX CW BFO phase accumulator                    */
+  uint32_t      cw_bfo_inc;      /*!< RX CW BFO phase increment (sample-rate-derived) */
+  bool          cw_reverse;      /*!< Negate Q before CW demod (spectrum mirror)      */
+  volatile bool cw_key_out;      /*!< Written by keyer (main loop), read by DSP ISR   */
 
   /* CW keying envelope – pre-AGC tap for decoder */
   CWEnv_t    cw_env;
@@ -217,6 +222,9 @@ void DSP_SetFrequency(DSP_State_t *dsp, uint32_t lo_offset_hz, uint32_t sample_r
 void DSP_SetIFShift(DSP_State_t *dsp, int32_t if_shift_hz, uint32_t sample_rate);
 void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate);
 void DSP_SetBW(DSP_State_t *dsp, float bw_hz);
+void DSP_SetCWPitch(DSP_State_t *dsp, uint16_t pitch_hz, uint32_t sample_rate);
+void DSP_SetCWReverse(DSP_State_t *dsp, bool reverse);
+void DSP_SetSidetoneVol(DSP_State_t *dsp, uint8_t vol_pct);
 void DSP_Process(DSP_State_t *dsp,
                   const int32_t *iq_in,
                   int32_t       *audio_out,
@@ -288,7 +296,7 @@ float Demod_AM(float i, float q);
 float Demod_FM(FM_Demod_t *fm, float i, float q);
 float Demod_USB(float i, float q);
 float Demod_LSB(float i, float q);
-float Demod_CW(float i, float q, uint32_t *phase_acc, uint32_t phase_inc);
+float Demod_CW(float i, float q, uint32_t *phase_acc, uint32_t phase_inc, bool reverse);
 
 #ifdef __cplusplus
 }
