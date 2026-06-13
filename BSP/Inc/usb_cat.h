@@ -59,6 +59,7 @@
   *  │ LK   │ Panel lock                   │ STUB   │ LK0; (fixed unlock)   │
   *  │ MG   │ Mic gain                     │ STUB   │ MG050; (fixed)        │
   *  │ EX   │ Extended menu (TS-480)       │ STUB   │ echo + '0' suffix     │
+  *  │ XS   │ USB stream type (IQ/Demod)   │ REAL   │ XS0;=IQ  XS1;=Demod  │
   *  │ VV   │ VFO copy                     │ ACK    │ silent                │
   *  │ UP   │ Frequency up step            │ ACK    │ silent                │
   *  │ DN   │ Frequency down step          │ ACK    │ silent                │
@@ -166,6 +167,9 @@ typedef struct {
   /* CW keyer speed — KS command */
   void     (*set_cw_wpm)(uint8_t wpm);     /*!< KSnnn: 5-40 WPM          */
   uint8_t  (*get_cw_wpm)(void);
+  /* USB audio stream type — XS command (custom) */
+  void     (*set_usb_stream)(uint8_t mode); /*!< XS0=IQ, XS1=Demod       */
+  uint8_t  (*get_usb_stream)(void);
 } CAT_Callbacks_t;
 
 /** CAT driver state */

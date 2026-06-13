@@ -260,6 +260,8 @@ static void     cat_set_tx_power(uint8_t pct);
 static uint8_t  cat_get_tx_power(void);
 static void     cat_set_cw_wpm(uint8_t wpm);
 static uint8_t  cat_get_cw_wpm(void);
+static void     cat_set_usb_stream(uint8_t m);
+static uint8_t  cat_get_usb_stream(void);
 
 /* ── Settings persistence helper ──────────────────────────
  * Serialises g_sdr to Flash_Settings_t and calls Flash_SaveSettings.
@@ -365,6 +367,9 @@ void CSDR_Init(void)
   HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0U, 0U);
   HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_4);
   __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, 800U);
+
+  /* Default: IQ stream (preserves pre-existing behavior; not persisted in Flash) */
+  g_sdr.usb_iq_stream = true;
 
   /* Flash: load settings */
   bool boot_flash_ok = (W25Q_Init(&g_flash, &hspi3, FLASH_CS_GPIO_Port, FLASH_CS_Pin) == HAL_OK);
@@ -609,6 +614,8 @@ void CSDR_Init(void)
     .get_tx_power    = cat_get_tx_power,
     .set_cw_wpm      = cat_set_cw_wpm,
     .get_cw_wpm      = cat_get_cw_wpm,
+    .set_usb_stream  = cat_set_usb_stream,
+    .get_usb_stream  = cat_get_usb_stream,
   };
   CAT_Init(&g_cat, &cb);
 
@@ -728,7 +735,7 @@ static void csdr_process_audio_pending(void)
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
     /* Feed USB ring from main-loop context, not ISR, to avoid starving the
      * USB OTG interrupt handler when the host opens the audio stream. */
-    if (g_usb_audio.usb_streaming)
+    if (g_usb_audio.usb_streaming && g_sdr.usb_iq_stream)
       USB_Audio_WriteRX(&g_usb_audio, s_rx_buf, CSDR_AUDIO_BLOCK_SIZE);
     dbg_rx_sample_0 = s_rx_buf[0];
     dbg_rx_sample_1 = s_rx_buf[1];
@@ -738,6 +745,8 @@ static void csdr_process_audio_pending(void)
     } else {
       DSP_Process(&g_dsp, s_rx_buf, s_tx_buf, CSDR_AUDIO_BLOCK_SIZE);
     }
+    if (g_usb_audio.usb_streaming && !g_sdr.usb_iq_stream && !g_sdr.tx_mode)
+      USB_Audio_WriteRX(&g_usb_audio, s_tx_buf, CSDR_AUDIO_BLOCK_SIZE);
     RuntimeDiag_AudioBlockEnd();
     dbg_dsp_process_cnt++;
     /* Force 1kHz test tone directly into TX buffer when dbg_force_tone=1.
@@ -767,7 +776,7 @@ static void csdr_process_audio_pending(void)
      * Size 2048 B — 32-byte aligned ✓ */
     SCB_InvalidateDCache_by_Addr((uint32_t*)(s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2),
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
-    if (g_usb_audio.usb_streaming)
+    if (g_usb_audio.usb_streaming && g_sdr.usb_iq_stream)
       USB_Audio_WriteRX(&g_usb_audio,
                          s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                          CSDR_AUDIO_BLOCK_SIZE);
@@ -779,6 +788,10 @@ static void csdr_process_audio_pending(void)
       DSP_Process(&g_dsp, s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                    s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2, CSDR_AUDIO_BLOCK_SIZE);
     }
+    if (g_usb_audio.usb_streaming && !g_sdr.usb_iq_stream && !g_sdr.tx_mode)
+      USB_Audio_WriteRX(&g_usb_audio,
+                         s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
+                         CSDR_AUDIO_BLOCK_SIZE);
     RuntimeDiag_AudioBlockEnd();
     /* s_tx_buf pong: byte offset 2048, size 2048 — 32-byte aligned ✓ */
     SCB_CleanDCache_by_Addr((uint32_t*)(s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2),
@@ -1410,7 +1423,8 @@ void CSDR_Loop(void)
        *   LSB/DIGL:    -sl_hz (passband starts below carrier)
        *   AM/FM:        0     (symmetric / fixed filter, no low cut) */
       int32_t sl_sign = 0;
-      if (g_sdr.mode == MODE_USB || g_sdr.mode == MODE_CW || g_sdr.mode == MODE_DIGU)
+      if (g_sdr.mode == MODE_USB || g_sdr.mode == MODE_CW ||
+          g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_FREEDV)
           sl_sign = +1;
       else if (g_sdr.mode == MODE_LSB || g_sdr.mode == MODE_DIGL)
           sl_sign = -1;
@@ -1772,6 +1786,7 @@ static void csdr_handle_keys(void)
         g_sdr.sidetone_vol, g_sdr.cw_bkin,
         g_sdr.cw_bk_delay_ms, g_sdr.cw_reverse,
         g_sdr.cw_filter_hz,
+        g_sdr.usb_iq_stream,
         menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
@@ -1956,7 +1971,8 @@ static void csdr_update_spectrum(void)
       case MODE_DIGL: bw_lo_ratio = full; bw_hi_ratio = 0.0f; break;
       case MODE_USB:
       case MODE_DIGU:
-      case MODE_CW:   bw_lo_ratio = 0.0f; bw_hi_ratio = full; break;
+      case MODE_CW:
+      case MODE_FREEDV: bw_lo_ratio = 0.0f; bw_hi_ratio = full; break;
       default:        bw_lo_ratio = half; bw_hi_ratio = half;  break;
     }
   }
@@ -1996,7 +2012,8 @@ static void csdr_refresh_display(void)
     ui.att_db    = g_sdr.att_db;
     ui.att_x2    = g_att.current_atten_x2;   /* 0.5 dB precision for sidebar display */
     ui.rf_agc_on = g_sdr.rf_agc_on;
-    ui.mic_gain  = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL)
+    ui.mic_gain  = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL ||
+                    g_sdr.mode == MODE_FREEDV)
                    ? g_sdr.digi_gain : g_sdr.mic_gain;
     ui.tx_power  = g_sdr.tx_power;
     ui.pa_watts  = g_sdr.pa_watts;
@@ -2073,15 +2090,16 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m)
     case MODE_USB:
     case MODE_LSB:
     case MODE_DIGU:
-    case MODE_DIGL: return 3000U;
-    case MODE_CW:   return 500U;
-    default:        return 4000U;
+    case MODE_DIGL:   return 3000U;
+    case MODE_FREEDV: return 4000U;
+    case MODE_CW:     return 500U;
+    default:          return 4000U;
   }
 }
 
 static void menu_apply_cb(void)
 {
-  bool agc, nb, nr, ext_alc, notch_en, vox_en, cw_dec, paddle_rev, cw_rev; int16_t rit, rxshift, notch_f;
+  bool agc, nb, nr, ext_alc, notch_en, vox_en, cw_dec, paddle_rev, cw_rev, iq_stream; int16_t rit, rxshift, notch_f;
   uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr, vox_gain; uint32_t step;
   uint16_t tx_low, tx_high, vox_delay;
   uint16_t cw_pitch, cw_filter, cw_bk_delay; uint8_t cw_wpm, keyer_mode, sidetone, cw_bkin;
@@ -2090,7 +2108,7 @@ static void menu_apply_cb(void)
                   &ext_alc, &rfpwr, &tx_low, &tx_high, &rxshift, &notch_en, &notch_f,
                   &vox_en, &vox_gain, &vox_delay, &cw_dec,
                   &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
-                  &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter);
+                  &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream);
   if (tx_low != g_sdr.tx_audio_low_hz || tx_high != g_sdr.tx_audio_high_hz) {
     g_sdr.tx_audio_low_hz  = tx_low;
     g_sdr.tx_audio_high_hz = tx_high;
@@ -2140,7 +2158,8 @@ static void menu_apply_cb(void)
     csdr_apply_nco_if();
     csdr_on_mode_changed(old_mode_menu);
   }
-  g_sdr.usb_mode = usb;
+  g_sdr.usb_mode      = usb;
+  g_sdr.usb_iq_stream = iq_stream;
   if (zoom != SDR_UI_GetSpecZoom()) SDR_UI_SetSpecZoom(zoom);
   if (cw_dec != g_sdr.cw_decode_on) {
     /* CW decode can only be enabled when in CW mode */
@@ -2242,7 +2261,8 @@ static void csdr_vox_poll(void)
 static void csdr_apply_nco_if(void)
 {
   int32_t sl_sign = 0;
-  if (g_sdr.mode == MODE_USB || g_sdr.mode == MODE_CW || g_sdr.mode == MODE_DIGU)
+  if (g_sdr.mode == MODE_USB || g_sdr.mode == MODE_CW ||
+      g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_FREEDV)
       sl_sign = +1;
   else if (g_sdr.mode == MODE_LSB || g_sdr.mode == MODE_DIGL)
       sl_sign = -1;
@@ -2443,7 +2463,8 @@ static void csdr_apply_tx(void)
     { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
       float base = oc_lut[g_sdr.pa_oc_limit_idx];
       float lim  = (g_sdr.mode == MODE_CW)                                ? base - 0.5f :
-                   (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL)  ? base - 0.3f : base;
+                   (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL ||
+                    g_sdr.mode == MODE_FREEDV)                           ? base - 0.3f : base;
       if (lim < 1.0f) lim = 1.0f;
       PA_OC_SetCurrentLimit(lim); }
     /* RX → TX: mute headphone in voice/digi modes (TX IQ is not audio).
@@ -2469,7 +2490,8 @@ static void csdr_apply_tx(void)
    * and external ALC continuous multiplier (30-100% when ext_alc_on).
    * Clamped to [0.01, 1.0]. */
   {
-    bool digi = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL);
+    bool digi = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL ||
+                 g_sdr.mode == MODE_FREEDV);
     int16_t tx_trim = g_band_cal[g_sdr.band_idx].tx_drive_trim;
     float g = (float)(digi ? g_sdr.digi_gain : g_sdr.mic_gain) * (1.0f / 100.0f)
               * ((float)g_sdr.tx_power            * (1.0f / 100.0f))
@@ -2625,6 +2647,9 @@ static void cat_set_cw_wpm(uint8_t wpm)
   csdr_save_settings();
 }
 static uint8_t cat_get_cw_wpm(void) { return g_sdr.cw_wpm; }
+
+static void    cat_set_usb_stream(uint8_t m) { g_sdr.usb_iq_stream = (m == 0U); g_sdr.display_dirty |= DIRTY_SBR; }
+static uint8_t cat_get_usb_stream(void)      { return g_sdr.usb_iq_stream ? 0U : 1U; }
 
 int32_t *CSDR_GetTxBuf(void) { return s_tx_buf; }
 int32_t *CSDR_GetRxBuf(void) { return s_rx_buf; }

@@ -51,9 +51,10 @@ typedef enum {
   MODE_USB  = 2,   /* voice USB SSB          */
   MODE_LSB  = 3,   /* voice LSB SSB          */
   MODE_CW   = 4,
-  MODE_DIGU = 5,   /* digital USB (WSJT-X/FT8/DATA-USB) — linear TX path */
-  MODE_DIGL = 6,   /* digital LSB (DATA-LSB)             — linear TX path */
-  MODE_COUNT = 7
+  MODE_DIGU   = 5,   /* digital USB (WSJT-X/FT8/DATA-USB) — linear TX path */
+  MODE_DIGL   = 6,   /* digital LSB (DATA-LSB)             — linear TX path */
+  MODE_FREEDV = 7,   /* FreeDV narrowband digital voice (8 kHz sub-path)   */
+  MODE_COUNT  = 8
 } SDR_Mode_t;
 
 typedef enum {
@@ -94,6 +95,7 @@ typedef struct {
   int16_t     if_shift_hz;
   uint8_t     display_dirty;
   uint8_t     usb_mode;
+  bool        usb_iq_stream;  /*!< true = raw IQ to USB audio; false = demodulated audio */
   /* Calibration */
   int32_t     xtal_ppm;
   int16_t     iq_gain;

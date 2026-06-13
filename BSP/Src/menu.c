@@ -44,7 +44,7 @@ static int32_t _rfpwr_val, _alc_val, _tx_low_val, _tx_high_val;
 static int32_t _vox_val, _voxgain_val, _voxdelay_val;
 
 /* System group */
-static int32_t _bl_val, _usb_val;
+static int32_t _bl_val, _usb_val, _iq_stream_val;
 
 /* Misc */
 static uint8_t s_pa_watts = 0U;
@@ -56,8 +56,9 @@ static const char *bkin_strs[]  = { "OFF", "SEMI", "FULL" };
 static const char *step_strs[] = { "1Hz","10Hz","100Hz","1KHz","10KHz","100KHz" };
 static const char *band_strs[] = { "160m","80m","60m","40m","30m",
                                     "20m","17m","15m","12m","10m","6m" };
-static const char *mode_strs[] = { "AM","FM","USB","LSB","CW" };
-static const char *usb_strs[]  = { "Off","CAT","Audio" };
+static const char *mode_strs[] = { "AM","FM","USB","LSB","CW","DIGU","DIGL","FDV" };
+static const char *usb_strs[]      = { "Off","CAT","Audio" };
+static const char *iq_stream_strs[] = { "IQ","Demod" };
 static const char *zoom_strs[] = { "+/-24k","+/-12k","+/-6k","+/-3k" };
 
 static MenuApplyFn s_apply_cb = NULL;
@@ -195,7 +196,7 @@ void Menu_Init(Menu_Handle_t *m)
   /* ── Tuning group (parent = 2) ──────────────────────────── */
   m->items[18] = (MenuItem_t){ "Step",MENU_TYPE_ENUM,0,0,0,&_step_val,step_strs,6U, NULL,NULL,2 };
   m->items[19] = (MenuItem_t){ "Band",MENU_TYPE_ENUM,0,0,0,&_band_val,band_strs,11U,NULL,NULL,2 };
-  m->items[20] = (MenuItem_t){ "Mode",MENU_TYPE_ENUM,0,0,0,&_mode_val,mode_strs,5U, NULL,NULL,2 };
+  m->items[20] = (MenuItem_t){ "Mode",MENU_TYPE_ENUM,0,0,0,&_mode_val,mode_strs,8U, NULL,NULL,2 };
 
   /* ── TX group (parent = 3) ──────────────────────────────── */
   m->items[21] = (MenuItem_t){ "RF Power", MENU_TYPE_INT,  5,100,5,    &_rfpwr_val,   NULL,      0U,NULL,"%", 3 };
@@ -208,7 +209,8 @@ void Menu_Init(Menu_Handle_t *m)
 
   /* ── System group (parent = 4) ──────────────────────────── */
   m->items[28] = (MenuItem_t){ "Backlight",  MENU_TYPE_INT,   0,100,10,&_bl_val, NULL,    0U,NULL,NULL,4 };
-  m->items[29] = (MenuItem_t){ "USB",        MENU_TYPE_ENUM,  0,0,0,   &_usb_val,usb_strs,3U,NULL,NULL,4 };
+  m->items[29] = (MenuItem_t){ "USB",        MENU_TYPE_ENUM,  0,0,0,   &_usb_val,     usb_strs,      3U,NULL,NULL,4 };
+  m->items[47] = (MenuItem_t){ "USB Stream", MENU_TYPE_ENUM,  0,0,0,   &_iq_stream_val,iq_stream_strs,2U,NULL,NULL,4 };
   m->items[30] = (MenuItem_t){ "Calibration",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,4  };
   m->items[31] = (MenuItem_t){ "Fct Reset",  MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,4  };
   m->items[32] = (MenuItem_t){ "About",      MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,4  };
@@ -423,6 +425,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t sidetone_vol, uint8_t cw_bkin,
                        uint16_t cw_bk_delay_ms, bool cw_reverse,
                        uint16_t cw_filter_hz,
+                       bool usb_iq_stream,
                        MenuApplyFn apply_cb)
 {
   /* USER CODE BEGIN Menu_LoadFromSDR_0 */
@@ -443,8 +446,9 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _att_val  = (int32_t)att;
   _band_val = (int32_t)band;
   _mode_val = (int32_t)mode;
-  _usb_val  = (int32_t)usb_mode;
-  _zoom_val = (int32_t)zoom;
+  _usb_val       = (int32_t)usb_mode;
+  _iq_stream_val = usb_iq_stream ? 1 : 0;
+  _zoom_val      = (int32_t)zoom;
   _alc_val  = ext_alc ? 1 : 0;
 
   _tx_low_val  = (tx_audio_low_hz  >= 100U && tx_audio_low_hz  <= 500U)  ? (int32_t)tx_audio_low_hz  : 200;
@@ -506,7 +510,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *keyer_mode, bool *paddle_reverse,
                      uint8_t *sidetone_vol, uint8_t *cw_bkin,
                      uint16_t *cw_bk_delay_ms, bool *cw_reverse,
-                     uint16_t *cw_filter_hz)
+                     uint16_t *cw_filter_hz,
+                     bool *usb_iq_stream)
 {
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
@@ -553,6 +558,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *cw_bk_delay_ms   = (uint16_t)(_bkdelay_val   >= 50  && _bkdelay_val  <= 2000 ? _bkdelay_val : 200);
   *cw_reverse       = (_cwrev_val != 0);
   *cw_filter_hz     = (uint16_t)(_cwfilter_val  >= 50  && _cwfilter_val <= 500  ? _cwfilter_val : 500);
+  *usb_iq_stream    = (_iq_stream_val != 0);
   /* USER CODE END Menu_SaveToSDR_0 */
 }
 

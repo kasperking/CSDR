@@ -800,8 +800,8 @@ static void draw_compact_status(const SDR_UI_State_t *ui)
   s_sbr_cache.step       = ui->step;
   s_sbr_cache.valid      = true;
 
-  static const char *const mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
-  const char *mode_str = (ui->mode < 7U) ? mode_s[ui->mode] : "---";
+  static const char *const mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL","FDV"};
+  const char *mode_str = (ui->mode < 8U) ? mode_s[ui->mode] : "---";
 
   char vol_str[8]; snprintf(vol_str, sizeof(vol_str), "VOL:%u",  ui->volume);
   char sql_str[8]; snprintf(sql_str, sizeof(sql_str), "SQL:%u",  ui->squelch);
@@ -925,12 +925,12 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
   s_sbl_cache.active_vfo = ui->active_vfo;
   s_sbl_cache.valid      = true;
 
-  static const char *const mode_s[]  = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
+  static const char *const mode_s[]  = {"AM","FM","USB","LSB","CW","DIGU","DIGL","FDV"};
   static const uint16_t    mode_bg[] = {UI_MODE_AM, UI_MODE_FM,  UI_MODE_USB,
                                         UI_MODE_LSB, UI_MODE_CW, UI_MODE_DIGU,
-                                        UI_MODE_DIGL};
-  const char *mode_str = (ui->mode < 7U) ? mode_s[ui->mode]  : "---";
-  uint16_t    mbg      = (ui->mode < 7U) ? mode_bg[ui->mode] : UI_STATUS_LBL;
+                                        UI_MODE_DIGL, UI_MODE_FREEDV};
+  const char *mode_str = (ui->mode < 8U) ? mode_s[ui->mode]  : "---";
+  uint16_t    mbg      = (ui->mode < 8U) ? mode_bg[ui->mode] : UI_STATUS_LBL;
 
   char vol_str[6]; snprintf(vol_str, sizeof(vol_str), "%u", ui->volume);
   char sql_str[6]; snprintf(sql_str, sizeof(sql_str), "%u", ui->squelch);
@@ -1300,8 +1300,8 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   }
 
   /* RX = green (subtle), TX = red — per UI spec */
-  static const char *const vfo_mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
-  const char *vfo_mode_str = (ui->mode < 7U) ? vfo_mode_s[ui->mode] : "---";
+  static const char *const vfo_mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL","FDV"};
+  const char *vfo_mode_str = (ui->mode < 8U) ? vfo_mode_s[ui->mode] : "---";
   const char *rt_str       = ui->tx_mode ? "TX" : "RX";
   uint16_t    rt_color     = ui->tx_mode ? UI_TX_BG : UI_RX_BG;
 

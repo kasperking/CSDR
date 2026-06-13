@@ -44,7 +44,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      47U   /* 7 groups + 40 leaf items */
+#define MENU_ITEM_COUNT      48U   /* 7 groups + 41 leaf items */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -153,6 +153,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t sidetone_vol, uint8_t cw_bkin,
                        uint16_t cw_bk_delay_ms, bool cw_reverse,
                        uint16_t cw_filter_hz,
+                       bool usb_iq_stream,
                        MenuApplyFn apply_cb);
 
 /**
@@ -174,7 +175,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *keyer_mode, bool *paddle_reverse,
                      uint8_t *sidetone_vol, uint8_t *cw_bkin,
                      uint16_t *cw_bk_delay_ms, bool *cw_reverse,
-                     uint16_t *cw_filter_hz);
+                     uint16_t *cw_filter_hz,
+                     bool *usb_iq_stream);
 
 #ifdef __cplusplus
 }

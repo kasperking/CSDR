@@ -92,7 +92,7 @@ static inline uint8_t cat_clamp_vfo(uint8_t vfo)
 
 /* =========================================================
  * Mode mapping
- * SDR enum: 0=AM, 1=FM, 2=USB, 3=LSB, 4=CW, 5=DIGU, 6=DIGL
+ * SDR enum: 0=AM, 1=FM, 2=USB, 3=LSB, 4=CW, 5=DIGU, 6=DIGL, 7=FREEDV
  * ========================================================= */
 uint8_t CAT_SDRModeToCat(uint8_t m)
 {
@@ -106,6 +106,8 @@ uint8_t CAT_SDRModeToCat(uint8_t m)
          * CAT_MODE_DIGU/DIGL (0x0C/0x0D) are non-standard and would corrupt the frame */
         case 5U: return CAT_MODE_USB;
         case 6U: return CAT_MODE_LSB;
+        /* FreeDV reports as USB (narrowband SSB convention) */
+        case 7U: return CAT_MODE_USB;
         default: return CAT_MODE_USB;
     }
 }
@@ -1570,6 +1572,20 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
     else if (cmd[0] == 'R' && cmd[1] == 'L') {
         if (cmd[2] == '\0') { cat_copy(resp, "RL00;"); }
         /* SET RLnn; — ACK-only */
+    }
+
+    /* XS — USB audio stream type (custom command).
+     * XS;  → read: XS0; = IQ stream, XS1; = Demod audio
+     * XS0; → set IQ mode  (usb_mode=2)
+     * XS1; → set Demod mode (usb_mode=3) */
+    else if (cmd[0] == 'X' && cmd[1] == 'S') {
+        if (cmd[2] == '\0') {
+            uint8_t m = cat->cb.get_usb_stream ? cat->cb.get_usb_stream() : 0U;
+            resp[0] = 'X'; resp[1] = 'S'; resp[2] = (char)('0' + m); resp[3] = ';'; resp[4] = '\0';
+        } else {
+            if (cat->cb.set_usb_stream)
+                cat->cb.set_usb_stream((uint8_t)(cmd[2] - '0'));
+        }
     }
 
     else {
