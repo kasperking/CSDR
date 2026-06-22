@@ -25,6 +25,7 @@
 #include "csdr_app.h"
 #include "lcd_bus_fmc.h"
 #include "pa_overcurrent.h"
+#include "input_scan.h"
 #include "lcd_dma.h"
 #include "boot_dfu.h"
 /* USER CODE END Includes */
@@ -1048,7 +1049,7 @@ static void MX_FMC_Init(void)
   hsram1.Init.NSBank = FMC_NORSRAM_BANK1;
   hsram1.Init.DataAddressMux = FMC_DATA_ADDRESS_MUX_DISABLE;
   hsram1.Init.MemoryType = FMC_MEMORY_TYPE_SRAM;
-  hsram1.Init.MemoryDataWidth = FMC_NORSRAM_MEM_BUS_WIDTH_16;  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 8BIT */
+  hsram1.Init.MemoryDataWidth = FMC_NORSRAM_MEM_BUS_WIDTH_16;  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 16BIT */  /* hw_config: 8BIT */
   hsram1.Init.BurstAccessMode = FMC_BURST_ACCESS_MODE_DISABLE;
   hsram1.Init.WaitSignalPolarity = FMC_WAIT_SIGNAL_POLARITY_LOW;
   hsram1.Init.WaitSignalActive = FMC_WAIT_TIMING_BEFORE_WS;
@@ -1224,6 +1225,14 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(PA_OC_ALERT_GPIO_PORT, &GPIO_InitStruct);
   HAL_NVIC_SetPriority(PA_OC_ALERT_EXTI_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(PA_OC_ALERT_EXTI_IRQn);
+
+  /* PCA9555_INT (PB8): GPIO expander INT, active-LOW, falling edge, pull-up.
+   * Shares EXTI9_5_IRQn with PA_OC_ALERT (PC6) at same priority. */
+  GPIO_InitStruct.Pin  = PCA9555_INT_PIN;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(PCA9555_INT_PORT, &GPIO_InitStruct);
+  /* NVIC already enabled above for EXTI9_5_IRQn */
 
   /* PW_HOLD (PB1): CubeMX nhóm nhầm vào block INPUT trên GPIOD.
    * Config lại đúng: OUTPUT_PP, initial HIGH để giữ latch nguồn. */

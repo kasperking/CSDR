@@ -39,11 +39,13 @@ typedef enum {
 
 /* ── Font blob layout ───────────────────────────────────────────────────── *
  * Raw concatenation stored at FLASH_ADDR_FONT_DATA:                        *
- *   [Font6x8 : 354 B][Font5x8 : 354 B][Font8x10 : 944 B]  = 1652 B total  */
-#define SPI_FONT_GLYPH_COUNT   59U                                   /* ASCII 32..90 */
-#define SPI_FONT_F6X8_SIZE     (SPI_FONT_GLYPH_COUNT * 6U)          /* 354 bytes  */
-#define SPI_FONT_F5X8_SIZE     (SPI_FONT_GLYPH_COUNT * 6U)          /* 354 bytes  */
-#define SPI_FONT_F8X10_SIZE    (SPI_FONT_GLYPH_COUNT * 8U * 2U)     /* 944 bytes  */
+ *   [Font6x8 : 546 B][Font5x8 : 546 B][Font8x10 : 944 B]  = 2036 B total  *
+ * NOTE: Font8x10 GLYPH_COUNT still covers only ASCII 32..90 (uppercase).   */
+#define SPI_FONT_GLYPH_COUNT   91U                                   /* ASCII 32..122 (a-z added) */
+#define SPI_FONT_F8X10_GLYPH_COUNT 59U                               /* ASCII 32..90 (uppercase only) */
+#define SPI_FONT_F6X8_SIZE     (SPI_FONT_GLYPH_COUNT * 6U)          /* 546 bytes  */
+#define SPI_FONT_F5X8_SIZE     (SPI_FONT_GLYPH_COUNT * 6U)          /* 546 bytes  */
+#define SPI_FONT_F8X10_SIZE    (SPI_FONT_F8X10_GLYPH_COUNT * 8U * 2U) /* 944 bytes  */
 #define SPI_FONT_BLOB_SIZE     (SPI_FONT_F6X8_SIZE + SPI_FONT_F5X8_SIZE + SPI_FONT_F8X10_SIZE)
 #define SPI_FONT_F6X8_OFFSET   0U
 #define SPI_FONT_F5X8_OFFSET   SPI_FONT_F6X8_SIZE

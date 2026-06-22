@@ -172,7 +172,7 @@ typedef struct {
   uint8_t    vfo_b_band_idx;
 
   /* ── Bool flags ─────────────────────────────────────────────── */
-  bool       agc_fast;
+  uint8_t    agc_speed;    /*!< 0=SLOW 1=FAST 2=AUTO */
   bool       nb_on;
   bool       nr_on;
   bool       rf_agc_on;

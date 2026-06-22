@@ -73,11 +73,12 @@ FLASH_ADDR_FFT_TWIDDLE = 0x060000   # 16KB zone (0x060000-0x063FFF)
 FLASH_ADDR_FFT_BITREV  = 0x064000   # 16KB zone (0x064000-0x067FFF)
 
 # Asset geometry (mirrors spi_assets.h)
-FONT_GLYPH_COUNT  = 59          # ASCII 32..90
-FONT_F6X8_SIZE    = FONT_GLYPH_COUNT * 6        # 354 bytes
-FONT_F5X8_SIZE    = FONT_GLYPH_COUNT * 6        # 354 bytes
-FONT_F8X10_SIZE   = FONT_GLYPH_COUNT * 8 * 2   # 944 bytes  (uint16_t)
-FONT_BLOB_SIZE    = FONT_F6X8_SIZE + FONT_F5X8_SIZE + FONT_F8X10_SIZE  # 1652
+FONT_GLYPH_COUNT      = 91          # ASCII 32..122 (a-z added)
+FONT_F8X10_GLYPH_COUNT = 59         # ASCII 32..90  (uppercase only, Font8x10)
+FONT_F6X8_SIZE    = FONT_GLYPH_COUNT * 6              # 546 bytes
+FONT_F5X8_SIZE    = FONT_GLYPH_COUNT * 6              # 546 bytes
+FONT_F8X10_SIZE   = FONT_F8X10_GLYPH_COUNT * 8 * 2   # 944 bytes  (uint16_t)
+FONT_BLOB_SIZE    = FONT_F6X8_SIZE + FONT_F5X8_SIZE + FONT_F8X10_SIZE  # 2036
 FFT_TWIDDLE_LEN   = 1024        # float32 entries
 FFT_BITREV_LEN    = 448         # uint16_t entries
 FFT_TWIDDLE_SIZE  = FFT_TWIDDLE_LEN * 4   # 4096 bytes

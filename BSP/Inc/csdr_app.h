@@ -81,7 +81,7 @@ typedef struct {
   uint8_t     squelch;
   FreqStep_t  step;
   bool        mute;
-  bool        agc_fast;
+  uint8_t     agc_speed;   /*!< 0=SLOW 1=FAST 2=AUTO */
   bool        nb_on;
   uint8_t     nb_level;  /*!< NB intensity 0-100, default 50; not currently in menu */
   bool        nr_on;

@@ -27,19 +27,23 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 typedef struct {
-  TIM_HandleTypeDef *htim;          /*!< TIM2 handle (hardware quadrature) */
+  TIM_HandleTypeDef *htim;          /*!< TIM3 handle (hardware quadrature) */
   uint16_t           cnt_prev;      /*!< Giá trị CNT lần đọc trước         */
+  int32_t            raw_accum;     /*!< Bộ tích raw counts (debounce EC11) */
   int32_t            delta;         /*!< Delta tích lũy kể từ GetDelta()   */
   uint32_t           accel_count;   /*!< Bộ đếm gia tốc                    */
   int32_t            accel_mult;    /*!< Hệ số nhân                         */
   uint32_t           last_tick;     /*!< Tick lần đọc trước                 */
-  /* Nút nhấn (polling PA2) */
+  /* Nút nhấn (polling PB3) */
   bool               btn_pressed;   /*!< Nhấn ngắn pending                  */
   bool               btn_long;      /*!< Nhấn dài pending                   */
   volatile uint32_t  btn_down_tick; /*!< Tick lúc bắt đầu nhấn             */
   bool               btn_prev_state;/*!< Trạng thái nút lần poll trước     */
   uint32_t           debounce_ms;
   uint32_t           long_press_ms;
+  /* Direction guard – EC11 bounce filter */
+  int8_t             guard_dir;     /*!< +1/−1: direction locked after last step; 0=unlocked */
+  uint32_t           guard_expiry;  /*!< HAL tick when guard expires        */
 } Encoder_t;
 
 /* Exported variables --------------------------------------------------------*/

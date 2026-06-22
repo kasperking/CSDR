@@ -12,6 +12,7 @@
 #include "csdr_app.h"
 #include "lcd_dma.h"
 #include "pa_overcurrent.h"
+#include "input_scan.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -269,6 +270,10 @@ void EXTI9_5_IRQHandler(void)
   if (__HAL_GPIO_EXTI_GET_IT(PA_OC_ALERT_GPIO_PIN)) {
     PA_OC_AlertISR();
     __HAL_GPIO_EXTI_CLEAR_IT(PA_OC_ALERT_GPIO_PIN);
+  }
+  if (__HAL_GPIO_EXTI_GET_IT(PCA9555_INT_PIN)) {
+    Input_SetIrqPending();
+    __HAL_GPIO_EXTI_CLEAR_IT(PCA9555_INT_PIN);
   }
   HAL_GPIO_EXTI_IRQHandler(PA_OC_ALERT_GPIO_PIN);
 }

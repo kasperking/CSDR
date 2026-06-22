@@ -84,7 +84,7 @@ static inline uint32_t ui_cyc_to_us(uint32_t cycles)
  *  ST7796 480×320:                      ST7789 240×320:
  *   s_hdr_buf  : 24×480×2 =  23,040 B   16×240×2 =   7,680 B
  *   s_sbl_buf  : 96×80 ×2 =  15,360 B   — (not on ST7789)
- *   s_sbr_buf  : 96×80 ×2 =  15,360 B   — (not on ST7789)
+ *   s_sbr_buf  : 96×88 ×2 =  16,896 B   — (not on ST7789)
  *   s_sts_buf  :     — (not on ST7796)   28×240×2 =  13,440 B
  *   s_vfo_buf  : 64×320×2 =  40,960 B   48×240×2 =  23,040 B
  *   s_mtr_buf  : 32×320×2 =  20,480 B   24×240×2 =  11,520 B
@@ -104,9 +104,11 @@ static uint16_t s_sbr_buf[SBR_H  * SBR_W]
  * Declare 1-element dummies so the dead-code function bodies compile. */
 static uint16_t s_sbl_buf[1U] __attribute__((section(".DMA_SRAM")));
 static uint16_t s_sbr_buf[1U] __attribute__((section(".DMA_SRAM")));
-/* Compact status bar — replaces sidebars on ST7789 */
-static uint16_t s_sts_buf[STS_H  * LCD_W]
+/* Compact status bar: only allocated when STS_H > 0 */
+#if STS_H > 0U
+static uint16_t s_sts_buf[STS_H * LCD_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
+#endif
 #endif
 static uint16_t s_vfo_buf[VFO_H  * VFO_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
@@ -142,6 +144,7 @@ static float    s_wf_smooth[DSP_FFT_SIZE];
 static uint16_t s_wf_lut[256];
 static uint8_t  s_wf_head = 0;
 static int16_t  s_smeter_voltage_x10 = 0;
+static int16_t  s_rssi_db            = -200;
 
 /* Spectrum delta-skip: previous column pixel rows */
 static uint16_t s_spec_py_prev[SPEC_W];
@@ -172,6 +175,14 @@ static struct {
   uint8_t  active_vfo;
   uint8_t  tx_power;
   uint8_t  pa_watts;
+  /* Inline-params fields (ST7789 portrait right panel) */
+  uint8_t  mode;
+  uint8_t  volume;
+  uint8_t  squelch;
+  uint32_t step;
+  uint32_t bw_hz;
+  bool     nb_on;
+  bool     nr_on;
   bool     valid;
   /* Glyph-level cache for upper-section partial push */
   char     mhz_s[6];
@@ -327,6 +338,13 @@ static void ln_medchar(uint16_t *ln, uint16_t x, uint16_t frow,
     ln[x + col * 2U]      = pix;
     ln[x + col * 2U + 1U] = pix;
   }
+}
+
+static uint16_t med_str_w(const char *s)
+{
+  uint16_t w = 0U;
+  while (*s) { w += (*s++ == '.') ? 6U : MED_W; }
+  return w;
 }
 
 static void ln_medstr(uint16_t *ln, uint16_t x, uint16_t frow,
@@ -592,12 +610,21 @@ static uint8_t  s_spec_zoom = 0U;
 static uint32_t s_spec_sr   = 48000U;
 static uint16_t s_spec_bins = 256U;
 
-static const uint8_t s_zoom_half[SPEC_ZOOM_COUNT] = { 128U, 96U, 64U, 32U, 16U };
+/* Display-crop table (zoom 0 only, others use full decimated FFT) */
+static const uint8_t s_zoom_half[SPEC_ZOOM_COUNT] = { 128U, 128U, 128U, 128U };
+
+/* Per-zoom effective sample rate and half-span override for decimation.
+ * zoom 0: decimate×1, full ±24kHz FFT (half_ovr=0, uses s_zoom_half[0]=128).
+ * zoom 1/2/3: decimate×2/4/8; show full decimated FFT (half_ovr=128). */
+static const uint32_t s_zoom_sr_tbl  [SPEC_ZOOM_COUNT] = {48000U, 24000U, 12000U, 6000U};
+static const uint8_t  s_zoom_half_ovr[SPEC_ZOOM_COUNT] = {0U, 128U, 128U, 128U};
+static uint8_t s_spec_half_ovr = 0U;  /* 0 = use s_zoom_half table; 128 = full FFT */
 
 static void spec_window(uint16_t bins, uint16_t *b0_out, uint16_t *n_vis_out)
 {
   uint16_t center = bins >> 1U;
-  uint16_t half   = (uint16_t)((uint32_t)s_zoom_half[s_spec_zoom] * bins / 256U);
+  uint8_t  zh     = s_spec_half_ovr ? s_spec_half_ovr : s_zoom_half[s_spec_zoom];
+  uint16_t half   = (uint16_t)((uint32_t)zh * bins / 256U);
   if (half < 1U) half = 1U;
   *b0_out    = (uint16_t)(center - half);
   *n_vis_out = (uint16_t)(half << 1U);
@@ -716,11 +743,22 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
   fmt_1dp(vstr, sizeof(vstr), ui->voltage_x10, 'V');
   uint16_t vcol    = (ui->voltage_x10 < 115 && ui->voltage_x10 > 5)
                      ? UI_STATUS_OFF : UI_STATUS_VAL;
-  uint16_t volt_x  = (uint16_t)(LCD_W - (uint16_t)(strlen(vstr) * Font6x8.width) - 4U);
-  uint16_t txt_y   = (uint16_t)((HDR_H - Font6x8.height) / 2U);
-  const char *agc_str = ui->agc_fast ? "AGC-F" : "AGC-S";
+  uint16_t txt_y   = (uint16_t)((HDR_H - Font8x10.height) / 2U);
+  static const char *agc_labels[3] = { "AGC:SLOW", "AGC:FAST", "AGC:AUTO" };
+  const char *agc_str = (ui->agc_speed < 3U) ? agc_labels[ui->agc_speed] : "AGC:SLOW";
 
-  /* ── Hardware warning: "! CODEC PLL" etc. centred between AGC and voltage ─ */
+  char att_hdr[16];
+  if (ui->att_x2 & 1U)
+    snprintf(att_hdr, sizeof(att_hdr), "ATT:%u.5DB", ui->att_x2 / 2U);
+  else
+    snprintf(att_hdr, sizeof(att_hdr), "ATT:%uDB", ui->att_x2 / 2U);
+  uint16_t att_vc  = ui->rf_agc_on ? UI_STATUS_ON : UI_STATUS_VAL;
+  uint16_t sep1_x  = (uint16_t)(4U + (uint16_t)(strlen(agc_str) * Font8x10.width) + 4U);
+  uint16_t att_x   = (uint16_t)(sep1_x + (uint16_t)Font8x10.width + 4U);
+  uint16_t volt_x  = (uint16_t)(LCD_W - (uint16_t)(strlen(vstr) * Font8x10.width) - 4U);
+  uint16_t sep2_x  = (uint16_t)(volt_x - (uint16_t)Font8x10.width - 4U);
+
+  /* ── Hardware warning: centred between ATT label and voltage ─ */
   char     warn_str[32] = {0};
   uint16_t warn_x       = 0U;
   if (SelfTest_AnyFail()) {
@@ -736,13 +774,12 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
       }
     }
     warn_str[pos] = '\0';
-    /* Centre between right edge of AGC label and left edge of voltage */
-    uint16_t agc_end = (uint16_t)(4U + (uint16_t)(strlen(agc_str) * Font6x8.width) + 6U);
-    uint16_t warn_w  = (uint16_t)((uint16_t)strlen(warn_str) * Font5x8.width);
-    uint16_t avail   = (volt_x > agc_end) ? (uint16_t)(volt_x - agc_end) : 0U;
+    uint16_t left_end = (uint16_t)(att_x + (uint16_t)(strlen(att_hdr) * Font8x10.width) + 4U);
+    uint16_t warn_w   = (uint16_t)((uint16_t)strlen(warn_str) * Font8x10.width);
+    uint16_t avail    = (sep2_x > left_end + 4U) ? (uint16_t)(sep2_x - left_end - 4U) : 0U;
     warn_x = (avail > warn_w)
-             ? (uint16_t)(agc_end + (avail - warn_w) / 2U)
-             : agc_end;
+             ? (uint16_t)(left_end + (avail - warn_w) / 2U)
+             : left_end;
   }
 
   for (uint16_t row = 0; row < HDR_H; row++) {
@@ -752,12 +789,15 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
       continue;
     }
     LCD_LineFill(ln, 0, LCD_W, UI_HDR_BG);
-    if (row >= txt_y && row < txt_y + Font6x8.height) {
+    LCD_LineFill(ln, sep1_x, 2U, UI_DIVIDER);
+    LCD_LineFill(ln, sep2_x, 2U, UI_DIVIDER);
+    if (row >= txt_y && row < txt_y + Font8x10.height) {
       uint16_t fr = row - txt_y;
-      LCD_LineStr(ln, 4U,     fr, agc_str,  &Font6x8, UI_STATUS_LBL, UI_HDR_BG);
-      LCD_LineStr(ln, volt_x, fr, vstr,     &Font6x8, vcol,          UI_HDR_BG);
+      LCD_LineStrW(ln, 4U,     fr, agc_str,  &Font8x10, UI_STATUS_LBL, UI_HDR_BG);
+      LCD_LineStrW(ln, att_x,  fr, att_hdr,  &Font8x10, att_vc,        UI_HDR_BG);
+      LCD_LineStrW(ln, volt_x, fr, vstr,     &Font8x10, vcol,          UI_HDR_BG);
       if (warn_str[0]) {
-        LCD_LineStr(ln, warn_x, fr, warn_str, &Font5x8, UI_STATUS_WARN, UI_HDR_BG);
+        LCD_LineStrW(ln, warn_x, fr, warn_str, &Font8x10, UI_STATUS_WARN, UI_HDR_BG);
       }
     }
   }
@@ -776,9 +816,14 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
  *
  *  NR/NB drawn as coloured badges (green=ON, red=OFF) matching sidebar style.
  * ════════════════════════════════════════════════════════════════════════════ */
-#if LCD_PANEL == LCD_PANEL_ST7789
+#if LCD_PANEL == LCD_PANEL_ST7789 && STS_H > 0U
 static void draw_compact_status(const SDR_UI_State_t *ui)
 {
+#if STS_H == 0U
+  /* New portrait layout: status info is embedded in the VFO zone — no-op here */
+  (void)ui;
+  return;
+#endif /* STS_H == 0U */
   /* Cache guard */
   if (s_sbl_cache.valid
       && s_sbl_cache.mode       == ui->mode
@@ -891,7 +936,7 @@ static void draw_compact_status(const SDR_UI_State_t *ui)
                  (uint16_t)(LCD_W - 1U), (uint16_t)(STS_Y2 - 1U),
                  s_sts_buf, (uint32_t)LCD_W * STS_H);
 }
-#endif /* LCD_PANEL_ST7789 */
+#endif /* LCD_PANEL_ST7789 && STS_H > 0 */
 
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawSidebarLeft  (SBL_W=80 × SBL_H=96)
@@ -903,21 +948,25 @@ static void draw_compact_status(const SDR_UI_State_t *ui)
 void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
 {
 #if LCD_PANEL == LCD_PANEL_ST7789
-  /* Compact layout: render the status bar instead of a sidebar */
+#if STS_H == 0U
+  /* New portrait layout: params are in the VFO zone — delegate so DIRTY_SBL
+   * triggers a VFO re-render when vol/sql/nr/nb change */
+  SDR_UI_DrawVFO(ui);
+  return;
+#else
   draw_compact_status(ui);
   return;
+#endif /* STS_H */
 #endif /* LCD_PANEL_ST7789 */
 
   /* Cache guard — skip rebuild when nothing changed */
   if (s_sbl_cache.valid
-      && s_sbl_cache.mode       == ui->mode
       && s_sbl_cache.volume     == ui->volume
       && s_sbl_cache.squelch    == ui->squelch
       && s_sbl_cache.nr_on      == ui->nr_on
       && s_sbl_cache.nb_on      == ui->nb_on
       && s_sbl_cache.active_vfo == ui->active_vfo) return;
 
-  s_sbl_cache.mode       = ui->mode;
   s_sbl_cache.volume     = ui->volume;
   s_sbl_cache.squelch    = ui->squelch;
   s_sbl_cache.nr_on      = ui->nr_on;
@@ -925,94 +974,76 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
   s_sbl_cache.active_vfo = ui->active_vfo;
   s_sbl_cache.valid      = true;
 
-  static const char *const mode_s[]  = {"AM","FM","USB","LSB","CW","DIGU","DIGL","FDV"};
-  static const uint16_t    mode_bg[] = {UI_MODE_AM, UI_MODE_FM,  UI_MODE_USB,
-                                        UI_MODE_LSB, UI_MODE_CW, UI_MODE_DIGU,
-                                        UI_MODE_DIGL, UI_MODE_FREEDV};
-  const char *mode_str = (ui->mode < 8U) ? mode_s[ui->mode]  : "---";
-  uint16_t    mbg      = (ui->mode < 8U) ? mode_bg[ui->mode] : UI_STATUS_LBL;
-
   char vol_str[6]; snprintf(vol_str, sizeof(vol_str), "%u", ui->volume);
   char sql_str[6]; snprintf(sql_str, sizeof(sql_str), "%u", ui->squelch);
 
   buf_fill(s_sbl_buf, (uint32_t)SBL_H * SBL_W, UI_SBL_BG);
 
-  const uint16_t item_h = 19U;   /* 5 items × 19 = 95, +1 row blank at top */
+  /* 4 items × 24 rows = 96 rows (SBL_H).
+   * All text in MED (12×16): label left x=2, value right-aligned — same row.
+   * val_off=4 → MED rows 4..19 within each 24-px slot.
+   * Width budget: "VOL"(36)+"100"(36)+4gap+2+2 = 80px exactly. */
+  const uint16_t item_h  = 24U;
+  const uint16_t val_off =  4U;
 
-  for (uint8_t i = 0; i < 5U; i++) {
-    uint16_t y0 = (uint16_t)(1U + (uint32_t)i * item_h);
+  uint16_t col_a = (ui->active_vfo == 0U) ? UI_STATUS_VAL : UI_STATUS_LBL;
+  uint16_t col_b = (ui->active_vfo == 1U) ? UI_STATUS_ON  : UI_STATUS_LBL;
+  uint16_t nr_bg = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
+  uint16_t nb_bg = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
+  uint16_t vol_x = (uint16_t)(SBL_W - 2U - med_str_w(vol_str));
+  uint16_t sql_x = (uint16_t)(SBL_W - 2U - med_str_w(sql_str));
 
-    if (i > 0U)
-      for (uint16_t x = 0; x < SBL_W; x++)
-        s_sbl_buf[(uint32_t)y0 * SBL_W + x] = SWAP16(UI_DIVIDER);
+  for (uint8_t i = 0; i < 4U; i++) {
+    uint16_t y0 = (uint16_t)(i * item_h);
 
-    uint16_t text_y = y0 + 6U;
+    for (uint16_t row = 0; row < item_h; row++) {
+      uint16_t abs_r = y0 + row;
+      if (abs_r >= SBL_H) break;
+      uint16_t *ln = s_sbl_buf + (uint32_t)abs_r * SBL_W;
 
-    switch (i) {
-      case 0:
-        for (uint16_t fr = 0; fr < Font8x10.height; fr++) {
-          uint16_t r = text_y + fr;
-          if (r >= SBL_H) break;
-          uint16_t *ln = s_sbl_buf + (uint32_t)r * SBL_W;
-          uint16_t cx = (uint16_t)(2U +
-              (SBL_W - 2U - (uint16_t)(strlen(mode_str) * Font8x10.width)) / 2U);
-          LCD_LineStrW(ln, cx, fr, mode_str, &Font8x10, mbg, UI_SBL_BG);
-        }
-        break;
+      if (i > 0U && row == 0U) { LCD_LineFill(ln, 0, SBL_W, UI_DIVIDER); continue; }
 
-      case 1: {
-        uint16_t col_a = (ui->active_vfo == 0U) ? UI_STATUS_VAL : UI_STATUS_LBL;
-        uint16_t col_b = (ui->active_vfo == 1U) ? UI_STATUS_ON  : UI_STATUS_LBL;
-        for (uint16_t fr = 0; fr < Font8x10.height; fr++) {
-          uint16_t r = text_y + fr;
-          if (r >= SBL_H) break;
-          uint16_t *ln = s_sbl_buf + (uint32_t)r * SBL_W;
-          LCD_LineStrW(ln, 2U,                        fr, "VFO", &Font8x10, UI_STATUS_LBL, UI_SBL_BG);
-          LCD_LineStrW(ln, 2U + 4U * Font8x10.width,  fr, "A",   &Font8x10, col_a, UI_SBL_BG);
-          LCD_LineStrW(ln, 2U + 5U * Font8x10.width,  fr, "/",   &Font8x10, UI_STATUS_LBL, UI_SBL_BG);
-          LCD_LineStrW(ln, 2U + 6U * Font8x10.width,  fr, "B",   &Font8x10, col_b, UI_SBL_BG);
-        }
-        break;
+      switch (i) {
+        case 0:  /* VFO — "VFO" left, A/B right, all MED */
+          if (row >= val_off && row < val_off + MED_H) {
+            uint16_t fr = row - val_off;
+            ln_medstr(ln,  2U, fr, "VFO", UI_STATUS_LBL, UI_SBL_BG);
+            ln_medchar(ln, 44U, fr, 'A',  col_a,         UI_SBL_BG);
+            ln_medchar(ln, 56U, fr, '/',  UI_STATUS_LBL, UI_SBL_BG);
+            ln_medchar(ln, 68U, fr, 'B',  col_b,         UI_SBL_BG);
+          }
+          break;
+
+        case 1:  /* NR / NB color badges */
+          if (row >= val_off && row < val_off + MED_H + 4U) {
+            LCD_LineFill(ln,  2U, 34U, nr_bg);
+            LCD_LineFill(ln, 44U, 34U, nb_bg);
+            if (row >= val_off + 2U && row < val_off + 2U + MED_H) {
+              uint16_t fr = row - (val_off + 2U);
+              ln_medstr(ln,  7U, fr, "NR", UI_BG, nr_bg);
+              ln_medstr(ln, 49U, fr, "NB", UI_BG, nb_bg);
+            }
+          }
+          break;
+
+        case 2:  /* VOL — "VOL" left, value right, all MED */
+          if (row >= val_off && row < val_off + MED_H) {
+            uint16_t fr = row - val_off;
+            ln_medstr(ln,  2U,   fr, "VOL", UI_STATUS_LBL, UI_SBL_BG);
+            ln_medstr(ln, vol_x, fr, vol_str, UI_STATUS_VAL, UI_SBL_BG);
+          }
+          break;
+
+        case 3:  /* SQL — "SQL" left, value right, all MED */
+          if (row >= val_off && row < val_off + MED_H) {
+            uint16_t fr = row - val_off;
+            ln_medstr(ln,  2U,   fr, "SQL", UI_STATUS_LBL, UI_SBL_BG);
+            ln_medstr(ln, sql_x, fr, sql_str, UI_STATUS_VAL, UI_SBL_BG);
+          }
+          break;
+
+        default: break;
       }
-
-      case 2: {
-        uint16_t nr_bg = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
-        uint16_t nb_bg = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
-        for (uint16_t fr = 0; fr < Font8x10.height; fr++) {
-          uint16_t r = text_y + fr;
-          if (r >= SBL_H) break;
-          uint16_t *ln = s_sbl_buf + (uint32_t)r * SBL_W;
-          LCD_LineFill(ln,  2U, 34U, nr_bg);
-          LCD_LineStrW(ln,  13U, fr, "NR", &Font8x10, UI_BG, nr_bg);
-          LCD_LineFill(ln, 40U, 34U, nb_bg);
-          LCD_LineStrW(ln,  51U, fr, "NB", &Font8x10, UI_BG, nb_bg);
-        }
-        break;
-      }
-
-      case 3:
-        for (uint16_t fr = 0; fr < Font8x10.height; fr++) {
-          uint16_t r = text_y + fr;
-          if (r >= SBL_H) break;
-          uint16_t *ln = s_sbl_buf + (uint32_t)r * SBL_W;
-          LCD_LineStrW(ln, 2U, fr, "VOL", &Font8x10, UI_STATUS_LBL, UI_SBL_BG);
-          uint16_t vx = (uint16_t)(SBL_W - 1U - (uint16_t)(strlen(vol_str) * Font8x10.width) - 3U);
-          LCD_LineStrW(ln, vx, fr, vol_str, &Font8x10, UI_STATUS_VAL, UI_SBL_BG);
-        }
-        break;
-
-      case 4:
-        for (uint16_t fr = 0; fr < Font8x10.height; fr++) {
-          uint16_t r = text_y + fr;
-          if (r >= SBL_H) break;
-          uint16_t *ln = s_sbl_buf + (uint32_t)r * SBL_W;
-          LCD_LineStrW(ln, 2U, fr, "SQL", &Font8x10, UI_STATUS_LBL, UI_SBL_BG);
-          uint16_t vx = (uint16_t)(SBL_W - 1U - (uint16_t)(strlen(sql_str) * Font8x10.width) - 3U);
-          LCD_LineStrW(ln, vx, fr, sql_str, &Font8x10, UI_STATUS_VAL, UI_SBL_BG);
-        }
-        break;
-
-      default: break;
     }
   }
 
@@ -1021,97 +1052,6 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
                  s_sbl_buf, (uint32_t)SBL_W * SBL_H);
 }
 
-/* ── sbr_draw_passband ──────────────────────────────────────────────────────
- * Xiegu-style passband trapezoid in the lower portion of the right sidebar.
- * Draws BW label (Font5x8, centred) above a trapezoidal passband shape.
- * y0/h: zone origin and height in s_sbr_buf.
- * bw_hz: passband width; rit_hz: IF/RIT offset shifts the center left/right. */
-#if LCD_PANEL == LCD_PANEL_ST7796
-static void sbr_draw_passband(uint16_t y0, uint16_t h,
-                              uint32_t bw_hz, int16_t rit_hz)
-{
-  char bw_str[10];
-  if (bw_hz >= 10000U)
-    snprintf(bw_str, sizeof(bw_str), "%luk", (unsigned long)(bw_hz / 1000U));
-  else if (bw_hz >= 1000U)
-    snprintf(bw_str, sizeof(bw_str), "%lu.%luk",
-             (unsigned long)(bw_hz / 1000U),
-             (unsigned long)((bw_hz % 1000U) / 100U));
-  else
-    snprintf(bw_str, sizeof(bw_str), "%luHz", (unsigned long)bw_hz);
-
-  /* Layout: [2px pad][Font5x8 label][2px gap][shape fills rest] */
-  const uint16_t lbl_off = 2U;
-  const uint16_t shp_off = (uint16_t)(lbl_off + Font5x8.height + 2U);
-  const uint16_t shp_h   = (h > shp_off + 4U) ? (uint16_t)(h - shp_off - 1U) : 4U;
-
-  /* Passband half-width in pixels (BW 0–8 kHz maps to 0–36 px) */
-  const uint32_t bw_max = 8000U;
-  const uint16_t hw_max = 72U;
-  uint32_t bw_c = (bw_hz > bw_max) ? bw_max : bw_hz;
-  uint16_t hw   = (uint16_t)((uint32_t)bw_c * hw_max / bw_max);
-  if (hw < 3U) hw = 3U;
-
-  /* RIT/IF shift → center offset, saturated at ±12 px */
-  int16_t shift = 0;
-  if (bw_hz > 200U) {
-    int32_t s = (int32_t)rit_hz * 12 / ((int32_t)(bw_hz / 2U) + 1);
-    shift = (s > 12) ? 12 : (s < -12) ? -12 : (int16_t)s;
-  }
-  int16_t cx = (int16_t)(SBR_W / 2U) + shift;
-
-  /* Trapezoid: top = passband width, bottom flares by slope px each side */
-  const int16_t slope = (hw > 4U) ? 3 : 1;
-  int16_t xl_t = cx - (int16_t)hw;
-  int16_t xr_t = cx + (int16_t)hw;
-  int16_t xl_b = xl_t - slope;
-  int16_t xr_b = xr_t + slope;
-
-  uint16_t pw = SWAP16(UI_SPEC_BW);      /* cyan outline        */
-  uint16_t cm = SWAP16(UI_STATUS_VAL);   /* white center marker */
-  uint16_t fi = SWAP16(UI_SMETER_BG);    /* dim interior fill   */
-
-  for (uint16_t r = 0U; r < h; r++) {
-    uint16_t y = (uint16_t)(y0 + r);
-    if (y >= SBR_H) break;
-    uint16_t *ln = s_sbr_buf + (uint32_t)y * SBR_W;
-
-    if (r >= lbl_off && r < (uint16_t)(lbl_off + Font5x8.height)) {
-      uint16_t fr = (uint16_t)(r - lbl_off);
-      uint16_t lw = (uint16_t)(strlen(bw_str) * Font5x8.width);
-      uint16_t lx = (lw < SBR_W) ? (uint16_t)((SBR_W - lw) / 2U) : 0U;
-      LCD_LineStr(ln, lx, fr, bw_str, &Font5x8, UI_FREQ_KHZ, UI_SBR_BG);
-    }
-
-    if (r < shp_off) continue;
-    uint16_t sr = (uint16_t)(r - shp_off);
-    if (sr >= shp_h) continue;
-
-    /* Interpolate left/right edges linearly from top to bottom */
-    int16_t denom = (int16_t)(shp_h > 1U ? shp_h - 1U : 1U);
-    int16_t xl_e  = xl_t + (int16_t)((int32_t)(xl_b - xl_t) * (int32_t)sr / denom);
-    int16_t xr_e  = xr_t + (int16_t)((int32_t)(xr_b - xr_t) * (int32_t)sr / denom);
-    if (xl_e < 0)                 xl_e = 0;
-    if (xr_e < 0)                 xr_e = 0;
-    if (xl_e >= (int16_t)SBR_W)  xl_e = (int16_t)(SBR_W - 1U);
-    if (xr_e >= (int16_t)SBR_W)  xr_e = (int16_t)(SBR_W - 1U);
-
-    if (sr == 0U || sr == (uint16_t)(shp_h - 1U)) {
-      /* Top and bottom rails: full horizontal line */
-      for (int16_t x = xl_e; x <= xr_e; x++)
-        ln[(uint16_t)x] = (x == cx) ? cm : pw;
-    } else {
-      /* Interior: left/right outline pixels + dim fill + center marker */
-      ln[(uint16_t)xl_e] = pw;
-      ln[(uint16_t)xr_e] = pw;
-      for (int16_t x = (int16_t)(xl_e + 1); x < xr_e; x++) {
-        if (x < 0 || x >= (int16_t)SBR_W) continue;
-        ln[(uint16_t)x] = (x == cx) ? cm : fi;
-      }
-    }
-  }
-}
-#endif /* LCD_PANEL_ST7796 */
 
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawSidebarRight  (SBR_W=80 × SBR_H=96)
@@ -1132,8 +1072,15 @@ static void sbr_draw_passband(uint16_t y0, uint16_t h,
 void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
 {
 #if LCD_PANEL == LCD_PANEL_ST7789
-  (void)ui;  /* no sidebar on compact layout */
+#if STS_H == 0U
+  /* New portrait layout: BW/STP are in VFO zone — delegate so DIRTY_SBR
+   * triggers a VFO re-render when bw/step/mode-dependent params change */
+  SDR_UI_DrawVFO(ui);
   return;
+#else
+  (void)ui;  /* landscape/old portrait: no right sidebar */
+  return;
+#endif /* STS_H */
 #endif /* LCD_PANEL_ST7789 */
 
   /* Cache guard — avoid rebuild when nothing changed */
@@ -1141,34 +1088,36 @@ void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
       && s_sbr_cache.bw_hz    == ui->bw_hz
       && s_sbr_cache.step     == ui->step
       && s_sbr_cache.mic_gain == ui->mic_gain
-      && s_sbr_cache.att_db   == ui->att_db
       && s_sbr_cache.rit_hz   == ui->rit_hz
       && s_sbr_cache.mode     == ui->mode) return;
 
   s_sbr_cache.bw_hz    = ui->bw_hz;
   s_sbr_cache.step     = ui->step;
   s_sbr_cache.mic_gain = ui->mic_gain;
-  s_sbr_cache.att_db   = ui->att_db;
   s_sbr_cache.rit_hz   = ui->rit_hz;
   s_sbr_cache.mode     = ui->mode;
   s_sbr_cache.valid    = true;
 
   /* Format strings */
   char bw_str[10];
-  if (ui->bw_hz >= 10000U)
-    snprintf(bw_str, sizeof(bw_str), "%luk", (unsigned long)(ui->bw_hz / 1000U));
-  else if (ui->bw_hz >= 1000U)
-    snprintf(bw_str, sizeof(bw_str), "%lu.%luk",
-             (unsigned long)(ui->bw_hz / 1000U),
-             (unsigned long)((ui->bw_hz % 1000U) / 100U));
-  else
-    snprintf(bw_str, sizeof(bw_str), "%luHz", (unsigned long)ui->bw_hz);
+  if (ui->bw_hz >= 10000U) {
+    snprintf(bw_str, sizeof(bw_str), "%luK", (unsigned long)(ui->bw_hz / 1000U));
+  } else if (ui->bw_hz >= 1000U) {
+    uint32_t frac = (ui->bw_hz % 1000U) / 100U;
+    if (frac)
+      snprintf(bw_str, sizeof(bw_str), "%lu.%luK",
+               (unsigned long)(ui->bw_hz / 1000U), (unsigned long)frac);
+    else
+      snprintf(bw_str, sizeof(bw_str), "%luK", (unsigned long)(ui->bw_hz / 1000U));
+  } else {
+    snprintf(bw_str, sizeof(bw_str), "%lu", (unsigned long)ui->bw_hz);
+  }
 
   char step_str[8];
   uint32_t st = ui->step;
-  if      (st >= 100000U) snprintf(step_str, sizeof(step_str), "100k");
-  else if (st >=  10000U) snprintf(step_str, sizeof(step_str), "10k");
-  else if (st >=   1000U) snprintf(step_str, sizeof(step_str), "1k");
+  if      (st >= 100000U) snprintf(step_str, sizeof(step_str), "100K");
+  else if (st >=  10000U) snprintf(step_str, sizeof(step_str), "10K");
+  else if (st >=   1000U) snprintf(step_str, sizeof(step_str), "1K");
   else if (st >=    100U) snprintf(step_str, sizeof(step_str), "100");
   else if (st >=     10U) snprintf(step_str, sizeof(step_str), "10");
   else                    snprintf(step_str, sizeof(step_str), "1");
@@ -1177,86 +1126,57 @@ void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
    * csdr_app passes digi_gain (not mic_gain) in ui->mic_gain when in DIGU/DIGL. */
   bool digi_mode = (ui->mode == (uint8_t)5U || ui->mode == (uint8_t)6U); /* DIGU=5, DIGL=6 */
   char mic_str[8]; snprintf(mic_str, sizeof(mic_str), "%d", (int)ui->mic_gain);
-  const char *mic_lbl = digi_mode ? "DG" : "MIC";
   uint16_t    mic_vc  = digi_mode ? UI_STATUS_ON : UI_STATUS_VAL;
-
-  /* AT: show 0.5 dB precision from PE4302 raw register value.
-   * When RF AGC is active the value colour changes to green (UI_STATUS_ON). */
-  char att_str[8];
-  if (ui->att_x2 & 1U)
-    snprintf(att_str, sizeof(att_str), "%u.5", ui->att_x2 / 2U);
-  else
-    snprintf(att_str, sizeof(att_str), "%u dB", ui->att_x2 / 2U);
-  uint16_t att_vc = ui->rf_agc_on ? UI_STATUS_ON : UI_STATUS_VAL;
 
   buf_fill(s_sbr_buf, (uint32_t)SBR_H * SBR_W, UI_SBR_BG);
 
-  /* 2 paired text rows; passband graphic fills the space below */
-  struct { const char *lbl; const char *val; uint16_t vc; } rows[2][2] = {
-    { { "BW",  bw_str,  UI_FREQ_KHZ }, { "ST",  step_str, UI_FREQ_KHZ } },
-    { { mic_lbl, mic_str, mic_vc    }, { "AT",  att_str,  att_vc      } },
+  /* 4 items × 24 rows = 96 rows (SBR_H), mirroring SBL layout.
+   * All text in MED (12×16): label left, value right — same row. */
+  const uint16_t item_h  = 24U;
+  const uint16_t val_off =  4U;
+
+  /* RIT: k-suffix for |rit_hz| >= 1000 keeps string ≤ 4 chars ("+9k").
+   * Budget (SBR_W=88): label(36)+"+ 500"(48)=84px exactly ✓           */
+  char rit_str[8];
+  if (ui->rit_hz == 0) {
+    snprintf(rit_str, sizeof(rit_str), "0");
+  } else {
+    int rv = (int)ui->rit_hz;
+    int av = (rv < 0) ? -rv : rv;
+    if (av >= 1000)
+      snprintf(rit_str, sizeof(rit_str), "%+dK", rv / 1000);
+    else
+      snprintf(rit_str, sizeof(rit_str), "%+d", rv);
+  }
+  uint16_t rit_vc = (ui->rit_hz != 0) ? UI_STATUS_ON : UI_STATUS_LBL;
+
+  /* SBR_W=88 → budget 84px: "STP"(36)+"100K"(48)=84 ✓  "RIT"(36)+"+500"(48)=84 ✓ */
+  const char *mic_lbl_med = digi_mode ? "DG" : "MIC";
+  struct { const char *lbl; const char *val; uint16_t vc; } items[4] = {
+    { "BW",        bw_str,   UI_FREQ_KHZ },
+    { "STP",       step_str, UI_FREQ_KHZ },
+    { mic_lbl_med, mic_str,  mic_vc      },
+    { "RIT",       rit_str,  rit_vc      },
   };
 
-  const uint16_t row_h   = 26U;
-  const uint16_t top_pad =  9U;
-  const uint16_t txt_off =  9U;
+  for (uint8_t i = 0; i < 4U; i++) {
+    uint16_t y0    = (uint16_t)(i * item_h);
+    uint16_t val_x = (uint16_t)(SBR_W - 2U - med_str_w(items[i].val));
 
-  /* Column geometry — left col 36 px, right col 35 px, 6 px gutter */
-  const uint16_t L_LBL_X = 2U;   /* left col label  */
-  const uint16_t L_VAL_X = 38U;  /* left col val right-edge */
-  const uint16_t R_LBL_X = 44U;  /* right col label (gutter: 44-38=6 px) */
-  const uint16_t R_VAL_X = 79U;  /* right col val right-edge */
+    for (uint16_t row = 0; row < item_h; row++) {
+      uint16_t abs_r = y0 + row;
+      if (abs_r >= SBR_H) break;
+      uint16_t *ln = s_sbr_buf + (uint32_t)abs_r * SBR_W;
 
-  for (uint8_t i = 0; i < 2U; i++) {
-    uint16_t y0 = (uint16_t)(top_pad + (uint32_t)i * row_h);
+      if (i > 0U && row == 0U) { LCD_LineFill(ln, 0, SBR_W, UI_DIVIDER); continue; }
 
-    /* Thin separator above rows 1 and 2 */
-    if (i > 0U) {
-      for (uint16_t x = 3U; x < (uint16_t)(SBR_W - 3U); x++)
-        s_sbr_buf[(uint32_t)y0 * SBR_W + x] = SWAP16(UI_DIVIDER);
-    }
-
-    uint16_t txt_y = (uint16_t)(y0 + txt_off);
-
-    /* Left item */
-    {
-      const char *lbl = rows[i][0].lbl;
-      const char *val = rows[i][0].val;
-      uint16_t    vc  = rows[i][0].vc;
-      uint16_t val_x  = (uint16_t)(L_VAL_X - (uint16_t)(strlen(val) * Font5x8.width));
-      for (uint16_t fr = 0; fr < Font5x8.height; fr++) {
-        uint16_t r = (uint16_t)(txt_y + fr);
-        if (r >= SBR_H) break;
-        uint16_t *ln = s_sbr_buf + (uint32_t)r * SBR_W;
-        LCD_LineStr(ln, L_LBL_X, fr, lbl, &Font5x8, UI_STATUS_LBL, UI_SBR_BG);
-        LCD_LineStr(ln, val_x,   fr, val, &Font5x8, vc,             UI_SBR_BG);
-      }
-    }
-
-    /* Right item (optional) */
-    if (rows[i][1].lbl != NULL) {
-      const char *lbl = rows[i][1].lbl;
-      const char *val = rows[i][1].val;
-      uint16_t    vc  = rows[i][1].vc;
-      uint16_t val_x  = (uint16_t)(R_VAL_X - (uint16_t)(strlen(val) * Font5x8.width));
-      for (uint16_t fr = 0; fr < Font5x8.height; fr++) {
-        uint16_t r = (uint16_t)(txt_y + fr);
-        if (r >= SBR_H) break;
-        uint16_t *ln = s_sbr_buf + (uint32_t)r * SBR_W;
-        LCD_LineStr(ln, R_LBL_X, fr, lbl, &Font5x8, UI_STATUS_LBL, UI_SBR_BG);
-        LCD_LineStr(ln, val_x,   fr, val, &Font5x8, vc,             UI_SBR_BG);
+      if (row >= val_off && row < val_off + MED_H) {
+        uint16_t fr = row - val_off;
+        ln_medstr(ln, 2U,    fr, items[i].lbl, UI_STATUS_LBL,  UI_SBR_BG);
+        ln_medstr(ln, val_x, fr, items[i].val, items[i].vc,   UI_SBR_BG);
       }
     }
   }
-
-  /* Passband graphic fills the zone below the 2 text rows (ST7796 only) */
-#if LCD_PANEL == LCD_PANEL_ST7796
-  {
-    uint16_t pb_y0 = (uint16_t)(top_pad + 2U * row_h);
-    uint16_t pb_h  = (uint16_t)(SBR_H - pb_y0);
-    sbr_draw_passband(pb_y0, pb_h, ui->bw_hz, ui->rit_hz);
-  }
-#endif /* LCD_PANEL_ST7796 */
 
   LCD_PushWindow(SBR_X, SBR_Y,
                  (uint16_t)(SBR_X + SBR_W - 1U), SBR_Y2 - 1U,
@@ -1270,9 +1190,13 @@ static void vfo_push_x_band(uint16_t x_lo, uint16_t x_hi,
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawVFO  (VFO_W × VFO_H)
  *
- *  ST7796 (64 px): 7-segment digits rows 2..25, 15-px gap, thin divider row 33,
- *  secondary VFO sub-line rows 41..50 (Font8x10).  VFO_SPLIT=28.
- *  ST7789 (48 px): 7-segment digits rows 2..25, 12-px gap, sub-line rows 38..47 (Font8x10).
+ *  ST7796  (64 px): 7-seg digits rows 2..25, gap, divider row 33,
+ *                   sub-line rows 41..50 (Font8x10).  VFO_SPLIT=28.
+ *  ST7789 landscape (44 px): digits rows 2..25, sub-line rows 34..43.
+ *  ST7789 portrait  (72 px): digits rows 2..25; right panel (x=192..239):
+ *                   mode rows 2..17, RX/TX rows 20..35; divider row 38;
+ *                   params row A rows 40..47, params row B rows 49..56;
+ *                   sub-line rows 60..69.  VFO_SPLIT=36.
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 {
@@ -1318,40 +1242,131 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 
   buf_fill(s_vfo_buf, (uint32_t)VFO_H * VFO_W, UI_VFO_BG);
 
+  /* ── ST7789 landscape: pre-compute right-panel strings + colors ──────────── */
+#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
+  char rp_step_s[12], rp_vol_s[10], rp_bw_s[14], rp_sql_s[10];
+  {
+    uint32_t st = ui->step;
+    if      (st >= 100000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:100k");
+    else if (st >=  10000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:10k");
+    else if (st >=   1000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:1k");
+    else if (st >=    100U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:100");
+    else if (st >=     10U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:10");
+    else                    snprintf(rp_step_s, sizeof(rp_step_s), "STP:1");
+
+    snprintf(rp_vol_s,  sizeof(rp_vol_s),  "VOL:%u",  ui->volume);
+    snprintf(rp_sql_s,  sizeof(rp_sql_s),  "SQL:%u",  ui->squelch);
+
+    if (ui->bw_hz >= 10000U)
+      snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%luk", (unsigned long)(ui->bw_hz / 1000U));
+    else if (ui->bw_hz >= 1000U) {
+      uint32_t bk = ui->bw_hz / 1000U;
+      uint32_t bf = (ui->bw_hz % 1000U) / 100U;
+      if (bf) snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%lu.%luk", (unsigned long)bk, (unsigned long)bf);
+      else    snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%luk", (unsigned long)bk);
+    } else
+      snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%lu", (unsigned long)ui->bw_hz);
+  }
+  static const uint16_t rp_mode_col_ls[8] = {
+    UI_MODE_AM, UI_MODE_FM, UI_MODE_USB, UI_MODE_LSB,
+    UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL, UI_MODE_FREEDV
+  };
+  uint16_t rp_mc = (ui->mode < 8U) ? rp_mode_col_ls[ui->mode] : UI_STATUS_LBL;
+  uint16_t rp_nb = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
+  uint16_t rp_nr = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
+#endif /* ST7789 landscape pre-compute */
+
+  /* ── ST7789 portrait: pre-compute right-panel strings + colors ───────────── */
+#if LCD_PANEL == LCD_PANEL_ST7789 && !(LCD_W > LCD_H)
+  char rp_step_s[12], rp_vol_s[10], rp_bw_s[14], rp_sql_s[10];
+  {
+    uint32_t st = ui->step;
+    if      (st >= 100000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:100k");
+    else if (st >=  10000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:10k");
+    else if (st >=   1000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:1k");
+    else if (st >=    100U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:100");
+    else if (st >=     10U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:10");
+    else                    snprintf(rp_step_s, sizeof(rp_step_s), "STP:1");
+
+    snprintf(rp_vol_s,  sizeof(rp_vol_s),  "VOL:%u",  ui->volume);
+    snprintf(rp_sql_s,  sizeof(rp_sql_s),  "SQL:%u",  ui->squelch);
+
+    if (ui->bw_hz >= 10000U)
+      snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%luk", (unsigned long)(ui->bw_hz / 1000U));
+    else if (ui->bw_hz >= 1000U) {
+      uint32_t bk = ui->bw_hz / 1000U;
+      uint32_t bf = (ui->bw_hz % 1000U) / 100U;
+      if (bf) snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%lu.%luk", (unsigned long)bk, (unsigned long)bf);
+      else    snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%luk", (unsigned long)bk);
+    } else
+      snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%lu", (unsigned long)ui->bw_hz);
+  }
+  static const uint16_t rp_mode_col[8] = {
+    UI_MODE_AM, UI_MODE_FM, UI_MODE_USB, UI_MODE_LSB,
+    UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL, UI_MODE_FREEDV
+  };
+  uint16_t rp_mc = (ui->mode < 8U) ? rp_mode_col[ui->mode] : UI_STATUS_LBL;
+  uint16_t rp_nb = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
+  uint16_t rp_nr = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
+#endif /* ST7789 portrait pre-compute */
+
   const uint16_t freq_top = 2U;
   const uint16_t vfoi_y   = 1U;
 
-  /* Gap between primary and secondary VFO.  Secondary uses Font8x10 (8x10 px). */
+  /* Gap between primary and secondary VFO.  Secondary uses MED (12x16 px). */
 #if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-  /* Landscape 320x240: VFO_H=44 — tighter gap keeps sub-line fully visible */
-  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 8U);   /* row 34: fits rows 34-43 in VFO_H=44 */
+  /* Landscape 320x240: sub-VFO below main digits (rows 34..49) */
+  const uint16_t sub_y  = 34U;
   const uint16_t div_y  = 0xFFFFU;
 #elif LCD_PANEL == LCD_PANEL_ST7789
-  /* Portrait 240x320: VFO_H=48 */
-  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 12U);  /* row 38: fits rows 38-47 in VFO_H=48 */
+  /* Portrait 240x320: sub-VFO below main digits (rows 34..49), params shifted to 46/55 */
+  const uint16_t sub_y  = 34U;
   const uint16_t div_y  = 0xFFFFU;
 #else
-  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 15U);  /* row 41: 15-px gap */
+  const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 10U);  /* row 36: below divider */
   const uint16_t div_y  = (uint16_t)(freq_top + BIG_H + 7U);   /* row 33, centred in gap */
 #endif
-  const uint16_t badge_y = (uint16_t)(freq_top + BIG_H + 2U);  /* row 28, mode/RX/TX base */
-
-  /* RX/TX text-only badge: no filled background; colour identifies mode.
-   * In TX mode the badge is pinned to badge_y (no centering) to free the
-   * lower rows for the watts readout. */
+  /* RX/TX text-only badge (ST7796 only) — ST7789 uses right panel instead */
+#if LCD_PANEL != LCD_PANEL_ST7789
+  const uint16_t badge_y  = (uint16_t)(freq_top + BIG_H + 2U);
   const uint16_t rt_bad_w = (uint16_t)(2U * MED_W + 6U);
   const uint16_t rt_bad_h = (uint16_t)(MED_H + 4U);
-  const uint16_t rt_bx    = (uint16_t)(VFO_W - 2U - rt_bad_w);
-  const uint16_t rt_by    = ui->tx_mode
+  uint16_t rt_bx    = (uint16_t)(VFO_W - 22U - rt_bad_w);
+  const uint16_t rt_by    = (uint16_t)((ui->tx_mode
       ? badge_y
       : (uint16_t)(badge_y +
-          ((VFO_H > badge_y + rt_bad_h) ? (VFO_H - badge_y - rt_bad_h) / 2U : 0U));
+          ((VFO_H > badge_y + rt_bad_h) ? (VFO_H - badge_y - rt_bad_h) / 2U : 0U)))
+      - 8U);
+#else
+  const uint16_t rt_bad_h = (uint16_t)(MED_H + 4U);
+  const uint16_t rt_bx    = VFO_W;   /* out-of-range: disables legacy badge */
+  const uint16_t rt_by    = VFO_H;
+#endif
 
   /* Frequency centering: each digit = BIG_W px, each '.' = 6 px */
   uint16_t total_w = 0U;
   for (const char *p = full_freq; *p; p++)
     total_w += (*p == '.') ? 6U : BIG_W;
-  uint16_t fx_base = (VFO_W > total_w) ? (uint16_t)((VFO_W - total_w) / 2U) : 2U;
+  /* ST7789: right portion reserved for mode/RT panel — center digits in left area only */
+#if LCD_PANEL == LCD_PANEL_ST7789
+  uint16_t dig_area = VFO_RIGHT_X;
+#else
+  uint16_t dig_area = VFO_W;
+#endif
+  uint16_t fx_base = (dig_area > total_w) ? (uint16_t)((dig_area - total_w) / 2U) : 2U;
+#if LCD_PANEL == LCD_PANEL_ST7796
+  fx_base = 2U + MED_W + 10U;  /* fixed: 10px gap after A/B indicator */
+  const uint16_t mode_x = (uint16_t)(fx_base + total_w + 10U);
+  const uint16_t mode_y = (uint16_t)(freq_top + (BIG_H - MED_H) / 2U);
+  static const uint16_t s_mode_col[8] = {
+      UI_MODE_AM, UI_MODE_FM,  UI_MODE_USB, UI_MODE_LSB,
+      UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL, UI_MODE_FREEDV
+  };
+  uint16_t mode_color = (ui->mode < 8U) ? s_mode_col[ui->mode] : UI_STATUS_LBL;
+  rt_bx = (uint16_t)(mode_x + (uint16_t)(strlen(vfo_mode_str) * MED_W) + 12U);
+#else
+  fx_base = (fx_base >= 14U) ? (uint16_t)(fx_base - 14U) : 0U;
+#endif
 
   for (uint16_t row = 0; row < VFO_H; row++) {
     uint16_t *ln = s_vfo_buf + (uint32_t)row * VFO_W;
@@ -1361,6 +1376,11 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
       ln_segstr(ln, fx_base, row - freq_top, full_freq, UI_FREQ_FG, UI_VFO_BG);
     }
 
+#if LCD_PANEL == LCD_PANEL_ST7796
+    if (row >= mode_y && (row - mode_y) < MED_H)
+      ln_medstr(ln, mode_x, row - mode_y, vfo_mode_str, mode_color, UI_VFO_BG);
+#endif
+
     /* Active VFO indicator (2× medium, top-left) */
     if (row >= vfoi_y && (row - vfoi_y) < MED_H) {
       const char *vl = (ui->active_vfo == 0U) ? "A" : "B";
@@ -1368,13 +1388,13 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
       ln_medchar(ln, 2U, row - vfoi_y, *vl, vc, UI_VFO_BG);
     }
 
-    /* Sub-line: secondary VFO freq | RIT offset | mode label */
+    /* Sub-line: secondary VFO freq | RIT offset — MED (12×16) for visibility */
     if (ui->freq_b_hz > 0U) {
-      if (row >= sub_y && (row - sub_y) < Font8x10.height)
-        LCD_LineStrW(ln, 4U, row - sub_y, sub_str, &Font8x10, UI_FREQ_SUB, UI_VFO_BG);
+      if (row >= sub_y && (row - sub_y) < MED_H)
+        ln_medstr(ln, 4U, row - sub_y, sub_str, UI_FREQ_SUB, UI_VFO_BG);
     } else if (ui->rit_hz != 0) {
-      if (row >= sub_y && (row - sub_y) < Font8x10.height)
-        LCD_LineStrW(ln, 4U, row - sub_y, sub_str, &Font8x10, UI_FREQ_SUB, UI_VFO_BG);
+      if (row >= sub_y && (row - sub_y) < MED_H)
+        ln_medstr(ln, 4U, row - sub_y, sub_str, UI_FREQ_SUB, UI_VFO_BG);
     } else {
       /* Mode label vertically aligned with badge */
       if (row >= rt_by && (row - rt_by) < rt_bad_h) {
@@ -1394,7 +1414,7 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 #if LCD_PANEL != LCD_PANEL_ST7789
     /* Watts readout — MED font, right-aligned under TX badge, TX mode only */
     if (ui->tx_mode && pw_str[0] != '\0') {
-      uint16_t pw_by = (uint16_t)(badge_y + rt_bad_h);  /* row 48 */
+      uint16_t pw_by = (uint16_t)(rt_by + rt_bad_h);
       if (row >= pw_by && (row - pw_by) < MED_H) {
         uint16_t med_row = row - pw_by;
         uint16_t pw_len  = (uint16_t)(strlen(pw_str) * MED_W);
@@ -1404,23 +1424,122 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
     }
 #endif
 
-    /* Thin centred divider between primary and secondary VFO (only when sub-freq shown) */
-    if (row == div_y && ui->freq_b_hz > 0U) {
-      uint16_t dx0 = (uint16_t)(VFO_W / 5U);
-      uint16_t dx1 = (uint16_t)(4U * VFO_W / 5U);
-      for (uint16_t x = dx0; x < dx1; x++)
-        ln[x] = UI_BORDER;
+    (void)div_y;
+
+#if LCD_PANEL == LCD_PANEL_ST7789 && !(LCD_W > LCD_H)
+    /* ── ST7789 portrait: right panel (x=VFO_RIGHT_X..239) ──────────────── */
+    /* Mode label rows 2..17 */
+    if (row >= 2U && (row - 2U) < MED_H) {
+      ln_medstr(ln, (uint16_t)(VFO_RIGHT_X + 4U), row - 2U,
+                vfo_mode_str, rp_mc, UI_VFO_BG);
     }
+    /* RX/TX label rows 20..35 */
+    if (row >= 20U && (row - 20U) < MED_H) {
+      ln_medstr(ln, (uint16_t)(VFO_RIGHT_X + 4U), row - 20U,
+                rt_str, rt_color, UI_VFO_BG);
+    }
+    /* Full-width horizontal divider at row 38 */
+    if (row == 38U) {
+      for (uint16_t x = 0U; x < VFO_W; x++)
+        ln[x] = SWAP16(UI_DIVIDER);
+    }
+    /* Params row A: STP / VOL / NB badge */
+    if (row >= VFO_PARAMS_Y && row < VFO_PARAMS_Y + Font5x8.height) {
+      uint16_t fr = row - VFO_PARAMS_Y;
+      LCD_LineStr(ln,  4U, fr, rp_step_s, &Font5x8, UI_FREQ_KHZ,   UI_VFO_BG);
+      LCD_LineStr(ln, 64U, fr, rp_vol_s,  &Font5x8, UI_STATUS_VAL, UI_VFO_BG);
+      LCD_LineFill(ln, (uint16_t)(LCD_W - 20U), 16U, rp_nb);
+      LCD_LineStr(ln,  (uint16_t)(LCD_W - 17U), fr, "NB", &Font5x8, UI_BG, rp_nb);
+    }
+    /* Params row B: BW / SQL / NR badge */
+    if (row >= VFO_PARAMS_B_Y && row < VFO_PARAMS_B_Y + Font5x8.height) {
+      uint16_t fr = row - VFO_PARAMS_B_Y;
+      LCD_LineStr(ln,  4U, fr, rp_bw_s,  &Font5x8, UI_FREQ_KHZ,   UI_VFO_BG);
+      LCD_LineStr(ln, 64U, fr, rp_sql_s, &Font5x8, UI_STATUS_VAL, UI_VFO_BG);
+      LCD_LineFill(ln, (uint16_t)(LCD_W - 20U), 16U, rp_nr);
+      LCD_LineStr(ln,  (uint16_t)(LCD_W - 17U), fr, "NR", &Font5x8, UI_BG, rp_nr);
+    }
+#endif /* ST7789 portrait row rendering */
+
+#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
+    /* ── ST7789 landscape: 4-row right panel, evenly distributed ───────────
+     * Row 1 rows  1..16  MED_H   : Mode  |  RX/TX
+     * Row 2 rows 19..28  Font8x10: STP   |  BW
+     * Row 3 rows 31..40  Font8x10: VOL   |  SQL
+     * Row 4 rows 43..52  Font8x10: NB    |  NR  (colored: green=ON red=OFF)
+     * ─────────────────────────────────────────────────────────────────────── */
+    {
+      uint16_t bg16 = SWAP16(UI_VFO_BG);
+      for (uint16_t x = VFO_RIGHT_X; x < VFO_W; x++) ln[x] = bg16;
+    }
+    /* Row 1 — Mode (MED_H) + RX/TX (MED_H) */
+    if (row >= 1U && (row - 1U) < MED_H) {
+      uint16_t fr = row - 1U;
+      ln_medstr(ln, (uint16_t)(VFO_RIGHT_X + 3U),  fr, vfo_mode_str, rp_mc,    UI_VFO_BG);
+      ln_medstr(ln, (uint16_t)(VFO_RIGHT_X + 57U), fr, rt_str,       rt_color, UI_VFO_BG);
+    }
+    /* Row 2 — STP (Font8x10) + BW (Font8x10) */
+    if (row >= 19U && (row - 19U) < (uint16_t)Font8x10.height) {
+      uint16_t fr = row - 19U;
+      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X + 3U),  fr, rp_step_s, &Font8x10, UI_FREQ_KHZ, UI_VFO_BG);
+      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X + 75U), fr, rp_bw_s,   &Font8x10, UI_FREQ_KHZ, UI_VFO_BG);
+    }
+    /* Row 3 — VOL (Font8x10) + SQL (Font8x10) */
+    if (row >= 31U && (row - 31U) < (uint16_t)Font8x10.height) {
+      uint16_t fr = row - 31U;
+      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X + 3U),  fr, rp_vol_s,  &Font8x10, UI_STATUS_VAL, UI_VFO_BG);
+      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X + 75U), fr, rp_sql_s,  &Font8x10, UI_STATUS_VAL, UI_VFO_BG);
+    }
+    /* Row 4 — NB + NR: small badge (Font8x10 height), colored fill + black text */
+    if (row >= 43U && (row - 43U) < (uint16_t)Font8x10.height) {
+      uint16_t fr = row - 43U;
+      LCD_LineFill(ln, (uint16_t)(VFO_RIGHT_X +  3U), 20U, rp_nb);
+      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X +  5U), fr, "NB", &Font8x10, UI_BG, rp_nb);
+      LCD_LineFill(ln, (uint16_t)(VFO_RIGHT_X + 75U), 20U, rp_nr);
+      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X + 77U), fr, "NR", &Font8x10, UI_BG, rp_nr);
+    }
+#endif /* ST7789 landscape row rendering */
   }
 
-  /* Section-split push: upper = rows 0..27 (main digits + gap/divider),
-   * lower = rows 28..VFO_H-1 (sub-line or mode/badge).  Split kept at 28
-   * so badge at row 28 always lands in the lower section on both panels. */
+  /* Section-split: upper = rows 0..VFO_SPLIT-1, lower = rows VFO_SPLIT..VFO_H-1.
+   * Landscape ST7789: main digits end row 25; sub-VFO at 28..43 → split=27 puts it in lower.
+   * Portrait ST7789:  main digits end row 25; sub-VFO at 28..43 → split=26 puts it in lower.
+   * Other panels: split=28. */
+#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
+  const uint16_t VFO_SPLIT = 27U;   /* sub-VFO (28..43) + NB/NR (41..58) all in lower */
+#elif LCD_PANEL == LCD_PANEL_ST7789
+  const uint16_t VFO_SPLIT = 26U;   /* sub-VFO (28..43) + params (46..62) all in lower */
+#else
   const uint16_t VFO_SPLIT = 28U;
+#endif
+
+  /* Right-panel changed: forces redraw of both sections on ST7789.
+   * Landscape: rp_chg propagates to lower_chg so params (rows 19..58) all refresh.
+   * Portrait: params are in lower section → only mode/tx_mode need upper push. */
+  bool rp_chg = false;
+#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
+  rp_chg = !s_vfo_cache.valid
+          || s_vfo_cache.mode    != ui->mode
+          || s_vfo_cache.tx_mode != ui->tx_mode
+          || s_vfo_cache.volume  != ui->volume
+          || s_vfo_cache.squelch != ui->squelch
+          || s_vfo_cache.step    != ui->step
+          || s_vfo_cache.bw_hz   != ui->bw_hz
+          || s_vfo_cache.nb_on   != ui->nb_on
+          || s_vfo_cache.nr_on   != ui->nr_on;
+#elif LCD_PANEL == LCD_PANEL_ST7789
+  rp_chg = !s_vfo_cache.valid
+          || s_vfo_cache.mode    != ui->mode
+          || s_vfo_cache.tx_mode != ui->tx_mode;
+#endif
 
   bool upper_chg = !s_vfo_cache.valid
       || s_vfo_cache.freq_hz    != ui->freq_hz
-      || s_vfo_cache.active_vfo != ui->active_vfo;
+      || s_vfo_cache.active_vfo != ui->active_vfo
+#if LCD_PANEL == LCD_PANEL_ST7796
+      || s_vfo_cache.mode       != ui->mode
+#endif
+      || rp_chg;
 
   bool lower_chg = !s_vfo_cache.valid
       || s_vfo_cache.freq_b_hz  != ui->freq_b_hz
@@ -1428,7 +1547,21 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
       || s_vfo_cache.tx_mode    != ui->tx_mode
       || s_vfo_cache.active_vfo != ui->active_vfo
       || s_vfo_cache.tx_power   != ui->tx_power
-      || s_vfo_cache.pa_watts   != ui->pa_watts;
+      || s_vfo_cache.pa_watts   != ui->pa_watts
+#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
+      /* Landscape: NB/NR (row 4, rows 43..58) are in lower section → push on any rp change */
+      || rp_chg
+#elif LCD_PANEL == LCD_PANEL_ST7789
+      /* Portrait: params rows are in lower section */
+      || s_vfo_cache.mode    != ui->mode
+      || s_vfo_cache.volume  != ui->volume
+      || s_vfo_cache.squelch != ui->squelch
+      || s_vfo_cache.step    != ui->step
+      || s_vfo_cache.bw_hz   != ui->bw_hz
+      || s_vfo_cache.nb_on   != ui->nb_on
+      || s_vfo_cache.nr_on   != ui->nr_on
+#endif
+      ;
 
   /* Glyph-level dirty flags — compare against OLD cache values */
   bool mhz_g  = !s_vfo_cache.valid || strcmp(mhz_s, s_vfo_cache.mhz_s) != 0
@@ -1447,6 +1580,18 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   s_vfo_cache.active_vfo = ui->active_vfo;
   s_vfo_cache.tx_power   = ui->tx_power;
   s_vfo_cache.pa_watts   = ui->pa_watts;
+#if LCD_PANEL == LCD_PANEL_ST7796
+  s_vfo_cache.mode    = ui->mode;
+#endif
+#if LCD_PANEL == LCD_PANEL_ST7789
+  s_vfo_cache.mode    = ui->mode;
+  s_vfo_cache.volume  = ui->volume;
+  s_vfo_cache.squelch = ui->squelch;
+  s_vfo_cache.step    = ui->step;
+  s_vfo_cache.bw_hz   = ui->bw_hz;
+  s_vfo_cache.nb_on   = ui->nb_on;
+  s_vfo_cache.nr_on   = ui->nr_on;
+#endif
   strncpy(s_vfo_cache.mhz_s, mhz_s, sizeof(s_vfo_cache.mhz_s) - 1U);
   s_vfo_cache.mhz_s[sizeof(s_vfo_cache.mhz_s) - 1U] = '\0';
   strncpy(s_vfo_cache.khz_s, khz_s, sizeof(s_vfo_cache.khz_s) - 1U);
@@ -1458,8 +1603,8 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 
   /* Push upper section with glyph-level granularity */
   if (upper_chg) {
-    if (mhz_g) {
-      /* MHz changed or first draw: centering may have shifted, push full upper */
+    if (mhz_g || rp_chg) {
+      /* MHz changed, first draw, or right-panel changed → push full upper section */
       LCD_PushWindow(VFO_X, VFO_Y,
                      (uint16_t)(VFO_X + VFO_W - 1U), (uint16_t)(VFO_Y + VFO_SPLIT - 1U),
                      s_vfo_buf, (uint32_t)VFO_W * VFO_SPLIT);
@@ -1546,6 +1691,40 @@ static inline uint16_t sm_mark_x(int32_t bars)
   return (x < hi) ? x : hi;
 }
 
+/* RSSI label geometry — panel-specific.
+ *
+ * ST7796 (MTR_W=320): RSSI sits RIGHT of S-value.
+ *   S-value at val_x=222, clears [222..269].
+ *   RSSI at [272..307] (2px gap); max "-120dB"=6×6=36px = RSSI_CLR_W.
+ *   Clamped to [-120,0] so text never overruns.
+ *
+ * ST7789 landscape (MTR_W=320): matches ST7796 style.
+ *   S-value at val_x=162 (Font8x10, SM_VAL_CLR_W=48px), RSSI right after.
+ *   RSSI at 212 (val_x+SM_VAL_CLR_W+2); RSSI_CLR_W=48; max "-120dB"=6ch×6px=36px.
+ *
+ * ST7789 portrait (MTR_W=240): RSSI REPLACES S-value text at val_x=222.
+ *   Available [222..239] = 18px = 3 chars × Font5x8.width(6).
+ *   Clamped to [-99,0]; "-99"=3×6=18px fits exactly.
+ *   mk_col used so colour still tracks signal level. */
+#if LCD_PANEL == LCD_PANEL_ST7796
+#  define RSSI_X       272U
+#  define RSSI_CLR_W    36U
+#  define RSSI_DB_MIN (-120)
+#  define RSSI_FMT    "%ddBm"
+#elif LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
+   /* Landscape 320×20: S-value at val_x=162 (Font8x10), RSSI right after with "dB" unit.
+    * RSSI_X = ruler_end(158)+4+SM_VAL_CLR_W(48)+2 = 212; "-120dB"=36px fits in CLR_W=48. */
+#  define RSSI_X       (SM_START_X + SM_RULER_W + 4U + SM_VAL_CLR_W + 2U)
+#  define RSSI_CLR_W    48U
+#  define RSSI_DB_MIN (-120)
+#  define RSSI_FMT    "%ddBm"
+#else
+#  define RSSI_X       222U   /* = val_x (portrait 240px) */
+#  define RSSI_CLR_W    18U
+#  define RSSI_DB_MIN  (-99)
+#  define RSSI_FMT    "%d"
+#endif
+
 /* ════════════════════════════════════════════════════════════════════════════
  *  draw_smeter_rows  — full MTR zone redraw, calibrated ruler + signal line
  *
@@ -1588,11 +1767,33 @@ static void draw_smeter_rows(int32_t bars)
       uint16_t fr = row - SM_LBL_R0;
       for (uint8_t t = 0U; t < 8U; t++) {
         uint16_t half_w = (uint16_t)(strlen(lbl_str[t]) * Font8x10.width / 2U);
-        uint16_t lx     = (maj_tx[t] >= half_w) ? (maj_tx[t] - half_w) : 0U;
+        uint16_t lx;
+#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
+        /* Landscape: last label "40" left-aligned at tick — avoids overlap with "20" */
+        lx = (t == 7U) ? maj_tx[t] : ((maj_tx[t] >= half_w) ? (maj_tx[t] - half_w) : 0U);
+#else
+        lx = (maj_tx[t] >= half_w) ? (maj_tx[t] - half_w) : 0U;
+#endif
         LCD_LineStrW(ln, lx, fr, lbl_str[t], &Font8x10, UI_SMETER_TICK, UI_MTR_BG);
       }
+#if LCD_PANEL == LCD_PANEL_ST7796 || (LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H)
+      /* ST7796 + ST7789 landscape: S-value to the left of RSSI */
       if (val_x < MTR_W)
         LCD_LineStrW(ln, val_x, fr, s_str, &Font8x10, mk_col, UI_MTR_BG);
+#endif
+      /* RSSI: at RSSI_X (ST7796=272 alongside S-value; ST7789 landscape=212; portrait=222 replaces S-value) */
+      if (fr < Font5x8.height && s_rssi_db > RSSI_DB_MIN - 1) {
+        char rbuf[8];
+        int rv = (int)s_rssi_db;
+        if (rv < RSSI_DB_MIN) rv = RSSI_DB_MIN;
+        if (rv > 0)           rv = 0;
+        snprintf(rbuf, sizeof(rbuf), RSSI_FMT, rv);
+#if LCD_PANEL == LCD_PANEL_ST7796
+        LCD_LineStr(ln, RSSI_X, fr, rbuf, &Font5x8, UI_SMETER_TICK, UI_MTR_BG);
+#else
+        LCD_LineStr(ln, RSSI_X, fr, rbuf, &Font5x8, mk_col, UI_MTR_BG);
+#endif
+      }
     }
 
     /* ── Major ticks: SM_TICK_H_MAJ rows tall, all 8 labeled positions ── */
@@ -1635,6 +1836,7 @@ void SDR_UI_DrawMeter(const SDR_UI_State_t *ui)
   if (bars < 0) bars = 0;
   if (bars > (int32_t)SM_BARS) bars = (int32_t)SM_BARS;
   s_rx_meter_bars = bars;
+  s_rssi_db = (int16_t)ui->signal_db;
   draw_smeter_rows(bars);
   s_mtr_static_valid = true;
   LCD_PushWindow(MTR_X, MTR_Y,
@@ -1663,6 +1865,7 @@ void SDR_UI_UpdateSMeter_SetTX(bool tx)
   s_tx_alc_pct = -1;
   s_tx_swr_x10 = -1;
   s_rx_meter_bars = -1;
+  s_rssi_db = -200;
   s_mtr_static_valid = false;
 }
 void SDR_UI_UpdateSMeter_SetVoltage(int16_t v_x10) { s_smeter_voltage_x10 = v_x10; }
@@ -1673,9 +1876,14 @@ void SDR_UI_UpdateSMeter(float signal_db)
   if (bars < 0) bars = 0;
   if (bars > (int32_t)SM_BARS) bars = (int32_t)SM_BARS;
   int32_t old_bars = s_rx_meter_bars;
-  if (bars == old_bars) return;
+
+  int16_t rssi_db = (int16_t)signal_db;
+  bool rssi_changed = (rssi_db != s_rssi_db);
+  bool bars_changed = (bars != old_bars);
+  if (!bars_changed && !rssi_changed) return;
 
   s_rx_meter_bars = bars;
+  s_rssi_db = rssi_db;
 
   if (!s_mtr_static_valid) {
     draw_smeter_rows(bars);
@@ -1693,7 +1901,7 @@ void SDR_UI_UpdateSMeter(float signal_db)
   uint16_t cur_c  = SWAP16(UI_SMETER_ACT);
 
   /* 1. Extend or shrink signal line by delta columns only. */
-  {
+  if (bars_changed) {
     uint16_t old_ndx = sm_mark_x(old_bars);
     uint16_t new_ndx = sm_mark_x(bars);
 
@@ -1716,27 +1924,51 @@ void SDR_UI_UpdateSMeter(float signal_db)
     }
   }
 
-  /* 2. Update S-value text in label row band */
+  /* 2. Update S-value text and/or RSSI in label row band */
   {
     char s_str[8];
     if (bars <= 9) snprintf(s_str, sizeof(s_str), "S%ld", (long)bars);
     else           snprintf(s_str, sizeof(s_str), "+%ld",  (long)((bars - 9) * 3));
+    char rssi_str[8];
+    { int rv = (int)s_rssi_db;
+      if (rv < RSSI_DB_MIN) rv = RSSI_DB_MIN;
+      if (rv > 0)           rv = 0;
+      snprintf(rssi_str, sizeof(rssi_str), RSSI_FMT, rv); }
     uint16_t row_top = SM_LBL_R0;
     uint16_t row_end = (uint16_t)(SM_LBL_R0 + (uint16_t)Font8x10.height);
     if (row_end > MTR_H) row_end = MTR_H;
     for (uint16_t row = row_top; row < row_end; row++) {
       uint16_t *ln = s_mtr_buf + (uint32_t)row * MTR_W;
       uint16_t  fr = row - row_top;
-      for (uint16_t x = val_x; x < val_x + SM_VAL_CLR_W && x < MTR_W; x++)
-        ln[x] = SWAP16(UI_MTR_BG);
-      if (val_x < MTR_W)
-        LCD_LineStrW(ln, val_x, fr, s_str, &Font8x10, mk_col, UI_MTR_BG);
+#if LCD_PANEL == LCD_PANEL_ST7796 || (LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H)
+      /* ST7796 + ST7789 landscape: S-value and RSSI are independent regions */
+      if (bars_changed) {
+        for (uint16_t x = val_x; x < val_x + SM_VAL_CLR_W && x < MTR_W; x++)
+          ln[x] = SWAP16(UI_MTR_BG);
+        if (val_x < MTR_W)
+          LCD_LineStrW(ln, val_x, fr, s_str, &Font8x10, mk_col, UI_MTR_BG);
+      }
+      if (rssi_changed) {
+        for (uint16_t x = RSSI_X; x < (uint16_t)(RSSI_X + RSSI_CLR_W) && x < MTR_W; x++)
+          ln[x] = SWAP16(UI_MTR_BG);
+        if (fr < Font5x8.height)
+          LCD_LineStr(ln, RSSI_X, fr, rssi_str, &Font5x8, UI_SMETER_TICK, UI_MTR_BG);
+      }
+#else
+      /* ST7789 portrait: RSSI at val_x replaces S-value */
+      if (rssi_changed) {
+        for (uint16_t x = RSSI_X; x < (uint16_t)(RSSI_X + RSSI_CLR_W) && x < MTR_W; x++)
+          ln[x] = SWAP16(UI_MTR_BG);
+        if (fr < Font5x8.height)
+          LCD_LineStr(ln, RSSI_X, fr, rssi_str, &Font5x8, mk_col, UI_MTR_BG);
+      }
+#endif
     }
   }
 
   /* 3. Two targeted pushes — only dynamic rows retransmitted */
-  /* Push A: signal line (SM_LINE_H rows) */
-  {
+  /* Push A: signal line (SM_LINE_H rows) — only when bars moved */
+  if (bars_changed) {
     uint16_t r0 = SM_LINE_R0;
     uint16_t r1 = (uint16_t)(SM_LINE_R0 + SM_LINE_H - 1U);
     if (r1 >= MTR_H) r1 = MTR_H - 1U;
@@ -1745,7 +1977,12 @@ void SDR_UI_UpdateSMeter(float signal_db)
                    s_mtr_buf + (uint32_t)r0 * MTR_W,
                    (uint32_t)MTR_W * (r1 - r0 + 1U));
   }
-  /* Push B: label rows (Font8x10.height = 10 rows, S-value updated) */
+  /* Push B: label rows.
+   * ST7796 + ST7789 landscape: push when bars or RSSI changed (both in label band).
+   * ST7789 portrait: push only when RSSI changed (no separate S-value text). */
+#if LCD_PANEL == LCD_PANEL_ST7789 && !(LCD_W > LCD_H)
+  if (rssi_changed)
+#endif
   {
     uint16_t r0 = SM_LBL_R0;
     uint16_t r1 = (uint16_t)(SM_LBL_R0 + (uint16_t)Font8x10.height - 1U);
@@ -1988,7 +2225,7 @@ static void vfo_push_x_band(uint16_t x_lo, uint16_t x_hi,
  *  SDR_UI_DrawSpectrum  – single FMC burst (480×72 = 69,120 px ≈ 8.1 ms)
  *
  *  Grid lines at 75%, 50%, 25% height.  Vertical dots every 40 pixels.
- *  BW markers and center-frequency line overlaid.
+ *  Xiegu-style passband shaded region + bright edge lines + center marker.
  *  Delta-skip: suppresses redraw when spectrum is visually unchanged (< 2px).
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
@@ -2063,11 +2300,23 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
 
   uint16_t spec_sw      = SWAP16(0xC7FFU);   /* icy white-blue: top     */
   uint16_t spec_fill_sw = SWAP16(0x3D7FU);   /* muted cold cyan: body   */
-  uint16_t bw_sw        = SWAP16(UI_SPEC_BW);
+  uint16_t pb_sw        = SWAP16(UI_SPEC_PASS);
   /* Center marker colours: bright centre, black shadow for dark|white|dark */
   uint16_t cx_sw        = SWAP16(0xFFFFU);   /* bright white centre pixel     */
   uint16_t cx_shadow    = SWAP16(0x0000U);   /* black shadow ± 1 px           */
   uint16_t dot_sw       = SWAP16(UI_SPEC_GRID);
+
+  /* Passband shaded region: derive pixel span.
+   * USB/CW: center→bw_hi  |  LSB: bw_lo→center  |  AM/FM: bw_lo→bw_hi */
+  uint16_t pb_x0 = cx, pb_x1 = cx;
+  bool do_shade = false;
+  if (bw_lo_ok && bw_hi_ok) {
+    pb_x0 = bw_lo; pb_x1 = bw_hi; do_shade = true;
+  } else if (bw_hi_ok) {
+    pb_x0 = cx;    pb_x1 = bw_hi; do_shade = (bw_hi > cx);
+  } else if (bw_lo_ok) {
+    pb_x0 = bw_lo; pb_x1 = cx;    do_shade = (bw_lo < cx);
+  }
 
   for (uint16_t y = 0U; y < (uint16_t)(SPEC_H - 1U); y++) {
     uint16_t *row    = s_spec_buf[y];
@@ -2078,8 +2327,11 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     if (!is_grid) {
       for (uint16_t gx = 0U; gx < SPEC_W; gx += 40U) row[gx] = dot_sw;
     }
-    if (bw_lo_ok && bw_lo < SPEC_W) row[bw_lo] = bw_sw;
-    if (bw_hi_ok && bw_hi < SPEC_W) row[bw_hi] = bw_sw;
+    /* Passband shaded fill — Xiegu-style; spectrum trace draws on top */
+    if (do_shade) {
+      for (uint16_t bx = pb_x0; bx <= pb_x1 && bx < SPEC_W; bx++)
+        row[bx] = pb_sw;
+    }
     /* Center marker: dark|white|dark — signal trace overlays it when present. */
     if (cx > 0U && cx < SPEC_W - 1U) {
       row[cx - 1U] = cx_shadow;
@@ -2246,7 +2498,10 @@ void SDR_UI_DrawWaterfall(const float *fft_db, uint16_t bins)
 void SDR_UI_SetSpecZoom(uint8_t zoom)
 {
   if (zoom >= SPEC_ZOOM_COUNT) zoom = SPEC_ZOOM_COUNT - 1U;
-  s_spec_zoom = zoom;
+  s_spec_zoom      = zoom;
+  s_spec_sr        = s_zoom_sr_tbl[zoom];
+  s_spec_half_ovr  = s_zoom_half_ovr[zoom];
+  s_spec_py_valid  = false;   /* force full redraw; old cache mismatches new decimation */
   draw_footer_rows(spec_half_span_hz());
 }
 

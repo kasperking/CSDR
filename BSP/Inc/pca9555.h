@@ -32,13 +32,23 @@ extern "C" {
 
 typedef struct {
   I2C_HandleTypeDef *hi2c;
-  uint16_t           addr;   /*!< 8-bit HAL I2C address (7-bit addr << 1) */
-  uint16_t           raw;    /*!< Last successful read: Port1[15:8] | Port0[7:0] */
-  bool               ok;     /*!< true if last communication succeeded */
+  uint16_t           addr;       /*!< 8-bit HAL I2C address (7-bit addr << 1) */
+  uint16_t           raw;        /*!< Last successful read: Port1[15:8] | Port0[7:0] */
+  uint8_t            dir0;       /*!< Config reg P0: 1=input, 0=output (shadow) */
+  uint8_t            dir1;       /*!< Config reg P1: 1=input, 0=output (shadow) */
+  uint8_t            out0;       /*!< Output latch P0 shadow */
+  uint8_t            out1;       /*!< Output latch P1 shadow */
+  bool               ok;         /*!< true if last communication succeeded */
 } PCA9555_t;
 
+/* Input (all-input init) */
 HAL_StatusTypeDef PCA9555_Init(PCA9555_t *dev, I2C_HandleTypeDef *hi2c, uint16_t addr);
 HAL_StatusTypeDef PCA9555_ReadInputs(PCA9555_t *dev);
+
+/* Mixed I/O */
+HAL_StatusTypeDef PCA9555_ConfigDir(PCA9555_t *dev, uint8_t dir0, uint8_t dir1);
+HAL_StatusTypeDef PCA9555_WritePort(PCA9555_t *dev, uint8_t port, uint8_t val);
+HAL_StatusTypeDef PCA9555_SetPin(PCA9555_t *dev, uint8_t port, uint8_t pin, uint8_t val);
 
 #ifdef __cplusplus
 }

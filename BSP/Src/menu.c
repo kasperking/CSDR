@@ -25,7 +25,7 @@ Menu_Handle_t g_menu;
 
 /* RX group */
 static int32_t _agc_val, _nb_val, _nr_val, _rit_val;
-static int32_t _att_val, _sq_val, _zoom_val;
+static int32_t _att_val, _sq_val, _zoom_val, _bw_val;
 static int32_t _rxshift_val, _notch_val, _notchhz_val;
 static int32_t _cwdec_val;
 
@@ -49,7 +49,7 @@ static int32_t _bl_val, _usb_val, _iq_stream_val;
 /* Misc */
 static uint8_t s_pa_watts = 0U;
 
-static const char *agc_strs[]   = { "SLOW", "FAST" };
+static const char *agc_strs[]   = { "SLOW", "FAST", "AUTO" };
 static const char *onoff_strs[] = { "OFF",  "ON"   };
 static const char *keyer_strs[] = { "STRAIGHT", "IAMBIC-A", "IAMBIC-B" };
 static const char *bkin_strs[]  = { "OFF", "SEMI", "FULL" };
@@ -118,6 +118,23 @@ static void render_item(Menu_Handle_t *m, uint8_t vi, uint16_t abs_y)
     snprintf(val, sizeof(val), "%s", it->enum_strs[vi2]);
   }
 
+  /* Right-align value with 4px margin inside the menu right border */
+  uint16_t val_w = (uint16_t)(strlen(val) * (uint16_t)Font6x8.width);
+  uint16_t val_x = (uint16_t)(MENU_X + MENU_W - 4U - val_w);
+  if (val_x < (uint16_t)(MENU_X + 4U)) val_x = (uint16_t)(MENU_X + 4U);
+
+  /* Clip label so it does not overlap the value column (keep 4px gap) */
+  char lbl_buf[20];
+  {
+    uint16_t lbl_end = (val_x > 8U) ? (uint16_t)(val_x - 4U) : 0U;
+    uint8_t  max_ch  = (lbl_end > (uint16_t)(MENU_X + 4U))
+                     ? (uint8_t)((lbl_end - (uint16_t)(MENU_X + 4U)) / Font6x8.width)
+                     : 0U;
+    uint8_t  n = (uint8_t)strlen(it->label);
+    if (n > max_ch && max_ch >= 1U) { memcpy(lbl_buf, it->label, max_ch); lbl_buf[max_ch] = '\0'; }
+    else                             { memcpy(lbl_buf, it->label, n + 1U); }
+  }
+
   uint16_t lbl_clr = is_group ? 0x0000U : MENU_LBL_COLOR;
 
   for (uint16_t fr = 0U; fr < (uint16_t)MENU_ITEM_H; fr++) {
@@ -135,12 +152,12 @@ static void render_item(Menu_Handle_t *m, uint8_t vi, uint16_t abs_y)
 
     if (!top && !bot && fr >= 4U && fr < 4U + (uint16_t)Font6x8.height) {
       uint16_t row = fr - 4U;
-      LCD_LineStr(ln, (uint16_t)(MENU_X + 4U), row, it->label, &Font6x8, lbl_clr, bg);
+      LCD_LineStr(ln, (uint16_t)(MENU_X + 4U), row, lbl_buf, &Font6x8, lbl_clr, bg);
       uint16_t vcol = (sel && m->editing)           ? MENU_EDIT_COLOR
                     : (it->type == MENU_TYPE_INFO)   ? MENU_LBL_COLOR
                     : MENU_VAL_COLOR;
       if (is_group) vcol = 0x0000U;
-      LCD_LineStr(ln, (uint16_t)(MENU_X + MENU_W - 24U), row, val, &Font6x8, vcol, bg);
+      LCD_LineStr(ln, val_x, row, val, &Font6x8, vcol, bg);
     }
 
     push_ln((uint16_t)(abs_y + fr));
@@ -177,7 +194,7 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[4] = (MenuItem_t){ "System",MENU_TYPE_GROUP,0,0,0,NULL,NULL,0U,NULL,NULL,-1 };
 
   /* ── RX group (parent = 0) ──────────────────────────────── */
-  m->items[5]  = (MenuItem_t){ "AGC",     MENU_TYPE_ENUM, 0,0,0,      &_agc_val,   agc_strs,  2U, NULL,NULL,0 };
+  m->items[5]  = (MenuItem_t){ "AGC",     MENU_TYPE_ENUM, 0,0,0,      &_agc_val,   agc_strs,  3U, NULL,NULL,0 };
   m->items[6]  = (MenuItem_t){ "NB",      MENU_TYPE_ENUM, 0,0,0,      &_nb_val,    onoff_strs,2U, NULL,NULL,0 };
   m->items[7]  = (MenuItem_t){ "NR",      MENU_TYPE_ENUM, 0,0,0,      &_nr_val,    onoff_strs,2U, NULL,NULL,0 };
   m->items[8]  = (MenuItem_t){ "ATT(dB)", MENU_TYPE_INT,  0, 31, 1,   &_att_val,   NULL,      0U, NULL,NULL,0 };
@@ -212,7 +229,7 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[29] = (MenuItem_t){ "USB",        MENU_TYPE_ENUM,  0,0,0,   &_usb_val,     usb_strs,      3U,NULL,NULL,4 };
   m->items[47] = (MenuItem_t){ "USB Stream", MENU_TYPE_ENUM,  0,0,0,   &_iq_stream_val,iq_stream_strs,2U,NULL,NULL,4 };
   m->items[30] = (MenuItem_t){ "Calibration",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,4  };
-  m->items[31] = (MenuItem_t){ "Fct Reset",  MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,4  };
+  m->items[31] = (MenuItem_t){ "Factory Reset",  MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,4  };
   m->items[32] = (MenuItem_t){ "About",      MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,4  };
   m->items[33] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0,   NULL,about_ver_strs, 1U,NULL,NULL,32 };
   m->items[34] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0,   NULL,about_date_strs,1U,NULL,NULL,32 };
@@ -232,6 +249,9 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[44] = (MenuItem_t){ "BK Delay",   MENU_TYPE_INT,   50,2000,50,&_bkdelay_val, NULL,       0U, NULL,"ms",37 };
   m->items[45] = (MenuItem_t){ "CW Rev",     MENU_TYPE_ENUM,  0,0,0,   &_cwrev_val,     onoff_strs, 2U, NULL,NULL,37 };
   m->items[46] = (MenuItem_t){ "Filter",     MENU_TYPE_INT,   50,500,50,&_cwfilter_val, NULL,       0U, NULL,"Hz",37 };
+
+  /* ── BW item (parent = 0, RX group) ────────────────────────── */
+  m->items[48] = (MenuItem_t){ "BW",        MENU_TYPE_INT, 100,24000,100, &_bw_val, NULL,0U,NULL,"Hz",0 };
 
   Menu_BuildView(m);
   /* USER CODE END Menu_Init_0 */
@@ -346,7 +366,17 @@ void Menu_Back(Menu_Handle_t *m)
 }
 
 void Menu_EncoderEdit(Menu_Handle_t *m, int32_t delta)
-{ if (m->open && m->editing) { change_val(m, delta); Menu_Render(m); } }
+{
+  if (!m->open) return;
+  if (m->editing) {
+    change_val(m, delta);
+  } else {
+    if (delta > 0 && m->cursor + 1U < m->view_count) m->cursor++;
+    else if (delta < 0 && m->cursor > 0U) m->cursor--;
+    clamp_scroll(m);
+  }
+  Menu_Render(m);
+}
 
 /* ════ Menu_Render ════ */
 void Menu_Render(Menu_Handle_t *m)
@@ -389,18 +419,21 @@ void Menu_Render(Menu_Handle_t *m)
     y += (uint16_t)MENU_ITEM_H;
   }
 
-  /* Hint row */
+  /* Hint row — draw hint first, counter on top so it always wins on overlap */
   {
     uint16_t *ln = LN;
     LCD_LineFill(ln, 0U, LCD_W, UI_BG);
+    const char *hint = m->editing
+                     ? "ENC=CHANGE  BTN/F4=DONE"
+                     : (m->current_group >= 0)
+                     ? "ENC=MOVE BTN=EDIT F4=BACK"
+                     : "ENC=MOVE BTN=SEL  F4=EXIT";
+    LCD_LineStr(ln, (uint16_t)(MENU_X + 4U), 0U, hint, &Font6x8, MENU_LBL_COLOR, UI_BG);
     char cnt[12];
     snprintf(cnt, sizeof(cnt), "%d/%d", m->cursor + 1, m->view_count);
-    LCD_LineStr(ln, (uint16_t)(MENU_X + MENU_W - 42U), 0U,
+    uint16_t cnt_w = (uint16_t)(strlen(cnt) * (uint16_t)Font6x8.width);
+    LCD_LineStr(ln, (uint16_t)(MENU_X + MENU_W - 4U - cnt_w), 0U,
                 cnt, &Font6x8, MENU_LBL_COLOR, UI_BG);
-    const char *hint = (m->current_group >= 0)
-                     ? "F1=UP F2=DN ENC=EDIT F4=BACK"
-                     : "F1=UP F2=DN ENC=SEL  F4=EXIT";
-    LCD_LineStr(ln, (uint16_t)(MENU_X + 4U), 0U, hint, &Font6x8, MENU_LBL_COLOR, UI_BG);
     for (uint8_t fr = 0U; fr < (uint8_t)Font6x8.height; fr++)
       push_ln(y++);
   }
@@ -409,9 +442,9 @@ void Menu_Render(Menu_Handle_t *m)
 
 /* ════ Load / Save SDR state ════ */
 void Menu_LoadFromSDR(Menu_Handle_t *m,
-                       bool agc_fast, bool nb, bool nr, int16_t rit,
+                       uint8_t agc_speed, bool nb, bool nr, int16_t rit,
                        uint8_t vol, uint8_t mic_gain, uint8_t digi_gain,
-                       uint8_t sq, uint32_t step,
+                       uint8_t sq, uint32_t step, uint32_t bw_hz,
                        uint8_t att, uint8_t band, uint8_t mode,
                        uint8_t usb_mode, uint8_t zoom,
                        bool ext_alc, uint8_t rf_power_pct, uint8_t pa_watts,
@@ -430,7 +463,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
 {
   /* USER CODE BEGIN Menu_LoadFromSDR_0 */
   static const uint32_t sv[6] = {1,10,100,1000,10000,100000};
-  _agc_val  = agc_fast ? 1 : 0;
+  _agc_val  = (int32_t)(agc_speed <= 2U ? agc_speed : 1U);
   _nb_val   = nb  ? 1 : 0;
   _nr_val   = nr  ? 1 : 0;
   _rit_val  = (int32_t)rit;
@@ -443,6 +476,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _sq_val   = (int32_t)sq;
   _step_val = 2;
   for (uint8_t i = 0; i < 6U; i++) if (step == sv[i]) { _step_val = (int32_t)i; break; }
+  _bw_val   = (bw_hz >= 100U && bw_hz <= 24000U) ? (int32_t)bw_hz : 3000;
   _att_val  = (int32_t)att;
   _band_val = (int32_t)band;
   _mode_val = (int32_t)mode;
@@ -495,9 +529,9 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
 }
 
 void Menu_SaveToSDR(Menu_Handle_t *m,
-                     bool *agc_fast, bool *nb, bool *nr, int16_t *rit,
+                     uint8_t *agc_speed, bool *nb, bool *nr, int16_t *rit,
                      uint8_t *vol, uint8_t *mic_gain, uint8_t *digi_gain,
-                     uint8_t *sq, uint32_t *step,
+                     uint8_t *sq, uint32_t *step, uint32_t *bw_hz,
                      uint8_t *att, uint8_t *band, uint8_t *mode,
                      uint8_t *usb_mode, uint8_t *zoom,
                      bool *ext_alc, uint8_t *rf_power,
@@ -516,7 +550,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
   static const uint32_t sv[6] = {1,10,100,1000,10000,100000};
-  *agc_fast  = (_agc_val  != 0);
+  *agc_speed = (uint8_t)_agc_val;
   *nb        = (_nb_val   != 0);
   *nr        = (_nr_val   != 0);
   *rit       = (int16_t)_rit_val;
@@ -531,6 +565,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *digi_gain = (uint8_t)_digi_val;
   *sq        = (uint8_t)_sq_val;
   *step      = sv[(_step_val >= 0 && _step_val < 6) ? _step_val : 2];
+  *bw_hz     = (uint32_t)(_bw_val >= 100 && _bw_val <= 24000 ? _bw_val : 3000);
   *att       = (uint8_t)_att_val;
   *band      = (uint8_t)_band_val;
   *mode      = (uint8_t)_mode_val;

@@ -8,7 +8,7 @@
   *   - NCO   : Numerically Controlled Oscillator (32-bit acc, 1024-entry LUT)
   *   - FIR   : Lowpass filter, Hann-windowed sinc, circular buffer, 64 taps
   *   - IIR   : DC blocker  H(z)=(1-z^-1)/(1-0.995*z^-1)
-  *   - AGC   : Peak-hold + hang AGC, 1ms attack, 0.2ms env smoother; mode presets: SSB 200ms/1s, CW 75ms/400ms, AM 500ms/2s; FM/DIGI bypass
+  *   - AGC   : Peak-hold + hang AGC, 1ms attack, 0.2ms env smoother; SLOW/FAST/AUTO (adaptive); mode presets: SSB 300ms–1s, CW 150ms–400ms, AM 800ms–2s; FM/DIGI bypass
   *   - FFT   : Radix-2 DIT, N=512, Hann window
   *   - DEMOD : AM, FM (atan2 differentiator), USB, LSB, CW (BFO 700Hz)
   *
@@ -297,10 +297,17 @@ void AGC_Init(AGC_t *agc, uint32_t sample_rate)
   agc->env_smooth = 0.0f;
   agc->hang_timer = 0U;
   agc->bypass     = false;
+  agc->auto_mode  = false;
+  agc->prev_level = 0.0f;
+  agc->drate      = 0.0f;
   /* Default to SSB-slow constants; caller overrides via AGC_SetMode() */
-  agc->attack    = expf(-1.0f / (0.001f * (float)sample_rate));  /* 1 ms   */
-  agc->decay     = expf(-1.0f / (1.000f * (float)sample_rate));  /* 1 s    */
-  agc->hang_time = (uint32_t)(0.200f * (float)sample_rate);      /* 200 ms */
+  agc->attack     = expf(-1.0f / (0.001f * (float)sample_rate));  /* 1 ms   */
+  agc->decay      = expf(-1.0f / (1.000f * (float)sample_rate));  /* 1 s    */
+  agc->hang_time  = (uint32_t)(0.200f * (float)sample_rate);      /* 200 ms */
+  agc->decay_fast = agc->decay;
+  agc->decay_slow = agc->decay;
+  agc->hang_fast  = agc->hang_time;
+  agc->hang_slow  = agc->hang_time;
   /* USER CODE END AGC_Init_0 */
 }
 
@@ -353,20 +360,19 @@ void DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level)
 }
 
 /* Set mode-specific AGC timing and bypass.  Primary configuration entry point.
+ * speed: 0=SLOW, 1=FAST, 2=AUTO (adaptive).
  *
- * SSB (USB/LSB):  1 ms attack, 200 ms hang (slow) / 100 ms (fast),
- *                 1 s decay (slow) / 300 ms (fast).  Stable voice, minimal pumping.
- * CW:             1 ms attack, 75 ms hang (slow) / 25 ms (fast),
- *                 400 ms decay (slow) / 150 ms (fast).  Fast recovery between dits.
- * AM:             1 ms attack, 500 ms hang (slow) / 300 ms (fast),
- *                 2 s decay (slow) / 800 ms (fast).  Smooth broadcast feel.
- * FM / DIGI:      bypass=true, gain=1.0.  FM is constant-amplitude; AGC causes
- *                 noise pumping.  DIGI needs stable amplitude for WSJT-X/FT8.
+ * SSB (USB/LSB):  1 ms attack, 200 ms hang (slow) / 100 ms (fast), 1 s / 300 ms decay.
+ * CW:             1 ms attack,  75 ms hang (slow) /  25 ms (fast), 400 ms / 150 ms decay.
+ * AM:             1 ms attack, 500 ms hang (slow) / 300 ms (fast), 2 s / 800 ms decay.
+ * AUTO:           blend between fast/slow constants based on |d(level)/dt|, τ≈70ms.
+ * FM / DIGI:      bypass=true, gain=1.0 — constant amplitude, AGC causes pumping.
  */
-void AGC_SetMode(AGC_t *agc, SDR_Mode_t mode, bool fast, uint32_t sample_rate)
+void AGC_SetMode(AGC_t *agc, SDR_Mode_t mode, uint8_t speed, uint32_t sample_rate)
 {
   float sr = (float)sample_rate;
-  agc->attack = expf(-1.0f / (0.001f * sr));   /* 1 ms always */
+  agc->attack    = expf(-1.0f / (0.001f * sr));   /* 1 ms always */
+  agc->auto_mode = (speed == 2U);
 
   switch (mode)
   {
@@ -377,33 +383,51 @@ void AGC_SetMode(AGC_t *agc, SDR_Mode_t mode, bool fast, uint32_t sample_rate)
       agc->bypass     = true;
       agc->gain       = 1.0f;
       agc->hang_timer = 0U;
+      agc->auto_mode  = false;
       return;
 
     case MODE_CW:
-      agc->decay     = expf(-1.0f / ((fast ? 0.150f : 0.400f) * sr));
-      agc->hang_time = (uint32_t)((fast ? 0.025f : 0.075f) * sr);
+      agc->decay_fast = expf(-1.0f / (0.150f * sr));
+      agc->decay_slow = expf(-1.0f / (0.400f * sr));
+      agc->hang_fast  = (uint32_t)(0.025f * sr);
+      agc->hang_slow  = (uint32_t)(0.075f * sr);
       break;
 
     case MODE_AM:
-      agc->decay     = expf(-1.0f / ((fast ? 0.800f : 2.000f) * sr));
-      agc->hang_time = (uint32_t)((fast ? 0.300f : 0.500f) * sr);
+      agc->decay_fast = expf(-1.0f / (0.800f * sr));
+      agc->decay_slow = expf(-1.0f / (2.000f * sr));
+      agc->hang_fast  = (uint32_t)(0.300f * sr);
+      agc->hang_slow  = (uint32_t)(0.500f * sr);
       break;
 
     case MODE_USB:
     case MODE_LSB:
     default:
-      agc->decay     = expf(-1.0f / ((fast ? 0.300f : 1.000f) * sr));
-      agc->hang_time = (uint32_t)((fast ? 0.100f : 0.200f) * sr);
+      agc->decay_fast = expf(-1.0f / (0.300f * sr));
+      agc->decay_slow = expf(-1.0f / (1.000f * sr));
+      agc->hang_fast  = (uint32_t)(0.100f * sr);
+      agc->hang_slow  = (uint32_t)(0.200f * sr);
       break;
   }
   agc->bypass = false;
+  if (agc->auto_mode) {
+    /* Start at slow; process loop adapts from here */
+    agc->decay     = agc->decay_slow;
+    agc->hang_time = agc->hang_slow;
+    agc->drate     = 0.0f;
+    agc->prev_level = 0.0f;
+  } else {
+    bool fast      = (speed == 1U);
+    agc->decay     = fast ? agc->decay_fast : agc->decay_slow;
+    agc->hang_time = fast ? agc->hang_fast  : agc->hang_slow;
+  }
 }
 
 /* Compatibility wrapper — applies SSB-equivalent timing when mode is not known.
  * Prefer AGC_SetMode() for all new call sites. */
-void AGC_SetSpeed(AGC_t *agc, bool fast, uint32_t sample_rate)
+void AGC_SetSpeed(AGC_t *agc, uint8_t speed, uint32_t sample_rate)
 {
-  AGC_SetMode(agc, MODE_USB, fast, sample_rate);
+  AGC_SetMode(agc, MODE_USB, speed, sample_rate);
 }
 
 float AGC_Process(AGC_t *agc, float x)
@@ -430,6 +454,19 @@ float AGC_Process(AGC_t *agc, float x)
     /* Decay: slow release after hang expires */
     agc->level = agc->decay * agc->level;
   }
+
+  /* AUTO mode: blend decay/hang_time by rate-of-change of level.
+   * drate tracks |d(level)/dt| with τ≈70ms; high drate → fast signal → faster release. */
+  if (agc->auto_mode) {
+    float dlevel = fabsf(agc->level - agc->prev_level);
+    agc->drate = 0.9997f * agc->drate + 0.0003f * dlevel;   /* τ ≈ 70 ms at 48 kHz */
+    float blend = agc->drate / (agc->drate + 0.0008f);       /* 0=slow … 1=fast     */
+    agc->decay = agc->decay_slow + blend * (agc->decay_fast - agc->decay_slow);
+    agc->hang_time = agc->hang_fast +
+                     (uint32_t)((1.0f - blend) * (float)(agc->hang_slow - agc->hang_fast));
+  }
+  agc->prev_level = agc->level;
+
   if (agc->level > 1e-10f) { agc->gain = agc->target / agc->level; }
   if (agc->gain > agc->max_gain) { agc->gain = agc->max_gain; }
   if (agc->gain < agc->min_gain) { agc->gain = agc->min_gain; }
@@ -623,6 +660,14 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   AGC_Init(&dsp->agc, sample_rate);
   FFT_Hann_Window(dsp->fft_window, DSP_FFT_SIZE);
 
+  for (int s = 0; s < 3; s++) {
+    FIR_Init_LPF(&dsp->spec_dec_i[s], 0.25f, 31U);
+    FIR_Init_LPF(&dsp->spec_dec_q[s], 0.25f, 31U);
+    dsp->spec_decim_cnt[s] = 0U;
+  }
+  dsp->spec_decim       = 1U;
+  dsp->spec_decim_flush = 0U;
+
   {
     float de_fc          = 2122.0f / (float)sample_rate;
     dsp->fm.de_emph.b0   = 1.0f - expf(-DSP_TWO_PI * de_fc);
@@ -766,6 +811,8 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   dsp->agc.env_smooth = 0.0f;
   dsp->agc.gain       = 1.0f;
   dsp->agc.hang_timer = 0U;
+  dsp->agc.prev_level = 0.0f;
+  dsp->agc.drate      = 0.0f;
 
   /* CW BFO increment: recompute from stored TX bfo_inc (same pitch, keyed to sample rate).
    * Caller must call DSP_SetCWPitch after DSP_SetMode if pitch differs from 700 Hz. */
@@ -841,6 +888,25 @@ void DSP_SetDCOffset(DSP_State_t *dsp, int32_t dc_i, int32_t dc_q)
 {
   dsp->dc_i_static = (float)dc_i;
   dsp->dc_q_static = (float)dc_q;
+}
+
+/* ── Spectrum decimation ────────────────────────────────────────────────────
+ * factor: 1=±24kHz (pass-through), 2=±12kHz, 4=±6kHz, 8=±3kHz.
+ * Resets filter delay lines and discards the first 2 FFT frames so the
+ * display doesn't show transient artefacts while the FIRs settle. */
+void DSP_SetSpecDecim(DSP_State_t *dsp, uint8_t factor)
+{
+  if (factor != 2U && factor != 4U && factor != 8U) factor = 1U;
+  dsp->spec_decim = factor;
+  for (int s = 0; s < 3; s++) {
+    memset(dsp->spec_dec_i[s].buf, 0, sizeof(dsp->spec_dec_i[s].buf));
+    memset(dsp->spec_dec_q[s].buf, 0, sizeof(dsp->spec_dec_q[s].buf));
+    dsp->spec_dec_i[s].idx  = 0U;
+    dsp->spec_dec_q[s].idx  = 0U;
+    dsp->spec_decim_cnt[s]  = 0U;
+  }
+  dsp->fft_fill         = 0U;
+  dsp->spec_decim_flush = 2U;
 }
 
 /* ── Cal measurement ────────────────────────────────────────────────────────
@@ -1021,23 +1087,52 @@ void DSP_Process(DSP_State_t *dsp,
       }
     }
 
-    /* ── 4. FFT feed BEFORE FIR – full ±Fs/2 = ±24kHz bandscope */
-    if (dsp->fft_fill < DSP_FFT_SIZE)
+    /* ── 4. FFT feed with optional decimation (spec bandscope).
+     *       Tap point: after NB, before audio FIR.  Decimation factor set by
+     *       DSP_SetSpecDecim() when the UI zoom level changes.
+     *       decim=1 → pass-through (full ±24 kHz), =2/4/8 → ±12/6/3 kHz. */
     {
-      float w = dsp->fft_window[dsp->fft_fill];
-      dsp->fft_buf[dsp->fft_fill].re = mix_i * w;
-      dsp->fft_buf[dsp->fft_fill].im = mix_q * w;
-      dsp->fft_fill++;
-      if (dsp->fft_fill >= DSP_FFT_SIZE)
-      {
-        float peak;
-        { uint32_t fft_t0 = DWT->CYCCNT;
-          FFT_Precomp(dsp->fft_buf, DSP_FFT_SIZE);
-          RuntimeDiag_FftReport((uint32_t)(DWT->CYCCNT - fft_t0)); }
-        FFT_ComputeMag_dB(dsp->fft_buf, dsp->fft_mag_db, DSP_FFT_SIZE, &peak);
-        dsp->fft_ready = true;
-        if (dsp->wf_lines < 255U) dsp->wf_lines++;
-        dsp->fft_fill  = 0U;
+      float di = mix_i, dq = mix_q;
+      bool  emit = true;
+
+      if (dsp->spec_decim >= 2U) {
+        di = FIR_Process(&dsp->spec_dec_i[0], di);
+        dq = FIR_Process(&dsp->spec_dec_q[0], dq);
+        dsp->spec_decim_cnt[0]++;
+        emit = (dsp->spec_decim_cnt[0] & 1U) == 0U;
+      }
+      if (emit && dsp->spec_decim >= 4U) {
+        di = FIR_Process(&dsp->spec_dec_i[1], di);
+        dq = FIR_Process(&dsp->spec_dec_q[1], dq);
+        dsp->spec_decim_cnt[1]++;
+        emit = (dsp->spec_decim_cnt[1] & 1U) == 0U;
+      }
+      if (emit && dsp->spec_decim >= 8U) {
+        di = FIR_Process(&dsp->spec_dec_i[2], di);
+        dq = FIR_Process(&dsp->spec_dec_q[2], dq);
+        dsp->spec_decim_cnt[2]++;
+        emit = (dsp->spec_decim_cnt[2] & 1U) == 0U;
+      }
+
+      if (emit && dsp->fft_fill < DSP_FFT_SIZE) {
+        float w = dsp->fft_window[dsp->fft_fill];
+        dsp->fft_buf[dsp->fft_fill].re = di * w;
+        dsp->fft_buf[dsp->fft_fill].im = dq * w;
+        dsp->fft_fill++;
+        if (dsp->fft_fill >= DSP_FFT_SIZE) {
+          float peak;
+          { uint32_t fft_t0 = DWT->CYCCNT;
+            FFT_Precomp(dsp->fft_buf, DSP_FFT_SIZE);
+            RuntimeDiag_FftReport((uint32_t)(DWT->CYCCNT - fft_t0)); }
+          FFT_ComputeMag_dB(dsp->fft_buf, dsp->fft_mag_db, DSP_FFT_SIZE, &peak);
+          if (dsp->spec_decim_flush > 0U) {
+            dsp->spec_decim_flush--;
+          } else {
+            dsp->fft_ready = true;
+            if (dsp->wf_lines < 255U) dsp->wf_lines++;
+          }
+          dsp->fft_fill = 0U;
+        }
       }
     }
 

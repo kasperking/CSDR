@@ -26,6 +26,14 @@
 #define ENC_ACCEL_THRESH_HI   30U
 #define ENC_ACCEL_THRESH_MED  15U
 #define ENC_ACCEL_THRESH_LO    6U
+/* EC11 in TIM3 X4 mode = 4 quadrature counts per physical detent.
+ * Accumulate raw counts; only fire a step when full detent reached.
+ * Bounce < 4 counts is silently discarded. Delta is scaled ×COUNTS_PER_STEP
+ * so VFO sensitivity is unchanged vs the old direct-accumulation code. */
+#define ENC_COUNTS_PER_STEP    4
+/* After a step fires, block opposite-direction steps for this many ms.
+ * EC11 bounce is typically 5–30 ms; intentional reversal takes > 100 ms. */
+#define ENC_DIR_GUARD_MS      40U
 /* USER CODE END PD */
 
 /* USER CODE BEGIN 0 */
@@ -46,8 +54,11 @@ void Encoder_Init(Encoder_t *enc, TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Encoder_Init_0 */
   enc->htim           = htim;
   enc->cnt_prev       = (uint16_t)__HAL_TIM_GET_COUNTER(htim);
+  enc->raw_accum      = 0;
   enc->delta          = 0;
   enc->accel_count    = 0U;
+  enc->guard_dir      = 0;
+  enc->guard_expiry   = 0U;
   enc->accel_mult     = 1;
   enc->last_tick      = HAL_GetTick();
   enc->btn_pressed    = false;
@@ -77,35 +88,59 @@ void Encoder_Poll(Encoder_t *enc)
   int16_t  raw     = (int16_t)(cnt_now - enc->cnt_prev);
   enc->cnt_prev    = cnt_now;
 
-  if (raw != 0)
+  /* ── Step 1: accumulate raw counts, threshold to full detents ───────── */
+  enc->raw_accum += (int32_t)raw;
+
+  int32_t steps = 0;
+  if      (enc->raw_accum >=  ENC_COUNTS_PER_STEP) { steps = enc->raw_accum / ENC_COUNTS_PER_STEP; enc->raw_accum %= ENC_COUNTS_PER_STEP; }
+  else if (enc->raw_accum <= -ENC_COUNTS_PER_STEP) { steps = enc->raw_accum / ENC_COUNTS_PER_STEP; enc->raw_accum %= ENC_COUNTS_PER_STEP; }
+
+  /* ── Step 2: direction guard — discard opposite-direction steps within
+   *    ENC_DIR_GUARD_MS after the last confirmed step (EC11 bounce filter) ─ */
+  if (steps != 0)
   {
-    /* ── 2. Gia tốc ──────────────────────────────────────────── */
     uint32_t now = HAL_GetTick();
-    uint32_t dt  = now - enc->last_tick;
-    enc->last_tick = now;
+    int8_t   dir = (steps > 0) ? +1 : -1;
 
-    /* Cộng dồn bộ đếm theo tốc độ xoay */
-    uint32_t abs_raw = (raw < 0) ? (uint32_t)(-raw) : (uint32_t)raw;
-    if (dt < ENC_ACCEL_WINDOW_MS) {
-      enc->accel_count += abs_raw * 2U;
-    } else {
-      enc->accel_count = (enc->accel_count > abs_raw) ?
-                          enc->accel_count - abs_raw : 0U;
+    if (enc->guard_dir != 0 && dir != enc->guard_dir &&
+        (int32_t)(now - enc->guard_expiry) < 0)
+    {
+      /* Bounce: reverse step within guard window — discard and clear accum */
+      enc->raw_accum = 0;
+      steps = 0;
     }
-    if (enc->accel_count > 200U) { enc->accel_count = 200U; }
+    else
+    {
+      /* Valid step: arm guard in this direction */
+      enc->guard_dir    = dir;
+      enc->guard_expiry = now + ENC_DIR_GUARD_MS;
 
-    int32_t mult;
-    if      (enc->accel_count >= ENC_ACCEL_THRESH_HI)  { mult = 100; }
-    else if (enc->accel_count >= ENC_ACCEL_THRESH_MED) { mult =  10; }
-    else if (enc->accel_count >= ENC_ACCEL_THRESH_LO)  { mult =   5; }
-    else                                                 { mult =   1; }
-    enc->accel_mult = mult;
+      /* ── Step 3: acceleration ────────────────────────────────────────── */
+      uint32_t dt  = now - enc->last_tick;
+      enc->last_tick = now;
 
-    enc->delta += (int32_t)raw * mult;
+      uint32_t abs_raw = (raw < 0) ? (uint32_t)(-raw) : (uint32_t)raw;
+      if (dt < ENC_ACCEL_WINDOW_MS) {
+        enc->accel_count += abs_raw * 2U;
+      } else {
+        enc->accel_count = (enc->accel_count > abs_raw) ?
+                            enc->accel_count - abs_raw : 0U;
+      }
+      if (enc->accel_count > 200U) { enc->accel_count = 200U; }
+
+      int32_t mult;
+      if      (enc->accel_count >= ENC_ACCEL_THRESH_HI)  { mult = 100; }
+      else if (enc->accel_count >= ENC_ACCEL_THRESH_MED) { mult =  10; }
+      else if (enc->accel_count >= ENC_ACCEL_THRESH_LO)  { mult =   5; }
+      else                                                 { mult =   1; }
+      enc->accel_mult = mult;
+
+      enc->delta += steps * mult;
+    }
   }
-  else
-  {
-    /* Không xoay → giảm dần gia tốc */
+
+  if (steps == 0) {
+    /* No valid step this tick → decay acceleration */
     if (enc->accel_count > 0U) { enc->accel_count--; }
   }
 

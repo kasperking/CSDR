@@ -34,6 +34,13 @@ uint32_t dbg_pca_disabled_hits  = 0;
 #define PCA_RETRY_MS  5000U
 static uint32_t s_pca_retry_ms          = 0U;
 static uint8_t  s_pca_reinit_fail_count = 0U;  /* consecutive reinit failures */
+
+/* INT-driven flag: set by EXTI ISR via Input_SetIrqPending(), cleared here */
+static volatile uint8_t s_pca_irq_pending = 0U;
+
+void Input_SetIrqPending(void) { s_pca_irq_pending = 1U; }
+#else
+void Input_SetIrqPending(void) {}
 #endif
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -68,9 +75,7 @@ void Input_Scan(void)
   dbg_pca_read_attempts++;
 
   if (!s_pca.ok) {
-    /* Device absent or failed — skip I2C to avoid 10ms stall per loop.
-     * Retry every PCA_RETRY_MS: attempt re-init to catch hot-plug or
-     * transient I2C errors.  g_pca9555_raw stays 0xFFFF (all released). */
+    /* Device absent or failed — retry every PCA_RETRY_MS. */
     uint32_t now = HAL_GetTick();
     if ((now - s_pca_retry_ms) < PCA_RETRY_MS) {
       dbg_pca_timeout_count++;
@@ -86,13 +91,19 @@ void Input_Scan(void)
     }
     s_pca_reinit_fail_count = 0U;
     dbg_pca_init_attempts++;
+    /* Fall through: read initial state after successful reinit. */
+  } else {
+    /* Device healthy: only read when INT fired (PB8 falling edge). */
+    if (!s_pca_irq_pending)
+      return;
   }
 
+  s_pca_irq_pending = 0U;
   if (PCA9555_ReadInputs(&s_pca) == HAL_OK)
     g_pca9555_raw = s_pca.raw;
   else {
     dbg_pca_timeout_count++;
-    s_pca_retry_ms = HAL_GetTick();   /* arm retry timer */
+    s_pca_retry_ms = HAL_GetTick();
   }
 #else
   dbg_pca_disabled_hits++;

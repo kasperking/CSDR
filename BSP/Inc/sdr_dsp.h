@@ -66,6 +66,14 @@ typedef struct {
   uint32_t hang_timer;  /*!< Samples remaining in hang hold     */
   uint32_t hang_time;   /*!< Hang duration (samples)            */
   bool     bypass;      /*!< true = FM/DIGI: unity gain, no AGC */
+  /* AUTO mode (speed=2): adapt decay/hang by signal rate-of-change */
+  bool     auto_mode;   /*!< Adaptive timing active             */
+  float    decay_fast;  /*!< Fast release coeff (blend ref)     */
+  float    decay_slow;  /*!< Slow release coeff (blend ref)     */
+  uint32_t hang_fast;   /*!< Fast hang samples  (blend ref)     */
+  uint32_t hang_slow;   /*!< Slow hang samples  (blend ref)     */
+  float    prev_level;  /*!< Level from previous sample         */
+  float    drate;       /*!< IIR |d(level)/dt|, τ≈70ms         */
 } AGC_t;
 
 /* ── Calibration measurement accumulator ──────────────────────────────────── */
@@ -180,6 +188,13 @@ typedef struct {
   bool      fft_ready;
   uint8_t   wf_lines;   /* pending waterfall lines since last display read */
 
+  /* Spectrum decimation – 3-stage ÷2 cascade, tapped after Noise Blanker */
+  FIR_Filter_t spec_dec_i[3];    /*!< Half-band anti-alias FIR I, stages 0-2 */
+  FIR_Filter_t spec_dec_q[3];    /*!< Half-band anti-alias FIR Q, stages 0-2 */
+  uint8_t      spec_decim;        /*!< Active factor: 1, 2, 4, or 8            */
+  uint8_t      spec_decim_cnt[3]; /*!< Subsample counter per stage             */
+  uint8_t      spec_decim_flush;  /*!< FFT frames to discard after zoom change */
+
   /* Trạng thái */
   SDR_Mode_t mode;
   float      signal_power_db;
@@ -262,8 +277,9 @@ void  Notch_Init(IIR_Biquad_t *f, float fc_hz, uint32_t sample_rate);
 
 /* AGC */
 void  AGC_Init(AGC_t *agc, uint32_t sample_rate);
-void  AGC_SetMode(AGC_t *agc, SDR_Mode_t mode, bool fast, uint32_t sample_rate);
-void  AGC_SetSpeed(AGC_t *agc, bool fast, uint32_t sample_rate);
+/* speed: 0=SLOW, 1=FAST, 2=AUTO */
+void  AGC_SetMode(AGC_t *agc, SDR_Mode_t mode, uint8_t speed, uint32_t sample_rate);
+void  AGC_SetSpeed(AGC_t *agc, uint8_t speed, uint32_t sample_rate);
 float AGC_Process(AGC_t *agc, float x);
 
 /* TX passband */
@@ -287,6 +303,8 @@ bool  DSP_CalPoll(DSP_State_t *dsp, DSP_CalMeas_t *out);
 
 /* FFT */
 void  FFT_Hann_Window(float *w, uint16_t n);
+/* Spectrum decimation */
+void  DSP_SetSpecDecim(DSP_State_t *dsp, uint8_t factor);
 void  FFT_Radix2(Complex_f *buf, uint16_t n);
 void  FFT_ComputeMag_dB(const Complex_f *buf, float *mag_db,
                          uint16_t half_n, float *peak_db);

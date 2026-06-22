@@ -75,20 +75,20 @@ extern "C" {
 #define SBL_H   96U
 #define SBL_Y2 120U
 
-#define SBR_W   80U
-#define SBR_X  400U          /* LCD_W - SBR_W = 480 - 80 */
+#define SBR_W   88U
+#define SBR_X  392U          /* LCD_W - SBR_W = 480 - 88 */
 #define SBR_Y   24U
 #define SBR_H   96U
 #define SBR_Y2 120U
 
 #define VFO_X   80U
-#define VFO_W  320U
+#define VFO_W  312U
 #define VFO_Y   24U
 #define VFO_H   64U
 #define VFO_Y2  88U
 
 #define MTR_X   80U
-#define MTR_W  320U
+#define MTR_W  312U
 #define MTR_Y   88U
 #define MTR_H   32U
 #define MTR_Y2 120U
@@ -136,7 +136,30 @@ extern "C" {
  *  STATUS bar; DrawSidebarRight is a no-op.
  */
 #if LCD_W > LCD_H
-/* ── ST7789 320×240 landscape ──────────────────────────────────────────── */
+/* ── ST7789 320×240 landscape ──────────────────────────────────────────── *
+ *
+ *  New layout — STS zone eliminated, params merged into VFO zone:
+ *
+ *  ┌──────────────────────────────────────────────────────────────────┐  Y=0
+ *  │  HEADER  320×12  AGC-F                              13.8V       │
+ *  ├──────────────────────────────────────────────────────────────────┤  Y=12
+ *  │  VFO  320×60   [A] 14.200.000    │ USB ← right 120px           │
+ *  │                                  │ RX                           │
+ *  │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ (divider row 36)            │
+ *  │  STP:100  VOL:70  [NB]                                          │
+ *  │  BW:3000  SQL:0   [NR]                                          │
+ *  ├──────────────────────────────────────────────────────────────────┤  Y=72
+ *  │  METER  320×20   S-meter ruler                                  │
+ *  ├──────────────────────────────────────────────────────────────────┤  Y=92
+ *  │  SPECTRUM  320×60                                               │
+ *  ├──────────────────────────────────────────────────────────────────┤  Y=152
+ *  │  WATERFALL  320×64                                              │
+ *  ├──────────────────────────────────────────────────────────────────┤  Y=216
+ *  │  FOOTER  320×24  -24k        0        +24k                      │
+ *  └──────────────────────────────────────────────────────────────────┘  Y=240
+ *
+ *  Total: 12+60+20+60+64+24 = 240 ✓
+ */
 
 #define HDR_Y    0U
 #define HDR_H   12U
@@ -157,14 +180,17 @@ extern "C" {
 #define VFO_X    0U
 #define VFO_W   LCD_W
 #define VFO_Y   HDR_Y2   /* = 12 */
-#define VFO_H   44U
-#define VFO_Y2  56U
+#define VFO_H   60U
+#define VFO_Y2  72U
+
+/* Right panel split: digits centered in left 180px; right 140px for status inline */
+#define VFO_RIGHT_X    180U
 
 #define MTR_X    0U
 #define MTR_W   LCD_W
-#define MTR_Y   VFO_Y2   /* = 56 */
-#define MTR_H   20U      /* TX value text omitted — no room; bar + scale fit */
-#define MTR_Y2  76U
+#define MTR_Y   VFO_Y2   /* = 72 */
+#define MTR_H   20U
+#define MTR_Y2  92U
 
 #define INFO_Y  MTR_Y2
 #define INFO_H    0U
@@ -172,19 +198,19 @@ extern "C" {
 
 #define SPEC_X    0U
 #define SPEC_W   LCD_W
-#define SPEC_Y   MTR_Y2  /* = 76 */
-#define SPEC_H   56U
-#define SPEC_Y2 132U
+#define SPEC_Y   MTR_Y2  /* = 92 */
+#define SPEC_H   60U
+#define SPEC_Y2 152U
 
 #define WF_X     0U
 #define WF_W    LCD_W
-#define WF_Y    SPEC_Y2  /* = 132 */
-#define WF_H    60U
-#define WF_Y2  192U
+#define WF_Y    SPEC_Y2  /* = 152 */
+#define WF_H    64U
+#define WF_Y2  216U
 
-#define STS_Y   WF_Y2    /* = 192 */
-#define STS_H   24U
-#define STS_Y2 216U
+#define STS_Y   WF_Y2    /* = 216 */
+#define STS_H    0U
+#define STS_Y2  216U
 
 #define FTR_Y   STS_Y2   /* = 216 */
 #define FTR_H   24U
@@ -198,7 +224,31 @@ extern "C" {
  *   row  18:    bottom rail; TX ALC/SWR text omitted (MTR too short) */
 
 #else
-/* ── ST7789 240×320 portrait ───────────────────────────────────────────── */
+/* ── ST7789 240×320 portrait ───────────────────────────────────────────── *
+ *
+ *  New layout — STS zone eliminated, params merged into VFO zone right panel:
+ *
+ *  ┌───────────────────────┐  Y=0
+ *  │  HEADER  240×16       │  AGC-F / 13.8V
+ *  ├───────────────────────┤  Y=16
+ *  │  VFO  240×72          │  [A] 7.100.000 │ USB  ← right panel 48px
+ *  │                       │                │ RX
+ *  │  B 14.200.000         │  sub-VFO MED 12x16 (row 28..43)
+ *  │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │  (divider @ row 38 within VFO)
+ *  │  STP:xxx  VOL:xx  NB  │  full-width params row A (row 46)
+ *  │  BW:xxx   SQL:x   NR  │  full-width params row B (row 55)
+ *  ├───────────────────────┤  Y=88
+ *  │  METER  240×24        │  S-meter ruler
+ *  ├───────────────────────┤  Y=112
+ *  │  SPECTRUM  240×88     │
+ *  ├───────────────────────┤  Y=200
+ *  │  WATERFALL  240×88    │
+ *  ├───────────────────────┤  Y=288
+ *  │  FOOTER  240×32       │  -24k   0   +24k
+ *  └───────────────────────┘  Y=320
+ *
+ *  Total: 16+72+24+88+88+32 = 320 ✓
+ */
 
 #define HDR_Y    0U
 #define HDR_H   16U
@@ -219,14 +269,20 @@ extern "C" {
 #define VFO_X    0U
 #define VFO_W   LCD_W
 #define VFO_Y   HDR_Y2   /* = 16 */
-#define VFO_H   48U
-#define VFO_Y2  64U
+#define VFO_H   72U       /* expanded: right panel + params rows inline */
+#define VFO_Y2  88U
+
+/* Right panel split: left 192px = digit area; right 48px = mode/RX labels */
+#define VFO_RIGHT_X    192U
+/* Params rows within s_vfo_buf (below digit/badge area, full-width) */
+#define VFO_PARAMS_Y    46U   /* row for params row A (STP/VOL/NB) -- below sub-VFO */
+#define VFO_PARAMS_B_Y  55U   /* row for params row B (BW/SQL/NR)  */
 
 #define MTR_X    0U
 #define MTR_W   LCD_W
-#define MTR_Y   VFO_Y2   /* = 64 */
+#define MTR_Y   VFO_Y2   /* = 88 */
 #define MTR_H   24U
-#define MTR_Y2  88U
+#define MTR_Y2  112U
 
 #define INFO_Y  MTR_Y2
 #define INFO_H    0U
@@ -234,19 +290,20 @@ extern "C" {
 
 #define SPEC_X    0U
 #define SPEC_W   LCD_W
-#define SPEC_Y   MTR_Y2  /* = 88 */
-#define SPEC_H   76U
-#define SPEC_Y2 164U
+#define SPEC_Y   MTR_Y2  /* = 112 */
+#define SPEC_H   88U
+#define SPEC_Y2 200U
 
 #define WF_X     0U
 #define WF_W    LCD_W
-#define WF_Y    SPEC_Y2  /* = 164 */
-#define WF_H    96U
-#define WF_Y2  260U
+#define WF_Y    SPEC_Y2  /* = 200 */
+#define WF_H    88U
+#define WF_Y2  288U
 
-#define STS_Y   WF_Y2    /* = 260 */
-#define STS_H   28U
-#define STS_Y2 288U
+/* STS zone eliminated — status info merged into VFO zone right panel */
+#define STS_Y   WF_Y2    /* = 288 */
+#define STS_H    0U
+#define STS_Y2  288U
 
 #define FTR_Y   STS_Y2   /* = 288 */
 #define FTR_H   32U
@@ -265,8 +322,8 @@ extern "C" {
 #  error "Unknown LCD_PANEL in sdr_ui.h — check lcd_panel_config.h"
 #endif /* LCD_PANEL */
 
-/* ── Zoom levels: 0=±24k  1=±18k  2=±12k  3=±6k  4=±3k ─────────────────── */
-#define SPEC_ZOOM_COUNT  5U
+/* ── Zoom levels: 0=±24k  1=±12k  2=±6k  3=±3k ─────────────────────────── */
+#define SPEC_ZOOM_COUNT  4U
 
 /* ── S-meter ruler geometry (shared, fits both MTR widths) ──────────────── *
  *  SM_UNIT_W  : tick pitch (18 px); 12 × 18 = 216 px ruler
@@ -282,6 +339,13 @@ extern "C" {
 #define SM_UNIT_W    18U
 #define SM_START_X    2U
 #define SM_RULER_W   (SM_BARS * SM_UNIT_W)   /* 216 px */
+/* Landscape ST7789 (320×240): narrower tick pitch so ruler ≈ 50% of screen */
+#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
+#undef  SM_UNIT_W
+#define SM_UNIT_W   13U
+#undef  SM_RULER_W
+#define SM_RULER_W  (SM_BARS * SM_UNIT_W)   /* 156 px */
+#endif
 
 /* ── Legacy aliases (used by menu.c / sdr_scan.c) ──── */
 #define ZONE_SPEC_Y   SPEC_Y
@@ -347,6 +411,7 @@ extern "C" {
 #define UI_SPEC_GRID      0x18C6U
 #define UI_SPEC_CENTER    0xF81FU
 #define UI_SPEC_BW        0x07FFU
+#define UI_SPEC_PASS      0x0929U   /* passband shaded region — dim teal fill */
 
 /* ── SDR UI state ───────────────────────────────────── */
 typedef struct {
@@ -358,7 +423,7 @@ typedef struct {
   uint8_t   volume;
   uint8_t   squelch;
   uint32_t  step;
-  bool      agc_fast;
+  uint8_t   agc_speed;   /*!< 0=SLOW 1=FAST 2=AUTO */
   bool      nb_on;
   bool      nr_on;
   int16_t   rit_hz;

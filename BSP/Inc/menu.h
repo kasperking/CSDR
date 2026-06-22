@@ -8,14 +8,14 @@
   *   MENU_KEY     → Mở/đóng menu (toggle)
   *   F1           → Lên (UP)
   *   F2           → Xuống (DOWN)
-  *   ENC rotate   → Thay đổi giá trị (edit mode)
+  *   ENC rotate   → Di chuyển lên/xuống (browse) hoặc thay đổi giá trị (edit mode)
   *   ENC press    → Vào group / bắt đầu edit / xác nhận
   *   F4           → Back (group → root) / đóng menu
   *
   *  Cấu trúc menu (2 cấp):
   *
   *  Root
-  *   ├─ [RX]     → AGC / NB / NR / ATT / Squelch / RIT / Span
+  *   ├─ [RX]     → AGC / NB / NR / ATT / Squelch / RIT / Span / BW
   *   ├─ [Audio]  → Volume / Mic Gain / Digi Drive
   *   ├─ [Tuning] → Step / Band / Mode
   *   ├─ [TX]     → RF Power / Ext ALC / TX Low / TX High / VOX / VOX Gain / VOX Delay
@@ -44,7 +44,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      48U   /* 7 groups + 41 leaf items */
+#define MENU_ITEM_COUNT      49U   /* 7 groups + 42 leaf items */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -137,9 +137,9 @@ typedef void (*MenuApplyFn)(void);
   * @brief  Load SDR state vào menu trước khi mở.
   */
 void Menu_LoadFromSDR(Menu_Handle_t *m,
-                       bool agc_fast, bool nb, bool nr, int16_t rit,
+                       uint8_t agc_speed, bool nb, bool nr, int16_t rit,
                        uint8_t vol, uint8_t mic_gain, uint8_t digi_gain,
-                       uint8_t sq, uint32_t step,
+                       uint8_t sq, uint32_t step, uint32_t bw_hz,
                        uint8_t att, uint8_t band, uint8_t mode,
                        uint8_t usb_mode, uint8_t zoom,
                        bool ext_alc, uint8_t rf_power_pct, uint8_t pa_watts,
@@ -160,9 +160,9 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   * @brief  Đọc giá trị từ menu ra SDR state sau khi đóng.
   */
 void Menu_SaveToSDR(Menu_Handle_t *m,
-                     bool *agc_fast, bool *nb, bool *nr, int16_t *rit,
+                     uint8_t *agc_speed, bool *nb, bool *nr, int16_t *rit,
                      uint8_t *vol, uint8_t *mic_gain, uint8_t *digi_gain,
-                     uint8_t *sq, uint32_t *step,
+                     uint8_t *sq, uint32_t *step, uint32_t *bw_hz,
                      uint8_t *att, uint8_t *band, uint8_t *mode,
                      uint8_t *usb_mode, uint8_t *zoom,
                      bool *ext_alc, uint8_t *rf_power,

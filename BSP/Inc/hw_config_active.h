@@ -1,7 +1,7 @@
 /* hw_config_active.h -- CSDR Hardware Configuration (auto-generated)
  * DO NOT EDIT -- regenerate with:  python tools/hw_config.py
  *
- * Generated  : 2026-06-08 20:43:49
+ * Generated  : 2026-06-20 22:01:53
  * Controller : ST7796
  * Orientation: Landscape BGR
  * FMC width  : 16-bit

@@ -22,14 +22,45 @@ HAL_StatusTypeDef PCA9555_Init(PCA9555_t *dev, I2C_HandleTypeDef *hi2c, uint16_t
 {
   dev->hi2c = hi2c;
   dev->addr = addr;
-  dev->raw  = 0xFFFFU;   /* default: all high = all released */
+  dev->raw  = 0xFFFFU;
+  dev->dir0 = 0xFFU;   /* all inputs */
+  dev->dir1 = 0xFFU;
+  dev->out0 = 0x00U;
+  dev->out1 = 0x00U;
   dev->ok   = false;
 
-  /* Write Config0 + Config1: all 1s = all inputs */
   uint8_t cfg[3] = { PCA9555_REG_CONFIG0, 0xFFU, 0xFFU };
   HAL_StatusTypeDef ret = HAL_I2C_Master_Transmit(hi2c, addr, cfg, 3U, PCA9555_TIMEOUT_MS);
   dev->ok = (ret == HAL_OK);
   return ret;
+}
+
+HAL_StatusTypeDef PCA9555_ConfigDir(PCA9555_t *dev, uint8_t dir0, uint8_t dir1)
+{
+  dev->dir0 = dir0;
+  dev->dir1 = dir1;
+  uint8_t cfg[3] = { PCA9555_REG_CONFIG0, dir0, dir1 };
+  HAL_StatusTypeDef ret = HAL_I2C_Master_Transmit(dev->hi2c, dev->addr, cfg, 3U, PCA9555_TIMEOUT_MS);
+  dev->ok = (ret == HAL_OK);
+  return ret;
+}
+
+HAL_StatusTypeDef PCA9555_WritePort(PCA9555_t *dev, uint8_t port, uint8_t val)
+{
+  uint8_t reg = (port == 0U) ? PCA9555_REG_OUTPUT0 : PCA9555_REG_OUTPUT1;
+  if (port == 0U) dev->out0 = val; else dev->out1 = val;
+  uint8_t buf[2] = { reg, val };
+  HAL_StatusTypeDef ret = HAL_I2C_Master_Transmit(dev->hi2c, dev->addr, buf, 2U, PCA9555_TIMEOUT_MS);
+  if (ret != HAL_OK) dev->ok = false;
+  return ret;
+}
+
+HAL_StatusTypeDef PCA9555_SetPin(PCA9555_t *dev, uint8_t port, uint8_t pin, uint8_t val)
+{
+  uint8_t shadow = (port == 0U) ? dev->out0 : dev->out1;
+  if (val) shadow |=  (uint8_t)(1U << pin);
+  else     shadow &= ~(uint8_t)(1U << pin);
+  return PCA9555_WritePort(dev, port, shadow);
 }
 
 /**
