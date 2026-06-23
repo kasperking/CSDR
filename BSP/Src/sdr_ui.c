@@ -606,9 +606,10 @@ void SDR_UI_DrawTXSpectrum(const float *fft_db, uint16_t bins,
  * zoom=3 → ±6kHz    half= 32
  * zoom=4 → ±3kHz    half= 16
  * ─────────────────────────────────────────────────────────────────────────── */
-static uint8_t  s_spec_zoom = 0U;
-static uint32_t s_spec_sr   = 48000U;
-static uint16_t s_spec_bins = 256U;
+static uint8_t  s_spec_zoom     = 0U;
+static uint32_t s_spec_sr       = 48000U;
+static uint32_t s_spec_orig_sr  = 48000U;   /* SR at DrawFrame (never changes with zoom) */
+static uint16_t s_spec_bins     = 256U;
 
 /* Display-crop table (zoom 0 only, others use full decimated FFT) */
 static const uint8_t s_zoom_half[SPEC_ZOOM_COUNT] = { 128U, 128U, 128U, 128U };
@@ -727,8 +728,9 @@ static void draw_footer_rows(uint32_t half_hz)
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawFrame(uint32_t sample_rate, uint16_t fft_bins)
 {
-  s_spec_sr   = sample_rate ? sample_rate : 48000U;
-  s_spec_bins = fft_bins    ? fft_bins    : 256U;
+  s_spec_sr      = sample_rate ? sample_rate : 48000U;
+  s_spec_orig_sr = s_spec_sr;
+  s_spec_bins    = fft_bins    ? fft_bins    : 256U;
 
   LCD_Clear(UI_BG);
   draw_footer_rows(spec_half_span_hz());
@@ -1326,17 +1328,14 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 10U);  /* row 36: below divider */
   const uint16_t div_y  = (uint16_t)(freq_top + BIG_H + 7U);   /* row 33, centred in gap */
 #endif
-  /* RX/TX text-only badge (ST7796 only) — ST7789 uses right panel instead */
+  /* RX/TX text-only badge (ST7796 only) — ST7789 uses right panel instead.
+   * rt_by chosen so text rows (rt_by+2 .. rt_by+2+MED_H) coincide with
+   * mode_y (= freq_top + (BIG_H-MED_H)/2), giving side-by-side alignment. */
 #if LCD_PANEL != LCD_PANEL_ST7789
-  const uint16_t badge_y  = (uint16_t)(freq_top + BIG_H + 2U);
   const uint16_t rt_bad_w = (uint16_t)(2U * MED_W + 6U);
   const uint16_t rt_bad_h = (uint16_t)(MED_H + 4U);
   uint16_t rt_bx    = (uint16_t)(VFO_W - 22U - rt_bad_w);
-  const uint16_t rt_by    = (uint16_t)((ui->tx_mode
-      ? badge_y
-      : (uint16_t)(badge_y +
-          ((VFO_H > badge_y + rt_bad_h) ? (VFO_H - badge_y - rt_bad_h) / 2U : 0U)))
-      - 8U);
+  const uint16_t rt_by    = (uint16_t)(freq_top + (BIG_H - MED_H) / 2U - 2U);
 #else
   const uint16_t rt_bad_h = (uint16_t)(MED_H + 4U);
   const uint16_t rt_bx    = VFO_W;   /* out-of-range: disables legacy badge */
@@ -1395,13 +1394,6 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
     } else if (ui->rit_hz != 0) {
       if (row >= sub_y && (row - sub_y) < MED_H)
         ln_medstr(ln, 4U, row - sub_y, sub_str, UI_FREQ_SUB, UI_VFO_BG);
-    } else {
-      /* Mode label vertically aligned with badge */
-      if (row >= rt_by && (row - rt_by) < rt_bad_h) {
-        uint16_t br = row - rt_by;
-        if (br >= 2U && br < 2U + MED_H)
-          ln_medstr(ln, 4U, br - 2U, vfo_mode_str, UI_STATUS_LBL, UI_VFO_BG);
-      }
     }
 
     /* RX/TX: colored text only, transparent background */
@@ -1515,7 +1507,9 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 
   /* Right-panel changed: forces redraw of both sections on ST7789.
    * Landscape: rp_chg propagates to lower_chg so params (rows 19..58) all refresh.
-   * Portrait: params are in lower section → only mode/tx_mode need upper push. */
+   * Portrait: params are in lower section → only mode/tx_mode need upper push.
+   * ST7796: mode text sits at mode_x (right of freq digits) outside all sub-bands;
+   *         set rp_chg so the full upper section is pushed on mode change. */
   bool rp_chg = false;
 #if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
   rp_chg = !s_vfo_cache.valid
@@ -1531,6 +1525,9 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   rp_chg = !s_vfo_cache.valid
           || s_vfo_cache.mode    != ui->mode
           || s_vfo_cache.tx_mode != ui->tx_mode;
+#else /* ST7796 */
+  rp_chg = !s_vfo_cache.valid
+          || s_vfo_cache.mode    != ui->mode;
 #endif
 
   bool upper_chg = !s_vfo_cache.valid
@@ -2240,9 +2237,13 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
 
   for (uint16_t x = 0; x < SPEC_W; x++) {
     float    fbin = (float)b0 + (float)x * bpp;
-    uint16_t bi   = (uint16_t)(fbin + 0.5f);
-    if (bi >= bins) bi = (uint16_t)(bins - 1U);
-    s_spec_yf[x] = pwr_compress(fft_db[bi]);
+    uint16_t b_lo = (uint16_t)fbin;
+    float    t    = fbin - (float)b_lo;
+    if (b_lo >= bins) b_lo = (uint16_t)(bins - 1U);
+    uint16_t b_hi = (uint16_t)(b_lo + 1U);
+    if (b_hi >= bins) b_hi = b_lo;
+    float val = (1.0f - t) * fft_db[b_lo] + t * fft_db[b_hi];
+    s_spec_yf[x] = pwr_compress(val);
   }
 
   const uint16_t NO_SIG = (uint16_t)(SPEC_H - 1U);
@@ -2284,15 +2285,20 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
   uint16_t g3 = (uint16_t)(SPEC_H - (uint16_t)(0.25f * (float)SPEC_H));
   uint16_t cx = SPEC_W / 2U;
 
+  /* zoom_corr scales the ratio (computed against ADC sample rate) to the
+   * effective display span — without it the passband region stays fixed-width
+   * when zooming in even though the displayed span narrows. */
+  float zoom_corr = (s_spec_sr > 0U) ? ((float)s_spec_orig_sr / (float)s_spec_sr) : 1.0f;
+
   bool bw_lo_ok = (bw_lo_ratio > 0.0001f), bw_hi_ok = (bw_hi_ratio > 0.0001f);
   uint16_t bw_lo = 0U, bw_hi = 0U;
   if (bw_lo_ok) {
-    uint16_t off = (uint16_t)(bw_lo_ratio * (float)SPEC_W * cscale + 0.5f);
+    uint16_t off = (uint16_t)(bw_lo_ratio * (float)SPEC_W * cscale * zoom_corr + 0.5f);
     if (!off) off = 1U;
     bw_lo = (cx > off) ? (uint16_t)(cx - off) : 0U;
   }
   if (bw_hi_ok) {
-    uint16_t off = (uint16_t)(bw_hi_ratio * (float)SPEC_W * cscale + 0.5f);
+    uint16_t off = (uint16_t)(bw_hi_ratio * (float)SPEC_W * cscale * zoom_corr + 0.5f);
     if (!off) off = 1U;
     bw_hi = cx + off;
     if (bw_hi >= SPEC_W) bw_hi = SPEC_W - 1U;
@@ -2301,9 +2307,7 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
   uint16_t spec_sw      = SWAP16(0xC7FFU);   /* icy white-blue: top     */
   uint16_t spec_fill_sw = SWAP16(0x3D7FU);   /* muted cold cyan: body   */
   uint16_t pb_sw        = SWAP16(UI_SPEC_PASS);
-  /* Center marker colours: bright centre, black shadow for dark|white|dark */
   uint16_t cx_sw        = SWAP16(0xFFFFU);   /* bright white centre pixel     */
-  uint16_t cx_shadow    = SWAP16(0x0000U);   /* black shadow ± 1 px           */
   uint16_t dot_sw       = SWAP16(UI_SPEC_GRID);
 
   /* Passband shaded region: derive pixel span.
@@ -2332,14 +2336,9 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
       for (uint16_t bx = pb_x0; bx <= pb_x1 && bx < SPEC_W; bx++)
         row[bx] = pb_sw;
     }
-    /* Center marker: dark|white|dark — signal trace overlays it when present. */
-    if (cx > 0U && cx < SPEC_W - 1U) {
-      row[cx - 1U] = cx_shadow;
-      row[cx]      = cx_sw;
-      row[cx + 1U] = cx_shadow;
-    } else if (cx < SPEC_W) {
-      row[cx] = cx_sw;
-    }
+    /* Center carrier marker: single white pixel. No black flanks — they cause
+     * a dark slot across the empty spectrum portion above the noise floor. */
+    if (cx < SPEC_W) row[cx] = cx_sw;
   }
 
   /* Draw filled cyan/teal spectrum columns — bright top pixel, darker body. */
@@ -2408,14 +2407,20 @@ uint8_t SDR_UI_WaterfallPrecompute(const float *fft_db, uint16_t bins)
     s_wf_smooth[b] = WF_SMOOTH_ALPHA * s_wf_smooth[b]
                    + (1.0f - WF_SMOOTH_ALPHA) * fft_db[b];
 
+  /* Patch centre bin (nulled by spec_dc 1.5 Hz) into the smooth array so the
+   * lerp below can use it as b_lo or b_hi without a branch in the hot loop. */
+  uint16_t dc_bin = nb >> 1U;
+  if (dc_bin > 0U && dc_bin < (uint16_t)(nb - 1U))
+    s_wf_smooth[dc_bin] = (s_wf_smooth[dc_bin - 1U] + s_wf_smooth[dc_bin + 1U]) * 0.5f;
+
   for (uint16_t x = 0; x < WF_W; x++) {
-    uint16_t bi  = (uint16_t)((float)x / xs) + b0;
-    if (bi >= nb) bi = nb - 1U;
-    float pwr = s_wf_smooth[bi];
-    /* Fast log2-based compression (identical to pwr_compress used for spectrum).
-     * Maps power [~1e-8 .. 1.0] → index [0..255] on a log scale.
-     * Eliminates per-pixel log10f (~80 cycles on Cortex-M7) with no perceptible
-     * change in dynamic range or color palette appearance. */
+    float    fbin = (float)x / xs + (float)b0;
+    uint16_t b_lo = (uint16_t)fbin;
+    float    t    = fbin - (float)b_lo;
+    if (b_lo >= nb) b_lo = (uint16_t)(nb - 1U);
+    uint16_t b_hi = (uint16_t)(b_lo + 1U);
+    if (b_hi >= nb) b_hi = b_lo;
+    float pwr = (1.0f - t) * s_wf_smooth[b_lo] + t * s_wf_smooth[b_hi];
     int idx = (int)(pwr_compress(pwr) * 255.0f + 0.5f);
     if (idx < 0) idx = 0; else if (idx > 255) idx = 255;
     dst[x] = (uint8_t)idx;

@@ -176,6 +176,8 @@ typedef struct {
   bool       nb_on;
   bool       nr_on;
   bool       rf_agc_on;
+  uint8_t    usb_mode;     /*!< 0=Off 1=CAT 2=Audio                 */
+  bool       usb_iq_stream;/*!< true=raw IQ false=demodulated audio  */
 
   /* ── SI5351 per-band calibration (future) ───────────────────── */
   uint8_t    si5351_cal[32];

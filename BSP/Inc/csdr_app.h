@@ -42,7 +42,7 @@ extern "C" {
 #include <stdbool.h>
 
 /* Default LO offset used to initialise g_sdr.lo_offset_hz at boot. */
-#define LO_OFFSET_DEFAULT  00000U
+#define LO_OFFSET_DEFAULT  0U
 
 /* ── SDR State ───────────────────────────────────────────── */
 typedef enum {

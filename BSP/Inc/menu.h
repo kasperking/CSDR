@@ -15,11 +15,12 @@
   *  Cấu trúc menu (2 cấp):
   *
   *  Root
-  *   ├─ [RX]     → AGC / NB / NR / ATT / Squelch / RIT / Span / BW
+  *   ├─ [RX]     → BW / AGC / ATT / Squelch / Span / NR / NB / Notch / Notch Hz / RIT / RX Shift
   *   ├─ [Audio]  → Volume / Mic Gain / Digi Drive
   *   ├─ [Tuning] → Step / Band / Mode
-  *   ├─ [TX]     → RF Power / Ext ALC / TX Low / TX High / VOX / VOX Gain / VOX Delay
-  *   ├─ [System] → Backlight / USB / Calibration / Fct Reset / About
+  *   ├─ [TX]     → RF Power / VOX / VOX Gain / VOX Delay / TX Low / TX High / Ext ALC
+  *   ├─ [CW]     → CW Decode / Pitch / Speed / Keyer / Sidetone / BK-IN / BK Delay / CW Rev / Paddle Rev / Filter
+  *   ├─ [System] → Backlight / USB / USB Stream / Calibration / Factory Reset / About
   *   │                └─ [About] → Version / Build Date
   *   └─ SWR Scan  (root action)
   *
@@ -44,7 +45,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      49U   /* 7 groups + 42 leaf items */
+#define MENU_ITEM_COUNT      49U   /* 7 groups (incl. About sub-group) + 42 leaf items */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -60,12 +61,12 @@ extern "C" {
 #define MENU_VAL_COLOR      0xFFFFU   /* White value          */
 #define MENU_BORDER_COLOR   0x10A2U   /* Dark subtle border   */
 
-/* Well-known item indices */
-#define MENU_IDX_RFPOWER    21U
-#define MENU_IDX_TXLOW      23U
-#define MENU_IDX_TXHIGH     24U
-#define MENU_IDX_CW_GROUP   37U   /* CW root group                   */
-#define MENU_IDX_CWDEC      36U   /* CW Decode (parent = CW group)   */
+/* Well-known item indices — keep in sync with Menu_Init slot assignments */
+#define MENU_IDX_RFPOWER    23U   /* TX → RF Power   */
+#define MENU_IDX_TXLOW      27U   /* TX → TX Low     */
+#define MENU_IDX_TXHIGH     28U   /* TX → TX High    */
+#define MENU_IDX_CW_GROUP    4U   /* CW root group   */
+#define MENU_IDX_CWDEC      30U   /* CW → CW Decode  */
 
 /* Exported types ------------------------------------------------------------*/
 

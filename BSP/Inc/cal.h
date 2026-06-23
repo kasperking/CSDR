@@ -47,12 +47,11 @@ typedef struct {
 } Cal_Params_t;
 
 #define CAL_PARAMS_DEFAULT \
-  { 0, 0, 0, 0, 0, 0, 50, 0, 18000U, 0, 3 }
+  { 0, 0, 0, 0, 0, 0, 50, 0, 0U, 0, 3 }
 
 /* Run the calibration overlay.  Blocks until the user exits.
  * Returns true  → user chose Save; caller should apply + persist params.
- * Returns false → user cancelled; params may have been modified locally
- *                 by Reset Default but should be discarded by caller.
+ * Returns false → user cancelled; params are unchanged.
  * dsp: live DSP state; auto-cal routines read signal_power_db and arm
  *      DSP_CalStart/DSP_CalPoll via this pointer. */
 bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp);

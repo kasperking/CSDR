@@ -21,6 +21,7 @@
 #include "stm32h7xx_hal.h"
 #include "bpf_lpf.h"
 #include "w25q.h"
+#include "csdr_app.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -151,7 +152,7 @@ static const CalItem_t items_audio[] = {
 
 static const CalItem_t items_rf[] = {
   { "S-Meter Offs",  CAL_T_INT,    -60,    60,     1, &v_smeter_off},
-  { "LO Offset Hz",  CAL_T_INT,  10000, 25000,   100, &v_lo_offset },
+  { "LO Offset Hz",  CAL_T_INT,      0, 25000,   500, &v_lo_offset },
   { "Auto S-Meter",  CAL_T_ACTION, 0,0,0,            NULL         },
   { "Auto Noise Flr",CAL_T_ACTION, 0,0,0,            NULL         },
   { "Auto AGC Ref",  CAL_T_ACTION, 0,0,0,            NULL         },
@@ -383,6 +384,7 @@ static void auto_dc_cal(void)
   DSP_CalMeas_t res;
   bool timed_out = false;
   while (!DSP_CalPoll(s_dsp, &res)) {
+    CSDR_ProcessAudioPending();
     uint32_t e = HAL_GetTick() - t0;
     render_cal_progress("DC Cal: measuring...", e, 200U);
     if (e > 3000U) { timed_out = true; break; }
@@ -425,6 +427,7 @@ static void auto_iq_cal(void)
   DSP_CalMeas_t res;
   bool timed_out = false;
   while (!DSP_CalPoll(s_dsp, &res)) {
+    CSDR_ProcessAudioPending();
     uint32_t e = HAL_GetTick() - t0;
     render_cal_progress("IQ Cal: measuring...", e, 380U);
     if (e > 3000U) { timed_out = true; break; }
@@ -799,18 +802,39 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
 
       } else if (it->kind == TOP_RESET) {
         Cal_Params_t def = CAL_PARAMS_DEFAULT;
+        params->xtal_ppm         = def.xtal_ppm;
+        params->iq_gain          = def.iq_gain;
+        params->iq_phase         = def.iq_phase;
+        params->dc_i_offset      = def.dc_i_offset;
+        params->dc_q_offset      = def.dc_q_offset;
+        params->audio_gain_db    = def.audio_gain_db;
+        params->mic_gain         = def.mic_gain;
+        params->smeter_offset_db = def.smeter_offset_db;
+        params->lo_offset_hz     = def.lo_offset_hz;
+        params->pa_watts         = def.pa_watts;
+        params->pa_oc_limit_idx  = def.pa_oc_limit_idx;
+        /* Sync working vars so UI reflects reset values on any re-entry */
         v_xtal_ppm   = def.xtal_ppm;
-        v_iq_gain    = def.iq_gain;
-        v_iq_phase   = def.iq_phase;
+        v_iq_gain    = (int32_t)def.iq_gain;
+        v_iq_phase   = (int32_t)def.iq_phase;
         v_dc_i       = def.dc_i_offset;
         v_dc_q       = def.dc_q_offset;
-        v_audio_gain = def.audio_gain_db;
-        v_mic_gain   = def.mic_gain;
-        v_smeter_off = def.smeter_offset_db;
+        v_audio_gain = (int32_t)def.audio_gain_db;
+        v_mic_gain   = (int32_t)def.mic_gain;
+        v_smeter_off = (int32_t)def.smeter_offset_db;
         v_lo_offset  = (int32_t)def.lo_offset_hz;
         v_pa_idx     = pa_watts_to_idx(def.pa_watts);
-        v_oc_idx     = 3;   /* default 3.5A */
-        render_toplevel(cursor, scroll);
+        v_oc_idx     = (int32_t)def.pa_oc_limit_idx;
+        /* Reset all per-band cal to defaults and save immediately */
+        for (uint8_t bi = 0U; bi < BAND_COUNT; bi++) {
+          g_band_cal[bi].rx_gain_trim    = 0;
+          g_band_cal[bi].noise_floor_off = 0;
+          g_band_cal[bi].tx_drive_trim   = 0;
+          g_band_cal[bi].swr_scale       = 100;
+        }
+        Flash_SaveBandCal(&g_flash, g_band_cal);
+        render_cal_result("Reset to defaults", "Cal saved to flash");
+        return true;
 
       } else { /* TOP_EXIT */
         return false;
