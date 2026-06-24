@@ -1354,8 +1354,10 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 #endif
   uint16_t fx_base = (dig_area > total_w) ? (uint16_t)((dig_area - total_w) / 2U) : 2U;
 #if LCD_PANEL == LCD_PANEL_ST7796
-  fx_base = 2U + MED_W + 10U;  /* fixed: 10px gap after A/B indicator */
-  const uint16_t mode_x = (uint16_t)(fx_base + total_w + 10U);
+  /* Right-align digits: units column always at x=180 (= xx.xxx.xxx right edge) */
+  const uint16_t vfo_right_edge = 2U + MED_W + 10U + 8U * BIG_W + 2U * 6U;  /* 180 */
+  fx_base = (uint16_t)(vfo_right_edge - total_w);
+  const uint16_t mode_x = (uint16_t)(vfo_right_edge + 10U);  /* 190, fixed */
   const uint16_t mode_y = (uint16_t)(freq_top + (BIG_H - MED_H) / 2U);
   static const uint16_t s_mode_col[8] = {
       UI_MODE_AM, UI_MODE_FM,  UI_MODE_USB, UI_MODE_LSB,
@@ -1706,11 +1708,11 @@ static inline uint16_t sm_mark_x(int32_t bars)
 #if LCD_PANEL == LCD_PANEL_ST7796
 #  define RSSI_X       272U
 #  define RSSI_CLR_W    36U
-#  define RSSI_DB_MIN (-120)
+#  define RSSI_DB_MIN  (-99)   /* max "-99dBm"=6ch×6px=36px fits RSSI_CLR_W exactly */
 #  define RSSI_FMT    "%ddBm"
 #elif LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-   /* Landscape 320×20: S-value at val_x=162 (Font8x10), RSSI right after with "dB" unit.
-    * RSSI_X = ruler_end(158)+4+SM_VAL_CLR_W(48)+2 = 212; "-120dB"=36px fits in CLR_W=48. */
+   /* Landscape 320×20: S-value at val_x=162 (Font8x10), RSSI right after with "dBm" unit.
+    * RSSI_X = ruler_end(158)+4+SM_VAL_CLR_W(48)+2 = 212; "-120dBm"=7ch×6px=42px < CLR_W=48. */
 #  define RSSI_X       (SM_START_X + SM_RULER_W + 4U + SM_VAL_CLR_W + 2U)
 #  define RSSI_CLR_W    48U
 #  define RSSI_DB_MIN (-120)
@@ -1778,19 +1780,17 @@ static void draw_smeter_rows(int32_t bars)
       if (val_x < MTR_W)
         LCD_LineStrW(ln, val_x, fr, s_str, &Font8x10, mk_col, UI_MTR_BG);
 #endif
-      /* RSSI: at RSSI_X (ST7796=272 alongside S-value; ST7789 landscape=212; portrait=222 replaces S-value) */
+      /* RSSI: ST7796 shows it in INFO zone; other panels show inline here */
+#if LCD_PANEL != LCD_PANEL_ST7796
       if (fr < Font5x8.height && s_rssi_db > RSSI_DB_MIN - 1) {
         char rbuf[8];
         int rv = (int)s_rssi_db;
         if (rv < RSSI_DB_MIN) rv = RSSI_DB_MIN;
         if (rv > 0)           rv = 0;
         snprintf(rbuf, sizeof(rbuf), RSSI_FMT, rv);
-#if LCD_PANEL == LCD_PANEL_ST7796
-        LCD_LineStr(ln, RSSI_X, fr, rbuf, &Font5x8, UI_SMETER_TICK, UI_MTR_BG);
-#else
         LCD_LineStr(ln, RSSI_X, fr, rbuf, &Font5x8, mk_col, UI_MTR_BG);
-#endif
       }
+#endif
     }
 
     /* ── Major ticks: SM_TICK_H_MAJ rows tall, all 8 labeled positions ── */
@@ -1841,6 +1841,10 @@ void SDR_UI_DrawMeter(const SDR_UI_State_t *ui)
                  s_mtr_buf, (uint32_t)MTR_W * MTR_H);
 }
 
+#if LCD_PANEL == LCD_PANEL_ST7796
+static void rssi_info_draw(void);  /* defined near CW text section below */
+#endif
+
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_UpdateSMeter  – fast RX meter refresh (10 Hz)
  *
@@ -1881,6 +1885,10 @@ void SDR_UI_UpdateSMeter(float signal_db)
 
   s_rx_meter_bars = bars;
   s_rssi_db = rssi_db;
+
+#if LCD_PANEL == LCD_PANEL_ST7796
+  if (rssi_changed) rssi_info_draw();
+#endif
 
   if (!s_mtr_static_valid) {
     draw_smeter_rows(bars);
@@ -1938,19 +1946,21 @@ void SDR_UI_UpdateSMeter(float signal_db)
       uint16_t *ln = s_mtr_buf + (uint32_t)row * MTR_W;
       uint16_t  fr = row - row_top;
 #if LCD_PANEL == LCD_PANEL_ST7796 || (LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H)
-      /* ST7796 + ST7789 landscape: S-value and RSSI are independent regions */
+      /* ST7796: S-value only (RSSI moved to INFO zone). ST7789 landscape: S-value + RSSI. */
       if (bars_changed) {
         for (uint16_t x = val_x; x < val_x + SM_VAL_CLR_W && x < MTR_W; x++)
           ln[x] = SWAP16(UI_MTR_BG);
         if (val_x < MTR_W)
           LCD_LineStrW(ln, val_x, fr, s_str, &Font8x10, mk_col, UI_MTR_BG);
       }
+#if LCD_PANEL != LCD_PANEL_ST7796
       if (rssi_changed) {
         for (uint16_t x = RSSI_X; x < (uint16_t)(RSSI_X + RSSI_CLR_W) && x < MTR_W; x++)
           ln[x] = SWAP16(UI_MTR_BG);
         if (fr < Font5x8.height)
           LCD_LineStr(ln, RSSI_X, fr, rssi_str, &Font5x8, UI_SMETER_TICK, UI_MTR_BG);
       }
+#endif
 #else
       /* ST7789 portrait: RSSI at val_x replaces S-value */
       if (rssi_changed) {
@@ -2562,6 +2572,42 @@ static void cw_text_draw_rows(const char *text)
 
 void SDR_UI_DrawCWText(const char *text)  { cw_text_draw_rows(text); }
 void SDR_UI_ClearCWText(void)             { cw_text_draw_rows(NULL);  }
+
+/* RSSI display in the right column of INFO zone (below SBR, above spectrum).
+ * Writes only [SBR_X .. SBR_X+SBR_W-1] per row — CW text in the left portion is unaffected. */
+#if LCD_PANEL == LCD_PANEL_ST7796
+static void rssi_info_draw(void)
+{
+  /* number (Font8x10, uppercase-safe) + unit "dBm" (Font6x8, full lowercase) */
+  char numstr[8];
+  int rv = (int)s_rssi_db;
+  if (rv < -99) rv = -99;
+  if (rv >   0) rv =   0;
+  snprintf(numstr, sizeof(numstr), "%d", rv);
+
+  static const char unit[] = "dBm";
+  uint16_t num_w  = (uint16_t)(strlen(numstr) * (uint16_t)Font8x10.width);
+  uint16_t unit_w = (uint16_t)((sizeof(unit) - 1U) * (uint16_t)Font6x8.width);
+  uint16_t start_x = (uint16_t)(SBR_X + SBR_W - 2U - num_w - unit_w);
+  uint16_t unit_x  = start_x + num_w;
+
+  uint16_t num_y  = (uint16_t)((INFO_H - (uint16_t)Font8x10.height) / 2U);
+  uint16_t unit_y = (uint16_t)((INFO_H - (uint16_t)Font6x8.height)  / 2U);
+  uint16_t *ln    = LCD_GetLineBuf();
+
+  for (uint16_t row = 0U; row < INFO_H; row++) {
+    LCD_LineFill(ln, SBR_X, SBR_W, UI_BG);
+    if (row >= num_y && row < num_y + (uint16_t)Font8x10.height)
+      LCD_LineStrW(ln, start_x, row - num_y, numstr, &Font8x10, UI_STATUS_VAL, UI_BG);
+    if (row >= unit_y && row < unit_y + (uint16_t)Font6x8.height)
+      LCD_LineStr(ln, unit_x, row - unit_y, unit, &Font6x8, UI_STATUS_LBL, UI_BG);
+    LCD_PushWindow(SBR_X, (uint16_t)(INFO_Y + row),
+                   (uint16_t)(SBR_X + SBR_W - 1U), (uint16_t)(INFO_Y + row),
+                   ln + SBR_X, SBR_W);
+  }
+}
+#endif /* LCD_PANEL_ST7796 */
+
 #else
 void SDR_UI_DrawCWText(const char *text)  { (void)text; }
 void SDR_UI_ClearCWText(void)             {}

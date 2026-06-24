@@ -66,11 +66,12 @@ void USB_Audio_SetStreaming(USB_Audio_Handle_t *au, bool enable)
 /**
   * @brief  SAI DMA callback → ring buffer.
   *
-  *  SAI format: int32_t left-aligned 16-bit (bits [31:16]).
+  *  SAI format: int32_t, 16-bit right-justified in bits[15:0].
+  *  (STM32H7 SAI: DataSize < SlotSize → RX right-justified.)
   *  USB format: int16_t little-endian, L=I, R=Q interleaved.
   *
   *  Pipeline:
-  *   SAI_RX: [I_hi16 I_lo16][Q_hi16 Q_lo16] → USB: [I16][Q16] × 48
+  *   SAI_RX: [I32][Q32] (bits[15:0] valid) → USB: [I16][Q16] × 48
   */
 void USB_Audio_WriteRX(USB_Audio_Handle_t *au,
                         const int32_t *src, uint16_t samples)

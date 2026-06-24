@@ -482,7 +482,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _band_val = (int32_t)band;
   _mode_val = (int32_t)mode;
   _usb_val       = (int32_t)usb_mode;
-  _iq_stream_val = usb_iq_stream ? 1 : 0;
+  _iq_stream_val = usb_iq_stream ? 0 : 1;
   _zoom_val      = (int32_t)zoom;
   _alc_val  = ext_alc ? 1 : 0;
 
@@ -594,7 +594,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *cw_bk_delay_ms   = (uint16_t)(_bkdelay_val   >= 50  && _bkdelay_val  <= 2000 ? _bkdelay_val : 200);
   *cw_reverse       = (_cwrev_val != 0);
   *cw_filter_hz     = (uint16_t)(_cwfilter_val  >= 50  && _cwfilter_val <= 500  ? _cwfilter_val : 500);
-  *usb_iq_stream    = (_iq_stream_val != 0);
+  *usb_iq_stream    = (_iq_stream_val == 0);
   /* USER CODE END Menu_SaveToSDR_0 */
 }
 
