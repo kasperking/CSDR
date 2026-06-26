@@ -2417,12 +2417,6 @@ uint8_t SDR_UI_WaterfallPrecompute(const float *fft_db, uint16_t bins)
     s_wf_smooth[b] = WF_SMOOTH_ALPHA * s_wf_smooth[b]
                    + (1.0f - WF_SMOOTH_ALPHA) * fft_db[b];
 
-  /* Patch centre bin (nulled by spec_dc 1.5 Hz) into the smooth array so the
-   * lerp below can use it as b_lo or b_hi without a branch in the hot loop. */
-  uint16_t dc_bin = nb >> 1U;
-  if (dc_bin > 0U && dc_bin < (uint16_t)(nb - 1U))
-    s_wf_smooth[dc_bin] = (s_wf_smooth[dc_bin - 1U] + s_wf_smooth[dc_bin + 1U]) * 0.5f;
-
   for (uint16_t x = 0; x < WF_W; x++) {
     float    fbin = (float)x / xs + (float)b0;
     uint16_t b_lo = (uint16_t)fbin;

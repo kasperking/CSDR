@@ -192,6 +192,7 @@ typedef struct {
   uint8_t  active_vfo;             /*!< 0=VFO_A, 1=VFO_B (VS cmd) */
   bool     split_on;               /*!< Split: TX on VFO B        */
   bool     pa_on;                  /*!< PA preamp on/off (compatibility state) */
+  uint8_t  ag_raw;                 /*!< last AG raw value 0-255 for lossless GET */
   CAT_Callbacks_t cb;
   bool     initialized;
   /* Parser state — kept in handle so CAT_Init resets them on USB reconnect.

@@ -57,7 +57,7 @@ static const char *step_strs[] = { "1Hz","10Hz","100Hz","1KHz","10KHz","100KHz" 
 static const char *band_strs[] = { "160m","80m","60m","40m","30m",
                                     "20m","17m","15m","12m","10m","6m" };
 static const char *mode_strs[] = { "AM","FM","USB","LSB","CW","DIGU","DIGL","FDV" };
-static const char *usb_strs[]      = { "Off","CAT","Audio" };
+static const char *usb_strs[]      = { "Off","On" };
 static const char *iq_stream_strs[] = { "IQ","Demod" };
 static const char *zoom_strs[] = { "+/-24k","+/-12k","+/-6k","+/-3k" };
 
@@ -240,7 +240,7 @@ void Menu_Init(Menu_Handle_t *m)
 
   /* ── System group (parent = 5) ──────────────────────────── */
   m->items[40] = (MenuItem_t){ "Backlight",   MENU_TYPE_INT,   0,100,10,&_bl_val,        NULL,          0U,NULL,NULL,5 };
-  m->items[41] = (MenuItem_t){ "USB",         MENU_TYPE_ENUM,  0,0,0,   &_usb_val,       usb_strs,      3U,NULL,NULL,5 };
+  m->items[41] = (MenuItem_t){ "USB",         MENU_TYPE_ENUM,  0,0,0,   &_usb_val,       usb_strs,      2U,NULL,NULL,5 };
   m->items[42] = (MenuItem_t){ "USB Stream",  MENU_TYPE_ENUM,  0,0,0,   &_iq_stream_val, iq_stream_strs,2U,NULL,NULL,5 };
   m->items[43] = (MenuItem_t){ "Calibration", MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
   m->items[44] = (MenuItem_t){ "Factory Reset",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };

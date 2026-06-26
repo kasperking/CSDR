@@ -641,8 +641,6 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   FIR_Init_LPF(&dsp->fir_q,     bw, FIR_MAX_TAPS);
   FIR_Init_LPF(&dsp->fir_audio, 4000.0f / (float)sample_rate, 32U);
 
-  IIR_DCBlock_Init(&dsp->dc_block_i);
-  IIR_DCBlock_Init(&dsp->dc_block_q);
   IIR_DCBlock_Init(&dsp->dc_block_audio);
   IIR_DCBlock_Init(&dsp->dc_postmix_i);
   IIR_DCBlock_Init(&dsp->dc_postmix_q);
@@ -711,6 +709,7 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->notch_on = false;
   dsp->notch_hz = 1000.0f;
   Notch_Init(&dsp->notch, 1000.0f, sample_rate);
+  dsp->rx_volume_scale = 1.0f;
   /* USER CODE END DSP_Init_0 */
 }
 
@@ -781,8 +780,6 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   FIR_Init_LPF(&dsp->fir_q, bw_norm, FIR_MAX_TAPS);
 
   /* Reset all DC blockers on mode switch to avoid residue from previous mode */
-  IIR_DCBlock_Init(&dsp->dc_block_i);
-  IIR_DCBlock_Init(&dsp->dc_block_q);
   IIR_DCBlock_Init(&dsp->dc_postmix_i);
   IIR_DCBlock_Init(&dsp->dc_postmix_q);
   IIR_DCBlock_Init(&dsp->dc_block_audio);
@@ -959,7 +956,7 @@ void DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad)
  *             Read: (int16_t)(uint16_t)word
  *
  *  audio_out[]: int32 stereo [L0,R0, L1,R1, ...]
- *             Right-justified format for DAC output, data in bits[15:0].
+ *             SAI TX non-pack: 16-bit data right-justified in bits[15:0].
  *             Write: (int32_t)(int16_t)sample
  * ============================================================ */
 void DSP_Process(DSP_State_t *dsp,
@@ -995,10 +992,6 @@ void DSP_Process(DSP_State_t *dsp,
     float raw_i = ((float)adc_i - dsp->dc_i_static) * DSP_INV_32767;
     float raw_q = ((float)adc_q - dsp->dc_q_static) * DSP_INV_32767;
 
-    /* ── 2. Pre-mix DC block (removes remaining LF / residual ADC bias) */
-    raw_i = IIR_DCBlock_Process(&dsp->dc_block_i, raw_i);
-    raw_q = IIR_DCBlock_Process(&dsp->dc_block_q, raw_q);
-
     /* ── 3. NCO down-mix to baseband
      *       [mix_i]   [ cos  sin] [raw_i]
      *       [mix_q] = [-sin  cos] [raw_q]  (nco.sin_val is stored negated) */
@@ -1008,9 +1001,6 @@ void DSP_Process(DSP_State_t *dsp,
 
     /* ── 3b. Post-mix DC removal – kills residual LO leakage / QSD imbalance
      *        that survives the pre-mix blocker and would appear as center spike */
-    mix_i = IIR_DCBlock_Process(&dsp->dc_postmix_i, mix_i);
-    mix_q = IIR_DCBlock_Process(&dsp->dc_postmix_q, mix_q);
-
     /* ── 3b+. Cal: IQ mismatch measurement — post-DC-block, pre-correction.
      *          Accumulates I²/Q²/I·Q to compute gain and phase imbalance.
      *          A real signal must be present for a meaningful result. */
@@ -1230,8 +1220,9 @@ void DSP_Process(DSP_State_t *dsp,
     /* ── 8. AGC */
     audio = AGC_Process(&dsp->agc, audio);
 
-    /* ── 9. Write: right-justified 16-bit sample into 32-bit DAC word bits[15:0] */
-    int32_t out_val = (int32_t)(audio * 32767.0f);
+    /* ── 9. Write: 16-bit sample right-justified in bits[15:0] of 32-bit DMA word.
+     *           STM32H7 SAI non-pack: DataSize=16 in bits[15:0], bits[31:16] ignored by SAI. */
+    int32_t out_val = (int32_t)(audio * dsp->rx_volume_scale * 32767.0f);
     if (out_val >  32767)  out_val =  32767;
     if (out_val < -32768)  out_val = -32768;
     int32_t dac_word = (int32_t)(int16_t)out_val;

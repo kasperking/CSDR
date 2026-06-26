@@ -71,7 +71,8 @@ void USB_Audio_SetStreaming(USB_Audio_Handle_t *au, bool enable)
   *  USB format: int16_t little-endian, L=I, R=Q interleaved.
   *
   *  Pipeline:
-  *   SAI_RX: [I32][Q32] (bits[15:0] valid) → USB: [I16][Q16] × 48
+  *   SAI_RX: [Q32][I32] (bits[15:0] valid, QSD wiring: slot0=Q slot1=I)
+  *        → USB: [I16][Q16] × 48  (L=I R=Q — standard SDR convention)
   */
 void USB_Audio_WriteRX(USB_Audio_Handle_t *au,
                         const int32_t *src, uint16_t samples)
@@ -100,9 +101,11 @@ void USB_Audio_WriteRX(USB_Audio_Handle_t *au,
    * USB IRQ never touches rx_wr, so the write loop needs no critical section. */
   for (uint16_t i = 0U; i < samples; i++)
   {
-    /* SAI RX: 16-bit sample right-justified in bits[15:0]. */
-    int16_t i_samp = (int16_t)(uint16_t)src[i * 2U];
-    int16_t q_samp = (int16_t)(uint16_t)src[i * 2U + 1U];
+    /* SAI RX: 16-bit sample right-justified in bits[15:0].
+     * Hardware slot 0 = Q, slot 1 = I (QSD wiring); swap here so USB
+     * Left=I, Right=Q matches SDR software convention. */
+    int16_t i_samp = (int16_t)(uint16_t)src[i * 2U + 1U];
+    int16_t q_samp = (int16_t)(uint16_t)src[i * 2U];
 
     /* Write I */
     uint16_t pos = au->rx_wr;

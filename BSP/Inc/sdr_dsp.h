@@ -204,6 +204,10 @@ typedef struct {
   float      squelch_threshold_db;  /* -200 = disabled */
   bool       squelch_open;          /* current gate state */
 
+  /* Software volume scale: 0.0 (silent) .. 1.0 (full). Applied to audio
+   * samples before DAC output so volume works regardless of codec path. */
+  float      rx_volume_scale;
+
   /* Notch filter (audio-domain, post-demod, pre-AGC) */
   IIR_Biquad_t notch;
   bool         notch_on;

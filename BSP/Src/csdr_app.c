@@ -69,7 +69,7 @@ SDR_State_t g_sdr = {
   .freq_hz       = CSDR_FREQ_DEFAULT_HZ,
   .mode          = MODE_USB,
   .band_idx      = 3U,
-  .volume        = 78U,
+  .volume        = 20U,
   .bw_hz         = 3000U,
   .if_shift_hz   = 0,
   .squelch       = 0U,
@@ -131,8 +131,14 @@ static volatile int32_t  dbg_rx_sample_0     = 0;       /* Last sample [0] from 
 static volatile int32_t  dbg_rx_sample_1     = 0;       /* Last sample [1] from DMA */
 static volatile int32_t  dbg_tx_sample_0     = 0;       /* DSP output to DAC [0] */
 static volatile int32_t  dbg_tx_sample_1     = 0;       /* DSP output to DAC [1] */
+static volatile int32_t  dbg_tx_peak         = 0;       /* Peak |sample| in last block (proportional to vol) */
+static volatile uint32_t dbg_vol_scale_q16   = 0;       /* g_dsp.rx_volume_scale × 65536 (integer view) */
 static volatile uint8_t  dbg_force_tone      = 0;       /* set=1 in debugger → 1kHz test tone direct to DAC */
-static volatile uint32_t dbg_wm8731_ok       = 0;       /* WM8731 init result */
+static volatile uint32_t dbg_wm8731_ok         = 0;   /* WM8731 init result */
+static volatile uint32_t dbg_wm8731_vol_err    = 0;   /* WM8731_SetVolume fail count */
+static volatile uint32_t dbg_wm8731_i2c_err    = 0;   /* hi2c1.ErrorCode at last SetVolume fail */
+static volatile uint32_t dbg_wm8731_i2c_state  = 0;   /* hi2c1.State at last SetVolume fail */
+static volatile uint32_t dbg_wm8731_postinit_ok = 0;  /* post-SAI re-write: 0=all OK, else bitmask of failed steps */
 static volatile uint32_t dbg_si5351_ok       = 0;       /* SI5351 init result */
 static volatile uint32_t dbg_sai_error_cnt  = 0;       /* SAI error callback fires */
 /* I2C scanner results - xem trong debugger để biết WM8731 thật ở địa chỉ nào */
@@ -167,6 +173,14 @@ extern volatile uint32_t dbg_cat_parse_latency_us; /* last CAT_Process duration 
 extern char              dbg_cat_last_cmd[];        /* last complete command, NUL-terminated       */
 extern char              dbg_cat_last_resp[];       /* last non-empty response enqueued            */
 
+/* Debounced freq save: updated on any freq change; csdr_save_settings fires 3s later.
+ * s_save_on_disconnect: set by CSDR_CDC_ResetCAT so CSDR_Loop flushes immediately. */
+static uint32_t s_freq_save_tick      = 0U;
+static volatile bool s_save_on_disconnect = false;
+/* Suppress SAI stop/start volume apply for 500ms after USB connect so flrig
+ * init sequence completes before the ~15ms audio gap. 0 = no active window. */
+static volatile uint32_t s_usb_connect_tick = 0U;
+
 /* Waterfall adaptive-skip counters */
 static volatile uint32_t dbg_wf_skip_count  = 0U; /* waterfall frames suppressed by overload-hysteresis */
 static volatile uint8_t  dbg_ui_load_high   = 0U; /* 1 = system load too high for waterfall */
@@ -185,6 +199,7 @@ static volatile uint8_t dbg_disable_lcd_dma = 0;
 static void csdr_apply_volume(uint8_t vol);
 static void csdr_apply_tx(void);
 static void csdr_factory_reset(void);
+
 
 #define CSDR_UI_SPEC_RX_PERIOD_MS    75U    /* ~13 fps spectrum in RX — decoupled from waterfall */
 #define CSDR_UI_WF_RX_PERIOD_MS      75U    /* ~13 fps waterfall in RX */
@@ -395,7 +410,7 @@ void CSDR_Init(void)
       g_sdr.nr_on         = fs.nr_on;
       g_sdr.nb_level      = fs.nb_level;
       g_sdr.rf_agc_on     = fs.rf_agc_on;
-      g_sdr.usb_mode      = (fs.usb_mode <= 2U) ? fs.usb_mode : 1U;
+      g_sdr.usb_mode      = (fs.usb_mode <= 1U) ? fs.usb_mode : 1U;
       g_sdr.usb_iq_stream = fs.usb_iq_stream;
       g_sdr.ext_alc_on    = fs.ext_alc_on;
       /* TX / audio */
@@ -472,11 +487,10 @@ void CSDR_Init(void)
   HAL_Delay(10);
 
   /* WM8731 */
-  /* Compute WM8731 HP volume from g_sdr.volume using same formula as
-   * cat_set_volume: range 90-121 (−31 dB to 0 dB), 0 → hardware mute.
-   * g_sdr.volume may have been overridden by Flash_LoadSettings above. */
-  uint8_t wm_out_vol = (g_sdr.volume == 0U) ? 0x2FU
-                       : (uint8_t)(90U + ((uint16_t)g_sdr.volume * 31U / 100U));
+  /* Compute LHPVOL from flash-loaded volume.  Same formula as csdr_apply_volume.
+   * Boot recovery below guards vol=0; wm_out_vol is reused in the BYPASS-fix WM8731_Init. */
+  if (g_sdr.volume == 0U) g_sdr.volume = 20U;  /* recover vol=0 before formula */
+  uint8_t wm_out_vol = (uint8_t)(90U + ((uint16_t)g_sdr.volume * 31U / 100U));
   WM8731_Config_t wm = {
     .hi2c = &hi2c1, .i2c_addr = WM8731_I2C_ADDR,
     .sample_rate = CSDR_AUDIO_SAMPLE_RATE,
@@ -528,6 +542,9 @@ void CSDR_Init(void)
   AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_speed, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, g_sdr.nb_on, g_sdr.nb_level);
   DSP_SetSquelch(&g_dsp, g_sdr.squelch);
+  /* LHPVOL is set by wm_out_vol in the WM8731_Init BYPASS-fix block below (after SAI start).
+   * csdr_apply_volume is NOT called here — SAI has not started yet. */
+  g_dsp.rx_volume_scale = (g_sdr.volume == 0U) ? 0.0f : 1.0f;
   /* CW-specific DSP init (after DSP_Init which seeds 700 Hz) */
   DSP_SetCWPitch(&g_dsp, g_sdr.cw_pitch_hz, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetCWReverse(&g_dsp, g_sdr.cw_reverse);
@@ -641,15 +658,33 @@ void CSDR_Init(void)
       CSDR_AUDIO_BUF_TOTAL * 2U);
   HAL_Delay(10U);
 
-  /* Re-activate WM8731 now that SAI clocks are running.
-   * First activate may have failed because BCLK/LRCK weren't running.
-   * Register 0x09 (Active) = 0x0001 → I2C write:
-   *   byte 0: (0x09 << 1) | (0x0001 >> 8) = 0x12 | 0x00 = 0x12
-   *   byte 1: 0x0001 & 0xFF = 0x01 */
+  /* WM8731 BYPASS fix: WM8731 resets ALL registers (incl BYPASS=1, DACPD, IWL) on first MCLK.
+   * WM8731 NACKs all I2C while MCLK is active (confirmed: disconnect MCLK → writes succeed).
+   * Fix: stop SAI (MCLK off) → full WM8731_Init (all 9 registers) → restart SAI.
+   * Second MCLK start retains the registers written during MCLK-off. */
   {
-    uint8_t wm_activate[2] = { 0x12U, 0x01U };
-    HAL_I2C_Master_Transmit(&hi2c1, WM8731_I2C_ADDR,
-                             wm_activate, 2U, 100U);
+    HAL_SAI_DMAStop(&hsai_BlockA1);
+    HAL_SAI_DMAStop(&hsai_BlockB1);
+    HAL_Delay(5U);  /* let MCLK line discharge */
+
+    WM8731_Config_t wm_fix = {
+      .hi2c         = &hi2c1,
+      .i2c_addr     = WM8731_I2C_ADDR,
+      .sample_rate  = CSDR_AUDIO_SAMPLE_RATE,
+      .input_volume = 23U,
+      .output_volume = wm_out_vol,
+      .line_in      = true
+    };
+    dbg_wm8731_postinit_ok = (uint32_t)WM8731_Init(&wm_fix);  /* 0=HAL_OK */
+
+    /* Restart SAI — TX master first, then RX slave */
+    RuntimeDiag_TxHalfFilled(0U);
+    RuntimeDiag_TxHalfFilled(1U);
+    HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t*)s_tx_buf,
+        CSDR_AUDIO_BUF_TOTAL * 2U);
+    HAL_Delay(10U);
+    dbg_sai_init_ret = HAL_SAI_Receive_DMA(&hsai_BlockB1, (uint8_t*)s_rx_buf,
+        CSDR_AUDIO_BUF_TOTAL * 2U);
   }
 
   /* ── Self-test: record hardware presence, trigger top-bar warning if any fail ──
@@ -739,7 +774,7 @@ static void csdr_process_audio_pending(void)
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
     /* Feed USB ring from main-loop context, not ISR, to avoid starving the
      * USB OTG interrupt handler when the host opens the audio stream. */
-    if (g_usb_audio.usb_streaming && g_sdr.usb_iq_stream)
+    if (g_usb_audio.usb_streaming && g_sdr.usb_iq_stream && g_sdr.usb_mode != 0U)
       USB_Audio_WriteRX(&g_usb_audio, s_rx_buf, CSDR_AUDIO_BLOCK_SIZE);
     dbg_rx_sample_0 = s_rx_buf[0];
     dbg_rx_sample_1 = s_rx_buf[1];
@@ -749,7 +784,7 @@ static void csdr_process_audio_pending(void)
     } else {
       DSP_Process(&g_dsp, s_rx_buf, s_tx_buf, CSDR_AUDIO_BLOCK_SIZE);
     }
-    if (g_usb_audio.usb_streaming && !g_sdr.usb_iq_stream && !g_sdr.tx_mode)
+    if (g_usb_audio.usb_streaming && !g_sdr.usb_iq_stream && !g_sdr.tx_mode && g_sdr.usb_mode != 0U)
       USB_Audio_WriteRX(&g_usb_audio, s_tx_buf, CSDR_AUDIO_BLOCK_SIZE);
     RuntimeDiag_AudioBlockEnd();
     dbg_dsp_process_cnt++;
@@ -767,6 +802,15 @@ static void csdr_process_audio_pending(void)
     }
     dbg_tx_sample_0 = s_tx_buf[0];
     dbg_tx_sample_1 = s_tx_buf[1];
+    dbg_vol_scale_q16 = (uint32_t)(g_dsp.rx_volume_scale * 65536.0f);
+    {
+      int32_t pk = 0;
+      for (uint32_t _i = 0; _i < CSDR_AUDIO_BLOCK_SIZE * 2U; _i++) {
+        int32_t v = s_tx_buf[_i]; if (v < 0) v = -v;
+        if (v > pk) pk = v;
+      }
+      dbg_tx_peak = pk;
+    }
     /* s_tx_buf: aligned(32), size 2048 B — 32-byte aligned ✓ */
     SCB_CleanDCache_by_Addr((uint32_t*)s_tx_buf,
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
@@ -780,7 +824,7 @@ static void csdr_process_audio_pending(void)
      * Size 2048 B — 32-byte aligned ✓ */
     SCB_InvalidateDCache_by_Addr((uint32_t*)(s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2),
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
-    if (g_usb_audio.usb_streaming && g_sdr.usb_iq_stream)
+    if (g_usb_audio.usb_streaming && g_sdr.usb_iq_stream && g_sdr.usb_mode != 0U)
       USB_Audio_WriteRX(&g_usb_audio,
                          s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                          CSDR_AUDIO_BLOCK_SIZE);
@@ -792,7 +836,7 @@ static void csdr_process_audio_pending(void)
       DSP_Process(&g_dsp, s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                    s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2, CSDR_AUDIO_BLOCK_SIZE);
     }
-    if (g_usb_audio.usb_streaming && !g_sdr.usb_iq_stream && !g_sdr.tx_mode)
+    if (g_usb_audio.usb_streaming && !g_sdr.usb_iq_stream && !g_sdr.tx_mode && g_sdr.usb_mode != 0U)
       USB_Audio_WriteRX(&g_usb_audio,
                          s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                          CSDR_AUDIO_BLOCK_SIZE);
@@ -1002,11 +1046,13 @@ void CSDR_Loop(void)
     RuntimeDiag_WatchdogRefreshIfHealthy(now_c);
     PWR_Poll();
     FlashProto_Process();
-    if ((now_c - s_crit_cat_ms) >= 10U) {
-      s_crit_cat_ms = now_c;
-      CAT_Process(&g_cat);
+    if (g_sdr.usb_mode != 0U) {
+      if ((now_c - s_crit_cat_ms) >= 10U) {
+        s_crit_cat_ms = now_c;
+        CAT_Process(&g_cat);
+      }
+      CAT_FlushTX(&g_cat);
     }
-    CAT_FlushTX(&g_cat);
     return;
   }
 
@@ -1378,7 +1424,7 @@ void CSDR_Loop(void)
 
   if (now - t_cat    >= 10U) {
     t_cat = now;
-    CAT_Process(&g_cat);
+    if (g_sdr.usb_mode != 0U) CAT_Process(&g_cat);
     /* Apply hardware changes deferred by CAT handlers — all blocking I2C/SPI/GPIO
      * happens here in main-loop context, never inside the CAT parser. */
     if (g_sdr.cat_freq_dirty) {
@@ -1393,10 +1439,12 @@ void CSDR_Loop(void)
       }
     }
     if (g_sdr.cat_vol_dirty) {
-      g_sdr.cat_vol_dirty = false;
-      uint8_t _wv = (g_sdr.volume == 0U) ? 0x2FU
-                  : (uint8_t)(90U + ((uint16_t)g_sdr.volume * 31U / 100U));
-      WM8731_SetVolume(&hi2c1, WM8731_I2C_ADDR, _wv, _wv);
+      /* Defer SAI stop/start for 500ms after USB connect — keeps CAT responses timely
+       * during flrig init sequence; dirty flag stays set and fires after window closes. */
+      if (!s_usb_connect_tick || (now - s_usb_connect_tick) >= 500U) {
+        g_sdr.cat_vol_dirty = false;
+        csdr_apply_volume(g_sdr.volume);
+      }
     }
     if (g_sdr.cat_mode_dirty) {
       g_sdr.cat_mode_dirty = false;
@@ -1437,6 +1485,13 @@ void CSDR_Loop(void)
                      + sl_sign * (int32_t)g_sdr.sl_hz;
       DSP_SetIFShift(&g_dsp, eff_if, CSDR_AUDIO_SAMPLE_RATE);
     }
+    /* Debounced freq save: write flash 3 s after the last freq change,
+     * or immediately if flrig disconnected with a pending unsaved change. */
+    if (s_save_on_disconnect || (s_freq_save_tick && (now - s_freq_save_tick) >= 3000U)) {
+      s_freq_save_tick      = 0U;
+      s_save_on_disconnect  = false;
+      csdr_save_settings();
+    }
     USB_Audio_Process(&g_usb_audio);
     /* Discard buffered PC TX audio when not transmitting.
      * Without this the ring fills to 9216 bytes and stays there,
@@ -1459,7 +1514,7 @@ void CSDR_Loop(void)
    * Positioned AFTER CAT_Process so new responses are drained on the same
    * tick they are enqueued.  On non-Process ticks this retries any remaining
    * FIFO bytes that were deferred by a previous busy-guard hit. */
-  CAT_FlushTX(&g_cat);
+  if (g_sdr.usb_mode != 0U) CAT_FlushTX(&g_cat);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1503,6 +1558,10 @@ void CSDR_CDC_ResetCAT(void)
   g_cat.rx_len = 0U;
   __set_BASEPRI(0U);
   CAT_Init(&g_cat, &saved_cb);
+  /* If a freq change was pending (not yet flushed by debounce timer), save on next loop tick */
+  if (s_freq_save_tick) s_save_on_disconnect = true;
+  /* Open a 500ms window to suppress SAI stop/start volume apply during flrig init */
+  s_usb_connect_tick = HAL_GetTick();
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1600,7 +1659,7 @@ static void csdr_factory_reset(void)
   g_sdr.freq_hz          = CSDR_FREQ_DEFAULT_HZ;
   g_sdr.mode             = MODE_USB;
   g_sdr.band_idx         = 3U;
-  g_sdr.volume           = 78U;
+  g_sdr.volume           = 20U;
   g_sdr.bw_hz            = 3000U;
   g_sdr.sl_hz            = 0U;
   g_sdr.if_shift_hz      = 0;
@@ -1633,7 +1692,7 @@ static void csdr_factory_reset(void)
   g_sdr.vfo_b.bw_hz      = 3000U;
   g_sdr.vfo_b.sl_hz      = 0U;
   g_sdr.vfo_b.if_shift_hz = 0;
-  g_sdr.usb_mode         = 1U;   /* CAT */
+  g_sdr.usb_mode         = 1U;   /* On */
   g_sdr.usb_iq_stream    = false;
   g_sdr.cw_decode_on     = false;
   g_sdr.cw_pitch_hz      = 700U;
@@ -1680,7 +1739,7 @@ static void csdr_factory_reset(void)
   g_cw_keyer.bkin           = (CWBkin_t)0U;
   g_cw_keyer.bk_delay_ms   = 200U;
   g_cw_dec.dit_ms           = 1200U / 20U;
-  csdr_apply_volume(78U);
+  csdr_apply_volume(20U);
   csdr_save_settings();
   g_sdr.display_dirty |= DIRTY_ALL;
 }
@@ -1704,6 +1763,7 @@ static void csdr_handle_encoder(void)
     uint8_t b = BPF_FreqToBand(g_sdr.freq_hz);
     if (b != 0xFFU && b != g_sdr.band_idx) { BPF_SetBand(b); g_sdr.band_idx = b; }
     g_sdr.display_dirty |= DIRTY_VFO;
+    s_freq_save_tick = HAL_GetTick();  /* arm debounced save */
   }
   if (Encoder_GetButton(&g_encoder)) {
     if (BandSel_IsOpen()) {
@@ -1842,7 +1902,7 @@ static void csdr_handle_keys(void)
     if (Menu_IsOpen(&g_menu)) {
       Menu_Up(&g_menu);
     } else {
-      uint8_t v = (g_sdr.volume >= 2U) ? (g_sdr.volume - 2U) : 0U;
+      uint8_t v = (g_sdr.volume >= 1U) ? (g_sdr.volume - 1U) : 0U;
       csdr_apply_volume(v);
     }
   }
@@ -1851,7 +1911,7 @@ static void csdr_handle_keys(void)
   if (Key_PressOrRepeat(&k_f2)) {
     if (Menu_IsOpen(&g_menu)) Menu_Down(&g_menu);
     else {
-      uint8_t v = (g_sdr.volume <= 98U) ? (g_sdr.volume + 2U) : 100U;
+      uint8_t v = (g_sdr.volume <= 99U) ? (g_sdr.volume + 1U) : 100U;
       csdr_apply_volume(v);
     }
   }
@@ -2418,6 +2478,7 @@ static void     cat_set_freq(uint32_t f)
   g_sdr.freq_hz = f;
   g_sdr.cat_freq_dirty = true; /* SI5351 + DSP NCO applied by CSDR_Loop */
   g_sdr.display_dirty |= DIRTY_VFO;
+  s_freq_save_tick = HAL_GetTick();  /* arm debounced save */
 }
 static void     cat_set_mode(uint8_t m)
 {
@@ -2464,15 +2525,39 @@ static void     cat_set_att(uint8_t lv)
   g_sdr.display_dirty |= DIRTY_HDR;
 }
 
-/* Immediate volume apply — WM8731 I2C updated synchronously.
- * Called from key handler and menu; safe in main-loop context. */
+/* Immediate volume apply — WM8731 LHPVOL updated via SAI stop/write/restart.
+ * WM8731 NACKs all I2C when MCLK is active; must stop SAI to write LHPVOL.
+ * Matches main-branch architecture: hardware LHPVOL controls volume, no rx_volume_scale. */
 static void csdr_apply_volume(uint8_t vol)
 {
   if (vol > 100U) vol = 100U;
   g_sdr.volume = vol;
+
+  /* Soft-mute DSP immediately so SAI TX is silent during the stop/start gap */
+  g_dsp.rx_volume_scale = 0.0f;
+
+  /* Stop SAI — kills MCLK, WM8731 now accepts I2C */
+  HAL_SAI_DMAStop(&hsai_BlockA1);
+  HAL_SAI_DMAStop(&hsai_BlockB1);
+  HAL_Delay(5U);
+
+  /* Write WM8731 LHPVOL — same formula as main branch */
   uint8_t wm_vol = (vol == 0U) ? 0x2FU
                                 : (uint8_t)(90U + ((uint16_t)vol * 31U / 100U));
   WM8731_SetVolume(&hi2c1, WM8731_I2C_ADDR, wm_vol, wm_vol);
+
+  /* Restart SAI — TX master first, RX slave after */
+  RuntimeDiag_TxHalfFilled(0U);
+  RuntimeDiag_TxHalfFilled(1U);
+  HAL_SAI_Transmit_DMA(&hsai_BlockA1, (uint8_t*)s_tx_buf,
+      CSDR_AUDIO_BUF_TOTAL * 2U);
+  HAL_Delay(10U);
+  HAL_SAI_Receive_DMA(&hsai_BlockB1, (uint8_t*)s_rx_buf,
+      CSDR_AUDIO_BUF_TOTAL * 2U);
+
+  /* Restore DSP scale: 1.0 for vol>0 (LHPVOL handles attenuation), 0 for mute */
+  g_dsp.rx_volume_scale = (vol == 0U) ? 0.0f : 1.0f;
+
   g_sdr.display_dirty |= DIRTY_SBL;
 }
 

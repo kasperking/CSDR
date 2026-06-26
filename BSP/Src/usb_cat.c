@@ -732,6 +732,12 @@ void CAT_Init(CAT_Handle_t *cat, const CAT_Callbacks_t *cb)
     cat->active_vfo = 0U;
     cat->split_on   = false;
 
+    /* Seed ag_raw from current volume so GET is consistent before first SET */
+    {
+        uint8_t vol = cat->cb.get_volume ? cat->cb.get_volume() : 50U;
+        cat->ag_raw = (uint8_t)((uint32_t)vol * 255U / 100U);
+    }
+
     cat->initialized = true;
     cat->rx_len      = 0U;
     /* parser_cmd, parser_len, parser_last_rx_tick zeroed by memset above */
@@ -1133,22 +1139,21 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
 
     /* AG — volume control: GET returns AG0nnn; (0-255), SET applies via callback.
      * TS-2000 format: AG0P2; where P2 = 000-255 (channel 0 = main receiver).
-     * Internal volume is 0-100; scale on both sides.
-     * SET is ACK-only — flrig TS-2000 uses sendCommand() with no readback. */
+     * ag_raw caches the last raw 0-255 value so GET echoes exactly what SET sent
+     * — avoids the rounding error from round-tripping through the 0-100 internal scale. */
     else if (cmd[0] == 'A' && cmd[1] == 'G') {
         if (cmd[2] == '\0' || (cmd[2] == '0' && cmd[3] == '\0')) {
-            /* GET: AG; or AG0; */
-            uint8_t  vol = cat->cb.get_volume ? cat->cb.get_volume() : 100U;
-            uint32_t ag  = (uint32_t)vol * 255U / 100U;
-            if (ag > 255U) ag = 255U;
+            /* GET: AG; or AG0; — return raw value losslessly */
             char *p = resp;
             *p++ = 'A'; *p++ = 'G'; *p++ = '0';
-            p = cat_put_u32(p, ag, 3U);
+            p = cat_put_u32(p, cat->ag_raw, 3U);
             *p++ = ';'; *p = '\0';
         } else if (cmd[2] == '0') {
-            /* SET: AG0nnn; — scale 0-255 → 0-100 and apply */
+            /* SET: AG0nnn; — cache raw, scale 0-255 → 0-100 and apply */
             uint32_t ag  = cat_parse_u(&cmd[3], 3U);
-            uint8_t  vol = (uint8_t)(ag * 100U / 255U);
+            if (ag > 255U) ag = 255U;
+            cat->ag_raw  = (uint8_t)ag;
+            uint8_t  vol = (uint8_t)((ag * 100U + 127U) / 255U);  /* round, not truncate */
             if (cat->cb.set_volume) cat->cb.set_volume(vol);
             /* ACK-only: AG is in suppress list below */
         }
