@@ -32,6 +32,7 @@
 #include "runtime_diag.h"
 #include "lcd_dma.h"    /* LCD_Wait / LCD_PushWindowAsync / diagnostics */
 #include "selftest.h"   /* g_selftest, SelfTest_AnyFail — top-bar HW warnings */
+#include "pa_protect.h" /* PA_State_t / PA_Fault_t for TX warning overlay */
 #include "core_cm7.h"   /* DWT->CYCCNT for chunk render timing */
 #include <string.h>
 #include <stdio.h>
@@ -129,6 +130,13 @@ static uint16_t s_spec_py     [SPEC_W]
 static uint16_t s_spec_strip[SPEC_CHUNK_ROWS * SPEC_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 
+/* PA warn zone: full INFO-zone buffer (ST7796 only: 24×480×2 = 23 KB).
+ * Not allocated on ST7789 (INFO_H = 0). */
+#if INFO_H > 0
+static uint16_t s_info_buf[INFO_H][LCD_W]
+    __attribute__((aligned(32), section(".DMA_SRAM")));
+#endif
+
 /* WF pre-compute: two uint8_t line buffers (double-buffer for DSP/UI split) */
 static uint8_t  s_wf_idx[2][WF_W];   /* 2 × WF_W bytes */
 static volatile uint8_t s_wf_fill = 0;
@@ -138,6 +146,10 @@ static volatile bool s_wf_suppressed = false;
 
 /* TX zone blank flag — cleared on TX→RX so next TX session re-blanks */
 static bool s_tx_zone_blanked = false;
+
+/* PA warn INFO-zone cache */
+static PA_State_t s_pa_warn_drawn  = (PA_State_t)0xFFU;
+static PA_Fault_t s_pa_wflt_drawn  = (PA_Fault_t)0xFFU;
 
 /* CPU-only: IIR smoother + colour LUT + ring head */
 static float    s_wf_smooth[DSP_FFT_SIZE];
@@ -437,12 +449,48 @@ static uint32_t spec_push_partial(uint16_t x_lo, uint16_t x_hi);
 
 /* ── TX mode UI policy ───────────────────────────────────────────────────────
  * SetTXMode: called from csdr_apply_tx on every TX/RX transition.
+ *   RX→TX: blank SPEC and WF zones immediately so the display switches
+ *           without waiting for the first FFT frame.
  *   TX→RX: reset zone-blank flag so the next TX session re-blanks; also
  *           invalidate the RX spectrum prev-row cache so the first post-TX
  *           spectrum draw repaints from scratch rather than delta-skipping. */
+bool SDR_UI_IsTXZoneBlanked(void) { return s_tx_zone_blanked; }
+
 void SDR_UI_SetTXMode(bool tx_active)
 {
-  if (!tx_active) {
+  if (tx_active) {
+    if (!s_tx_zone_blanked) {
+      /* Blank SPEC zone — fill and push all strips */
+      buf_fill(&s_spec_buf[0][0], (uint32_t)SPEC_H * SPEC_W, UI_SPEC_BG);
+      for (uint16_t strip = 0U; strip < SPEC_H; strip += SPEC_CHUNK_ROWS) {
+        uint16_t rows = (uint16_t)(SPEC_H - strip);
+        if (rows > SPEC_CHUNK_ROWS) rows = SPEC_CHUNK_ROWS;
+        LCD_Wait();
+        LCD_PushWindowAsync(SPEC_X, (uint16_t)(SPEC_Y + strip),
+                            (uint16_t)(SPEC_X + SPEC_W - 1U),
+                            (uint16_t)(SPEC_Y + strip + rows - 1U),
+                            &s_spec_buf[strip][0], (uint32_t)SPEC_W * rows * 2U);
+      }
+      /* Blank WF zone */
+      memset(s_wf_buf, 0, sizeof(s_wf_buf));
+      for (uint16_t strip = 0U; strip < WF_H; strip += SPEC_CHUNK_ROWS) {
+        uint16_t rows = (uint16_t)(WF_H - strip);
+        if (rows > SPEC_CHUNK_ROWS) rows = SPEC_CHUNK_ROWS;
+        LCD_Wait();
+        LCD_PushWindowAsync(WF_X, (uint16_t)(WF_Y + strip),
+                            (uint16_t)(WF_X + WF_W - 1U),
+                            (uint16_t)(WF_Y + strip + rows - 1U),
+                            &s_wf_buf[strip][0], (uint32_t)WF_W * rows * 2U);
+      }
+      LCD_Wait();
+      s_tx_zone_blanked = true;
+      /* Invalidate delta-skip cache now: even if do_trip() fires before
+       * SetTXMode(false) is called (race via cat_tx_dirty, up to 10 ms),
+       * the first post-TX DrawSpectrum will do a full redraw rather than
+       * comparing new RX peaks against stale pre-TX peaks and delta-skipping. */
+      s_spec_py_valid   = false;
+    }
+  } else {
     s_tx_zone_blanked = false;
     s_spec_py_valid   = false;
   }
@@ -466,34 +514,6 @@ void SDR_UI_DrawTXSpectrum(const float *fft_db, uint16_t bins,
                             uint8_t mode, uint32_t sr)
 {
   if (!bins || !sr) return;
-
-  /* ── Lazy zone blanking on first TX call ────────────────────────────────── */
-  if (!s_tx_zone_blanked) {
-    /* Blank SPEC zone — fill with UI_SPEC_BG and push all strips. */
-    buf_fill(&s_spec_buf[0][0], (uint32_t)SPEC_H * SPEC_W, UI_SPEC_BG);
-    for (uint16_t strip = 0U; strip < SPEC_H; strip += SPEC_CHUNK_ROWS) {
-      uint16_t rows = (uint16_t)(SPEC_H - strip);
-      if (rows > SPEC_CHUNK_ROWS) rows = SPEC_CHUNK_ROWS;
-      LCD_Wait();
-      LCD_PushWindowAsync(SPEC_X, (uint16_t)(SPEC_Y + strip),
-                          (uint16_t)(SPEC_X + SPEC_W - 1U),
-                          (uint16_t)(SPEC_Y + strip + rows - 1U),
-                          &s_spec_buf[strip][0], (uint32_t)SPEC_W * rows * 2U);
-    }
-    /* Blank WF zone — zero the ring buffer and push all strips. */
-    memset(s_wf_buf, 0, sizeof(s_wf_buf));
-    for (uint16_t strip = 0U; strip < WF_H; strip += SPEC_CHUNK_ROWS) {
-      uint16_t rows = (uint16_t)(WF_H - strip);
-      if (rows > SPEC_CHUNK_ROWS) rows = SPEC_CHUNK_ROWS;
-      LCD_Wait();
-      LCD_PushWindowAsync(WF_X, (uint16_t)(WF_Y + strip),
-                          (uint16_t)(WF_X + WF_W - 1U),
-                          (uint16_t)(WF_Y + strip + rows - 1U),
-                          &s_wf_buf[strip][0], (uint32_t)WF_W * rows * 2U);
-    }
-    LCD_Wait();
-    s_tx_zone_blanked = true;
-  }
 
   /* ── Audio band window ───────────────────────────────────────────────────── *
    * fft_db is linear power after fftshift: [0]=−Fs/2, [bins/2]=DC,
@@ -1321,8 +1341,9 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   const uint16_t sub_y  = 34U;
   const uint16_t div_y  = 0xFFFFU;
 #elif LCD_PANEL == LCD_PANEL_ST7789
-  /* Portrait 240x320: sub-VFO below main digits (rows 34..49), params shifted to 46/55 */
-  const uint16_t sub_y  = 34U;
+  /* Portrait 240x320: sub-VFO rows 28..43 (MED 12x16); divider row 38 within it;
+   * params row A at 46 → 2-row gap after sub-VFO; no overlap. */
+  const uint16_t sub_y  = 28U;
   const uint16_t div_y  = 0xFFFFU;
 #else
   const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 10U);  /* row 36: below divider */
@@ -1369,6 +1390,17 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   fx_base = (fx_base >= 14U) ? (uint16_t)(fx_base - 14U) : 0U;
 #endif
 
+  /* VFO_SPLIT defined here (before the row loop) so pw_by can reference it.
+   * PW badge starts exactly at the split → always lands in the lower section,
+   * so lower_chg alone keeps it current without needing an upper-section push. */
+#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
+  const uint16_t VFO_SPLIT = 27U;
+#elif LCD_PANEL == LCD_PANEL_ST7789
+  const uint16_t VFO_SPLIT = 26U;
+#else
+  const uint16_t VFO_SPLIT = 28U;
+#endif
+
   for (uint16_t row = 0; row < VFO_H; row++) {
     uint16_t *ln = s_vfo_buf + (uint32_t)row * VFO_W;
 
@@ -1406,9 +1438,11 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
     }
 
 #if LCD_PANEL != LCD_PANEL_ST7789
-    /* Watts readout — MED font, right-aligned under TX badge, TX mode only */
+    /* Watts readout — MED font, right-aligned under TX badge, TX mode only.
+     * pw_by = VFO_SPLIT so the wattage text lives entirely in the lower section;
+     * lower_chg triggers on tx_power/pa_watts changes → no stale upper rows. */
     if (ui->tx_mode && pw_str[0] != '\0') {
-      uint16_t pw_by = (uint16_t)(rt_by + rt_bad_h);
+      const uint16_t pw_by = VFO_SPLIT;
       if (row >= pw_by && (row - pw_by) < MED_H) {
         uint16_t med_row = row - pw_by;
         uint16_t pw_len  = (uint16_t)(strlen(pw_str) * MED_W);
@@ -1495,23 +1529,11 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 #endif /* ST7789 landscape row rendering */
   }
 
-  /* Section-split: upper = rows 0..VFO_SPLIT-1, lower = rows VFO_SPLIT..VFO_H-1.
-   * Landscape ST7789: main digits end row 25; sub-VFO at 28..43 → split=27 puts it in lower.
-   * Portrait ST7789:  main digits end row 25; sub-VFO at 28..43 → split=26 puts it in lower.
-   * Other panels: split=28. */
-#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-  const uint16_t VFO_SPLIT = 27U;   /* sub-VFO (28..43) + NB/NR (41..58) all in lower */
-#elif LCD_PANEL == LCD_PANEL_ST7789
-  const uint16_t VFO_SPLIT = 26U;   /* sub-VFO (28..43) + params (46..62) all in lower */
-#else
-  const uint16_t VFO_SPLIT = 28U;
-#endif
-
   /* Right-panel changed: forces redraw of both sections on ST7789.
    * Landscape: rp_chg propagates to lower_chg so params (rows 19..58) all refresh.
    * Portrait: params are in lower section → only mode/tx_mode need upper push.
-   * ST7796: mode text sits at mode_x (right of freq digits) outside all sub-bands;
-   *         set rp_chg so the full upper section is pushed on mode change. */
+   * ST7796: mode text and RT badge ("TX"/"RX") both sit in the upper section;
+   *         add tx_mode so the upper section is pushed on every TX key/unkey. */
   bool rp_chg = false;
 #if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
   rp_chg = !s_vfo_cache.valid
@@ -1529,7 +1551,8 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
           || s_vfo_cache.tx_mode != ui->tx_mode;
 #else /* ST7796 */
   rp_chg = !s_vfo_cache.valid
-          || s_vfo_cache.mode    != ui->mode;
+          || s_vfo_cache.mode    != ui->mode
+          || s_vfo_cache.tx_mode != ui->tx_mode;  /* RT badge rows 6..21 in upper section */
 #endif
 
   bool upper_chg = !s_vfo_cache.valid
@@ -2009,10 +2032,15 @@ void SDR_UI_UpdateSMeter(float signal_db)
  *  Marker: sm_mark_x(alc_b) — no fill bar.
  *  Value text: one Font5x8 line (8 px) below bottom rail: "ALC XX%  SWR X.X"
  * ════════════════════════════════════════════════════════════════════════════ */
+/* TX_SWR_R0 (ST7796 only): SWR text placed in ruler right column (x=ruler_end+4=222),
+ * rows TX_SWR_R0..TX_SWR_R0+Font8x10.height-1 = 12..21.
+ * Ruler spans x=2..217; x=222+ is background in every ruler row — no overlap.
+ * 10/10 rows visible, zero clip. */
 #if LCD_PANEL == LCD_PANEL_ST7796
-#  define TX_VAL_R0  ((uint16_t)(SM_RAIL_BOT_R + 3U))   /* 2-row gap on ST7796 */
+#  define TX_SWR_R0  12U
 #else
-#  define TX_VAL_R0  ((uint16_t)(SM_RAIL_BOT_R + 2U))   /* 1-row gap on ST7789 */
+/* ST7789: SWR is suppressed (MTR too short). TX_VAL_R0 sets static_end only. */
+#  define TX_VAL_R0  ((uint16_t)(SM_RAIL_BOT_R + 2U))
 #endif
 
 static void tx_meter_render_rows(uint16_t row0, uint16_t row1,
@@ -2046,11 +2074,6 @@ static void tx_meter_render_rows(uint16_t row0, uint16_t row1,
   for (uint8_t t = 0U; t < 5U; t++)
     stx[t] = (uint16_t)(SM_START_X + (uint16_t)spos[t] * SM_UNIT_W);
 
-  /* Value-line x positions (below bottom rail) */
-  uint16_t alc_lbl_x = SM_START_X;
-  uint16_t alc_val_x = (uint16_t)(SM_START_X + 4U * Font6x8.width);  /* "ALC " = 4 chars */
-  uint16_t swr_lbl_x = (uint16_t)(SM_START_X + 9U * Font6x8.width);  /* after "ALC XXX%" */
-  uint16_t swr_val_x = (uint16_t)(SM_START_X + 13U * Font6x8.width);
 
   if (row1 >= MTR_H) row1 = MTR_H - 1U;
   for (uint16_t row = row0; row <= row1; row++) {
@@ -2096,14 +2119,17 @@ static void tx_meter_render_rows(uint16_t row0, uint16_t row1,
         ln[px] = pm;
     }
 
-    /* ── Value line: "ALC XX%   SWR X.X" below bottom rail ── */
-    if (row >= TX_VAL_R0 && (row - TX_VAL_R0) < (uint16_t)Font6x8.height) {
-      uint16_t fr = row - TX_VAL_R0;
-      LCD_LineStr(ln, alc_lbl_x, fr, "ALC", &Font6x8, UI_STATUS_LBL, UI_MTR_BG);
-      LCD_LineStr(ln, alc_val_x, fr, alc_val, &Font6x8, alc_col, UI_MTR_BG);
-      LCD_LineStr(ln, swr_lbl_x, fr, "SWR", &Font6x8, UI_STATUS_LBL, UI_MTR_BG);
-      LCD_LineStr(ln, swr_val_x, fr, swr_val, &Font6x8, swr_col, UI_MTR_BG);
+#if LCD_PANEL == LCD_PANEL_ST7796
+    /* SWR text: right-column overlay (x=ruler_end+4=222), rows TX_SWR_R0..TX_SWR_R0+9.
+     * Ruler content (ticks/rails/bar) ends at x=217; x=222+ is always background. */
+    if (row >= (uint16_t)TX_SWR_R0 && (row - (uint16_t)TX_SWR_R0) < (uint16_t)Font8x10.height) {
+      uint16_t fr  = row - (uint16_t)TX_SWR_R0;
+      uint16_t vx  = (uint16_t)(ruler_end + 4U);
+      uint16_t svx = (uint16_t)(vx + 4U * (uint16_t)Font8x10.width);
+      LCD_LineStrW(ln, vx,  fr, "SWR", &Font8x10, UI_STATUS_LBL, UI_MTR_BG);
+      LCD_LineStrW(ln, svx, fr, swr_val, &Font8x10, swr_col, UI_MTR_BG);
     }
+#endif
   }
 }
 
@@ -2135,14 +2161,21 @@ void SDR_UI_UpdateTXMeters(int32_t alc_pct, int32_t swr_x10)
   bool first = !s_tx_meter_active;
   if (first) s_tx_meter_active = true;
 
-  /* Static content: label band, ticks, rails — render + push on first frame */
+  /* Static content: label band (0..9), ticks (10..13), rails (14,22), SWR zone (12..21).
+   * ST7796: static_end=SM_RAIL_BOT_R=22 covers rows 0..22, which includes SWR rows 12..21.
+   * ST7789: static_end=TX_VAL_R0-1=19 (SWR suppressed). */
   if (first) {
-    uint16_t static_end = (TX_VAL_R0 - 1U < MTR_H) ? (TX_VAL_R0 - 1U) : (uint16_t)(MTR_H - 1U);
+#if LCD_PANEL == LCD_PANEL_ST7796
+    uint16_t static_end = (uint16_t)SM_RAIL_BOT_R;   /* 22 */
+#else
+    uint16_t static_end = (TX_VAL_R0 - 1U < (uint16_t)MTR_H) ? (uint16_t)(TX_VAL_R0 - 1U) : (uint16_t)(MTR_H - 1U);
+#endif
     tx_meter_render_rows(0U, static_end, alc_b, alc_pct, swr_x10);
     tx_meter_push_rows(0U, static_end);
   }
 
-  /* Dynamic: cursor zone — push when ALC bar position changes */
+  /* Dynamic: cursor zone (SM_RAIL_TOP_R..SM_RAIL_BOT_R) — push when ALC bar moves.
+   * On ST7796 this also re-renders SWR rows 14..21 (within the cursor zone range). */
   if (first || alc_b != s_tx_alc_bars) {
     uint16_t r0 = SM_RAIL_TOP_R;
     uint16_t r1 = SM_RAIL_BOT_R;
@@ -2152,18 +2185,89 @@ void SDR_UI_UpdateTXMeters(int32_t alc_pct, int32_t swr_x10)
     s_tx_alc_bars = alc_b;
   }
 
-  /* Dynamic: value line (ALC% + SWR) — push when either value changes */
-  if (first || alc_pct != s_tx_alc_pct || swr_x10 != s_tx_swr_x10) {
-    uint16_t r0 = TX_VAL_R0;
-    uint16_t r1 = (uint16_t)(TX_VAL_R0 + (uint16_t)Font6x8.height - 1U);
-    if (r0 < MTR_H) {
-      if (r1 >= MTR_H) r1 = MTR_H - 1U;
-      tx_meter_render_rows(r0, r1, alc_b, alc_pct, swr_x10);
-      tx_meter_push_rows(r0, r1);
-    }
+  /* Dynamic: SWR text update.
+   * ST7796: push TX_SWR_R0..TX_SWR_R0+9 (rows 12..21, full 10/10 rows, no clip).
+   *         Rows 12..13 (above cursor zone) only updated here, not in cursor push.
+   * ST7789: suppressed (zone too short for readable text). */
+  if (first || swr_x10 != s_tx_swr_x10) {
+#if LCD_PANEL == LCD_PANEL_ST7796
+    uint16_t r0 = (uint16_t)TX_SWR_R0;
+    uint16_t r1 = (uint16_t)(TX_SWR_R0 + (uint16_t)Font8x10.height - 1U);
+    tx_meter_render_rows(r0, r1, alc_b, alc_pct, swr_x10);
+    tx_meter_push_rows(r0, r1);
+#endif
     s_tx_alc_pct = alc_pct;
     s_tx_swr_x10 = swr_x10;
   }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ *  SDR_UI_UpdatePAWarn — persistent PA protection warning in the INFO zone.
+ *
+ *  ST7796: INFO zone (Y=120..144, 24 px) sits between the S-meter and spectrum.
+ *  This zone is NOT touched by any dirty-flag redraw path, so the warning
+ *  persists across TX→RX transitions, including PA TRIP.
+ *
+ *  When PA state is NORMAL the zone is cleared once and then left alone.
+ *  When PA state is not NORMAL the zone is redrawn on every call so it
+ *  survives SDR_UI_DrawFuncBar / SDR_UI_DrawCWText overwriting it.
+ *
+ *  ST7789 (INFO_H = 0): no-op — warning already appears in the left SPEC
+ *  strip via pa_warn_render_push() inside DrawTXSpectrum.
+ * ════════════════════════════════════════════════════════════════════════════ */
+void SDR_UI_UpdatePAWarn(PA_State_t state, PA_Fault_t fault)
+{
+#if INFO_H > 0
+  bool active     = (state != PA_STATE_NORMAL);
+  bool was_active = (s_pa_warn_drawn != PA_STATE_NORMAL &&
+                     s_pa_warn_drawn != (PA_State_t)0xFFU);
+
+  /* No active warning and nothing to clear: nothing to do. */
+  if (!active && !was_active) return;
+
+  /* Active warning and no change: still redraw to survive DrawFuncBar overwrites. */
+
+  s_pa_warn_drawn = state;
+  s_pa_wflt_drawn = fault;
+
+  const char *fault_s = (fault == PA_FAULT_OVERCURRENT) ? "! OVERCURRENT"
+                      : (fault == PA_FAULT_OVERTEMP)    ? "! OVERTEMP"
+                      : (fault == PA_FAULT_HIGH_SWR)    ? "! HIGH SWR"
+                      :                                    "! PA PROTECT";
+  const char *state_s = (state == PA_STATE_FOLDBACK)    ? "FOLDBACK"
+                      : (state == PA_STATE_LIMIT)        ? "POWER LIMIT"
+                      : (state == PA_STATE_TRIP)         ? "TX TRIPPED"
+                      : (state == PA_STATE_COOLDOWN)     ? "COOLDOWN"
+                      :                                    "";
+  uint16_t fg = (state >= PA_STATE_TRIP) ? UI_STATUS_OFF : UI_STATUS_WARN;
+
+  /* Two Font5x8 lines inside INFO_H (24 px on ST7796):
+   *   line 1 — fault : rows 2..9
+   *   line 2 — state : rows 11..18   (4 px gap at bottom)
+   *
+   * Only columns [0..SBR_X-1] are written — RSSI lives at [SBR_X..LCD_W-1]
+   * and is managed independently by rssi_info_draw(); never overwrite it. */
+  const uint16_t WARN_W = (uint16_t)SBR_X;   /* 392 px for ST7796 */
+  const uint16_t L1 = 2U;
+  const uint16_t L2 = 11U;
+  const uint16_t FH = (uint16_t)Font5x8.height;  /* = 8 */
+
+  for (uint16_t r = 0U; r < (uint16_t)INFO_H; r++) {
+    uint16_t *ln = s_info_buf[r];
+    LCD_LineFill(ln, 0U, WARN_W, UI_MTR_BG);
+    if (active) {
+      if (r >= L1 && r < L1 + FH)
+        LCD_LineStr(ln, 8U, r - L1, fault_s, &Font5x8, fg, UI_MTR_BG);
+      if (r >= L2 && r < L2 + FH)
+        LCD_LineStr(ln, 8U, r - L2, state_s, &Font5x8, fg, UI_MTR_BG);
+    }
+    LCD_PushWindow(0U, (uint16_t)(INFO_Y + r),
+                   (uint16_t)(WARN_W - 1U), (uint16_t)(INFO_Y + r),
+                   ln, WARN_W);
+  }
+#else
+  (void)state; (void)fault;
+#endif
 }
 
 /* ── Compat wrappers ─────────────────────────────────────────────────────── */

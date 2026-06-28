@@ -203,7 +203,7 @@ typedef struct {
   bool       paddle_reverse;     /* Swap DIT/DAH paddles                 */
   bool       cw_reverse;         /* CW reverse sideband flag             */
   bool       cw_decode_on;       /* CW decoder enable                    */
-  uint8_t    _cw_pad;            /* alignment padding                    */
+  uint8_t    tx_src;             /* TX audio source: 0=USB 1=MIC         */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;

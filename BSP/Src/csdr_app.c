@@ -332,6 +332,7 @@ static void csdr_save_settings(void)
   fs.cw_reverse     = g_sdr.cw_reverse ? 1U : 0U;
   fs.cw_filter_hz   = g_sdr.cw_filter_hz;
   fs.cw_decode_on   = g_sdr.cw_decode_on ? 1U : 0U;
+  fs.tx_src         = g_sdr.tx_src;
   fs.audio_gain_db   = g_sdr.audio_gain_db;
 
   /* Calibration */
@@ -440,6 +441,7 @@ void CSDR_Init(void)
       g_sdr.cw_reverse     = (fs.cw_reverse    != 0U);
       g_sdr.cw_filter_hz   = (fs.cw_filter_hz  >= 50U  && fs.cw_filter_hz  <= 500U) ? fs.cw_filter_hz   : 500U;
       g_sdr.cw_decode_on   = (fs.cw_decode_on  != 0U);
+      g_sdr.tx_src         = (fs.tx_src <= 1U) ? fs.tx_src : 0U;
       /* Calibration */
       g_sdr.xtal_ppm         = fs.xtal_ppm;
       g_sdr.dc_i_offset      = fs.dc_i_offset;
@@ -1106,6 +1108,8 @@ void CSDR_Loop(void)
   static uint32_t t_rfagc = 0U;
   static uint32_t t_pa_prot = 0U;
   static uint32_t t_vox = 0U;
+  static uint32_t t_tx_meter = 0U;
+  static uint32_t t_pa_warn = 0U;
   uint32_t now = HAL_GetTick();
 
   if (now - t_analog >= 100U) {
@@ -1189,7 +1193,9 @@ void CSDR_Loop(void)
       }
     }
   } else if (g_sdr.tx_mode) {
-    t_spec = now;  /* keep RX timer from firing immediately on TX→RX */
+    /* Do NOT reset t_spec here: let the RX spectrum timer run down so it fires
+     * immediately (or nearly so) when TX ends, rather than waiting a full
+     * 75 ms period after the transition. */
     if (now - t_tx_spec >= CSDR_UI_TX_SPEC_PERIOD_MS) {
       t_tx_spec = now;
       if (!dbg_disable_lcd_dma) {
@@ -1199,6 +1205,21 @@ void CSDR_Loop(void)
         RuntimeDiag_UiRenderEnd();
       }
     }
+    /* TX meter (ALC/SWR): update at 5 Hz — fast enough to track voice peaks. */
+    if (now - t_tx_meter >= 200U) {
+      t_tx_meter = now;
+      SDR_UI_UpdateTXMeters((int32_t)g_analog.alc_percent,
+                            (int32_t)(g_analog.swr_x100 / 10));
+    }
+  } else {
+    t_tx_meter = now;  /* reset so meter fires immediately on next TX */
+  }
+
+  /* PA protection warning in the INFO zone: refresh at 500 ms.
+   * Runs in both TX and RX mode so warning persists after a TRIP clears TX. */
+  if (now - t_pa_warn >= 500U) {
+    t_pa_warn = now;
+    SDR_UI_UpdatePAWarn(PA_Protect_GetState(), PA_Protect_GetFault());
   }
 
   /* Waterfall: ~13 fps in RX.  Frozen in TX to avoid the 480×72 FMC push
@@ -1256,9 +1277,9 @@ void CSDR_Loop(void)
       csdr_update_waterfall();
       RuntimeDiag_UiRenderEnd();
     }
-  } else if (g_sdr.tx_mode) {
-    t_wf = now;
   }
+  /* Do NOT reset t_wf in TX mode: let the waterfall timer fire as soon as
+   * TX ends rather than waiting another full 75 ms period. */
 
   uint32_t disp_period = g_sdr.tx_mode ? CSDR_UI_DISPLAY_TX_PERIOD_MS
                                        : CSDR_UI_DISPLAY_RX_PERIOD_MS;
@@ -1694,6 +1715,7 @@ static void csdr_factory_reset(void)
   g_sdr.vfo_b.if_shift_hz = 0;
   g_sdr.usb_mode         = 1U;   /* On */
   g_sdr.usb_iq_stream    = false;
+  g_sdr.tx_src           = 0U;   /* USB */
   g_sdr.cw_decode_on     = false;
   g_sdr.cw_pitch_hz      = 700U;
   g_sdr.cw_wpm           = 20U;
@@ -1875,6 +1897,7 @@ static void csdr_handle_keys(void)
         g_sdr.cw_bk_delay_ms, g_sdr.cw_reverse,
         g_sdr.cw_filter_hz,
         g_sdr.usb_iq_stream,
+        g_sdr.tx_src,
         menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
@@ -2048,6 +2071,17 @@ static void csdr_update_tx_spectrum(void)
 static void csdr_update_spectrum(void)
 {
   if (g_sdr.tx_mode || !g_dsp.fft_ready || Menu_IsOpen(&g_menu) || BandSel_IsOpen()) return;
+
+  /* Race-window guard: do_trip() sets tx_mode=false immediately but
+   * csdr_apply_tx() (which calls SetTXMode(false)) runs up to 10 ms later
+   * via cat_tx_dirty.  If the SPEC zone is still in TX-blanked state while
+   * we are already in RX mode, force SetTXMode(false) now so that the delta-
+   * skip cache is cleared and the full RX spectrum is drawn rather than
+   * comparing new peaks against stale pre-TX reference values. */
+  if (SDR_UI_IsTXZoneBlanked()) {
+    SDR_UI_SetTXMode(false);   /* idempotent if already called */
+  }
+
   g_dsp.fft_ready = false;
 
   float bw_lo_ratio = 0.0f, bw_hi_ratio = 0.0f;
@@ -2168,6 +2202,10 @@ static void csdr_refresh_display(void)
       RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     }
   }
+
+  /* PA warning: draw immediately after every refresh so it survives
+   * dirty redraws (including the DIRTY_ALL triggered by PA TRIP). */
+  SDR_UI_UpdatePAWarn(PA_Protect_GetState(), PA_Protect_GetFault());
 }
 
 static uint32_t default_bw_for_mode(SDR_Mode_t m)
@@ -2188,7 +2226,7 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m)
 static void menu_apply_cb(void)
 {
   uint8_t agc_speed; bool nb, nr, ext_alc, notch_en, vox_en, cw_dec, paddle_rev, cw_rev, iq_stream; int16_t rit, rxshift, notch_f;
-  uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr, vox_gain; uint32_t step, bw;
+  uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr, vox_gain, tx_src_new; uint32_t step, bw;
   uint16_t tx_low, tx_high, vox_delay;
   uint16_t cw_pitch, cw_filter, cw_bk_delay; uint8_t cw_wpm, keyer_mode, sidetone, cw_bkin;
   Menu_SaveToSDR(&g_menu, &agc_speed, &nb, &nr, &rit,
@@ -2196,7 +2234,8 @@ static void menu_apply_cb(void)
                   &ext_alc, &rfpwr, &tx_low, &tx_high, &rxshift, &notch_en, &notch_f,
                   &vox_en, &vox_gain, &vox_delay, &cw_dec,
                   &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
-                  &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream);
+                  &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream,
+                  &tx_src_new);
   if (tx_low != g_sdr.tx_audio_low_hz || tx_high != g_sdr.tx_audio_high_hz) {
     g_sdr.tx_audio_low_hz  = tx_low;
     g_sdr.tx_audio_high_hz = tx_high;
@@ -2254,6 +2293,13 @@ static void menu_apply_cb(void)
   }
   g_sdr.usb_mode      = usb;
   g_sdr.usb_iq_stream = iq_stream;
+  if (tx_src_new != g_sdr.tx_src) {
+    g_sdr.tx_src = tx_src_new;
+    /* Nếu đang RX: cập nhật WM8731 input source ngay.
+     * Nếu đang TX: csdr_apply_tx sẽ apply khi TX kết thúc hoặc bắt đầu lại. */
+    if (!g_sdr.tx_mode)
+      WM8731_SetInputSource(&hi2c1, WM8731_I2C_ADDR, false); /* về LINE IN khi RX */
+  }
   if (zoom != SDR_UI_GetSpecZoom()) {
     static const uint8_t c_zoom_decim[SPEC_ZOOM_COUNT] = {1U, 2U, 4U, 8U};
     SDR_UI_SetSpecZoom(zoom);
@@ -2572,13 +2618,9 @@ static void csdr_apply_volume(uint8_t vol)
  * context (cat_tx_dirty path) or from the physical PTT key, never from an ISR. */
 static void csdr_apply_tx(void)
 {
-  /* PA protection gate: TRIP or COOLDOWN blocks TX regardless of how it was
-   * requested (PTT, CAT, or any other path).  Force back to RX and refresh
-   * UI so the fault state is visible immediately. */
-  if (g_sdr.tx_mode && !PA_Protect_IsTxAllowed()) {
-    g_sdr.tx_mode       = false;
-    g_sdr.display_dirty = 0xFFU;
-  }
+  /* PA protection gate removed: TRIP/COOLDOWN zeroes drive via
+   * PA_Protect_GetDriveLimit()=0 in the gain block below.
+   * tx_mode stays true so TX UI (spectrum/meters) keeps running. */
 
   if (g_sdr.tx_mode) {
     PA_Protect_OnTxStart();
@@ -2590,9 +2632,14 @@ static void csdr_apply_tx(void)
                     g_sdr.mode == MODE_FREEDV)                           ? base - 0.3f : base;
       if (lim < 1.0f) lim = 1.0f;
       PA_OC_SetCurrentLimit(lim); }
-    /* RX → TX: mute headphone in voice/digi modes (TX IQ is not audio).
-     * In CW mode: leave unmuted so the sidetone NCO is audible. */
-    if (g_sdr.mode != MODE_CW) WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, true);
+    /* RX → TX: switch WM8731 input nếu tx_src==MIC, mute HP và shutdown amp (non-CW). */
+    bool use_mic_tx = (g_sdr.tx_src == 1U) && (g_sdr.mode != MODE_CW);
+    WM8731_SetInputSource(&hi2c1, WM8731_I2C_ADDR, use_mic_tx);
+    g_dsp.mic_buf = use_mic_tx ? s_rx_buf : NULL;
+    if (g_sdr.mode != MODE_CW) {
+      WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, true);
+      HAL_GPIO_WritePin(AUDIO_SD_GPIO_Port, AUDIO_SD_Pin, GPIO_PIN_RESET); /* amp shutdown */
+    }
     BPF_SetMode(RF_MODE_TX);
     /* Split: retune LO to TX VFO (inactive slot) before gating RF */
     if (g_cat.split_on && g_sdr.si5351_ok)
@@ -2606,7 +2653,10 @@ static void csdr_apply_tx(void)
     /* Split: restore LO to RX VFO (active slot) */
     if (g_cat.split_on && g_sdr.si5351_ok)
       SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+    g_dsp.mic_buf = NULL;  /* TX → RX: DSP_ProcessTX sẽ không được gọi, clear cho an toàn */
+    HAL_GPIO_WritePin(AUDIO_SD_GPIO_Port, AUDIO_SD_Pin, GPIO_PIN_SET); /* amp enable */
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
+    WM8731_SetInputSource(&hi2c1, WM8731_I2C_ADDR, false); /* TX → RX: quay về LINE IN (QSD) */
   }
   /* Select gain source: digi_gain for digital modes, mic_gain for voice.
    * Scale by tx_power (0-100%), PA protection stepped foldback (100/75/50/25/0 %),
@@ -2621,12 +2671,18 @@ static void csdr_apply_tx(void)
               * ((float)PA_Protect_GetDriveLimit() * (1.0f / 100.0f))
               * ((float)PA_Protect_GetALCDrive()   * (1.0f / 100.0f))
               * ((float)(100 + tx_trim)            * (1.0f / 100.0f));
-    if (g < 0.01f) g = 0.01f;
-    if (g > 1.0f)  g = 1.0f;
+    if (g < 0.0f) g = 0.0f;
+    if (g > 1.0f) g = 1.0f;
     g_dsp.tx.audio_gain = g;
   }
   SDR_UI_UpdateSMeter_SetTX(g_sdr.tx_mode);
   SDR_UI_SetTXMode(g_sdr.tx_mode);
+  /* Replace the S-meter immediately on TX start — don't wait for the 1 Hz
+   * refresh tick.  UpdateTXMeters is idempotent and uses LCD_PushWindow
+   * (synchronous), safe to call here in main-loop context. */
+  if (g_sdr.tx_mode) {
+    SDR_UI_UpdateTXMeters(0, (int32_t)(g_analog.swr_x100 / 10));
+  }
 }
 
 /* CAT callback — deferred: sets dirty flag, WM8731 applied by CSDR_Loop. */

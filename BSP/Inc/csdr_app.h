@@ -146,6 +146,7 @@ typedef struct {
   uint16_t    cw_bk_delay_ms;    /*!< BK-IN hang delay ms: 50-2000, default 200     */
   bool        cw_reverse;        /*!< CW reverse sideband selection                 */
   uint16_t    cw_filter_hz;      /*!< CW filter bandwidth Hz: 50-500, default 500   */
+  uint8_t     tx_src;            /*!< TX audio source: 0=USB 1=MIC (hand mic)       */
 } SDR_State_t;
 
 extern SDR_State_t  g_sdr;

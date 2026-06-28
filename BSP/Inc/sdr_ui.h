@@ -57,6 +57,7 @@ extern "C" {
 
 #include "lcd_render.h"    /* SWAP16, Font6x8, LCD_LineFill/Str helpers, LCD_W  */
 #include "lcd_bus_fmc.h"   /* LCD_PushWindow, LCD_Clear, LCD_FillRect            */
+#include "pa_protect.h"    /* PA_State_t, PA_Fault_t for TX warning overlay      */
 
 /* ════════════════════════════════════════════════════════════════════════════
  *  Zone geometry — two conditional layouts selected by lcd_panel_config.h
@@ -510,10 +511,18 @@ bool SDR_UI_GetWaterfallSuppressed(void);
  *   DrawTXSpectrum   — compact audio-band mic spectrum in the SPEC zone (~5 fps in TX).
  *                      fft_db : linear power after fftshift (fft_db[bins/2]=DC).
  *                      mode   : UI mode byte (0=AM,1=FM,2=USB,3=LSB,4=CW).
- *                      sr     : audio sample rate (e.g. 48000). */
+ *                      sr     : audio sample rate (e.g. 48000).
+ */
 void SDR_UI_SetTXMode(bool tx_active);
+bool SDR_UI_IsTXZoneBlanked(void);
 void SDR_UI_DrawTXSpectrum(const float *fft_db, uint16_t bins,
                             uint8_t mode, uint32_t sr);
+
+/* Persistent PA fault warning in the INFO zone (between S-meter and spectrum).
+ * Safe to call at any rate; redraws only when state changes (or always when
+ * active to survive DrawFuncBar / DrawCWText overwrites).
+ * Call from csdr_refresh_display() and from a periodic 500 ms timer. */
+void SDR_UI_UpdatePAWarn(PA_State_t state, PA_Fault_t fault);
 
 #ifdef __cplusplus
 }

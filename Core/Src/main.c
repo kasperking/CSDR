@@ -1234,6 +1234,16 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(PCA9555_INT_PORT, &GPIO_InitStruct);
   /* NVIC already enabled above for EXTI9_5_IRQn */
 
+  /* AUDIO_SD (PC13): LM4871/NS8002 shutdown, active-LOW.
+   * Open-drain so jack NC switch có thể kéo xuống GND song song với MCU.
+   * Pull-up ngoài 10kΩ lên 3.3V trên PCB giữ amp ON khi MCU thả HIGH-Z. */
+  HAL_GPIO_WritePin(AUDIO_SD_GPIO_Port, AUDIO_SD_Pin, GPIO_PIN_SET);
+  GPIO_InitStruct.Pin   = AUDIO_SD_Pin;
+  GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull  = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(AUDIO_SD_GPIO_Port, &GPIO_InitStruct);
+
   /* PW_HOLD (PB1): CubeMX nhóm nhầm vào block INPUT trên GPIOD.
    * Config lại đúng: OUTPUT_PP, initial HIGH để giữ latch nguồn. */
   GPIO_InitStruct.Pin   = PW_HOLD_Pin;

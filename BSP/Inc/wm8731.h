@@ -110,6 +110,8 @@ HAL_StatusTypeDef WM8731_SetMute(I2C_HandleTypeDef *hi2c, uint8_t addr,
                                   bool mute);
 HAL_StatusTypeDef WM8731_SetInputGain(I2C_HandleTypeDef *hi2c, uint8_t addr,
                                        uint8_t gain);
+HAL_StatusTypeDef WM8731_SetInputSource(I2C_HandleTypeDef *hi2c, uint8_t addr,
+                                         bool use_mic);
 HAL_StatusTypeDef WM8731_PowerDown(I2C_HandleTypeDef *hi2c, uint8_t addr);
 
 #ifdef __cplusplus

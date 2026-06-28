@@ -100,9 +100,10 @@ HAL_StatusTypeDef WM8731_Init(const WM8731_Config_t *cfg)
   if (ret != HAL_OK) { return ret; }
   HAL_Delay(10U);
 
-  /* 2. Power Down: bật LINE IN / ADC / DAC / OUT, tắt MIC / OSC / CLKOUT */
+  /* 2. Power Down: bật LINE IN / MIC / ADC / DAC / OUT, tắt OSC / CLKOUT.
+   * MICPD=0 → MICBIAS luôn active cho electret hand mic trên MIC IN. */
   ret = WM8731_WriteReg(hi2c, addr, WM8731_REG_POWER_DOWN,
-                         WM8731_MICPD | WM8731_OSCPD | WM8731_CLKOUTPD);
+                         WM8731_OSCPD | WM8731_CLKOUTPD);
   if (ret != HAL_OK) { return ret; }
 
   /* 3. Analog Path */
@@ -206,6 +207,37 @@ HAL_StatusTypeDef WM8731_SetInputGain(I2C_HandleTypeDef *hi2c,
   /* USER CODE END WM8731_SetInputGain_0 */
   return WM8731_WriteReg(hi2c, addr, WM8731_REG_LLINE_IN,
                           ((uint16_t)(gain & WM8731_LINVOL_MASK)) | WM8731_LRINBOTH);
+}
+
+/**
+  * @brief  Chuyển nguồn input giữa LINE IN và MIC IN (electret hand mic).
+  *         use_mic=true : MIC IN + MICBIAS + MICBOOST (+20dB), tắt LINE IN power.
+  *         use_mic=false: LINE IN, tắt MICBIAS, mute MIC path.
+  * @param  hi2c     I2C handle
+  * @param  addr     Địa chỉ 8-bit
+  * @param  use_mic  true = MIC IN (hand mic), false = LINE IN
+  */
+HAL_StatusTypeDef WM8731_SetInputSource(I2C_HandleTypeDef *hi2c, uint8_t addr,
+                                         bool use_mic)
+{
+  HAL_StatusTypeDef ret;
+  uint16_t pwr, ap;
+
+  /* MICPD luôn = 0 (MICBIAS luôn on cho electret).
+   * Chỉ switch INSEL + LINE IN power tùy RX/TX. */
+  if (use_mic) {
+    /* TX: MIC IN + MICBOOST +20dB, tắt LINE IN power (QSD không dùng khi TX) */
+    pwr = WM8731_LINEINPD | WM8731_OSCPD | WM8731_CLKOUTPD;
+    ap  = WM8731_INSEL_MIC | WM8731_MICBOOST | WM8731_DACSEL;
+  } else {
+    /* RX: LINE IN (QSD), MIC path muted nhưng MICBIAS vẫn on */
+    pwr = WM8731_OSCPD | WM8731_CLKOUTPD;
+    ap  = WM8731_INSEL_LINE | WM8731_MUTEMIC | WM8731_DACSEL;
+  }
+
+  ret = WM8731_WriteReg(hi2c, addr, WM8731_REG_POWER_DOWN, pwr);
+  if (ret != HAL_OK) { return ret; }
+  return WM8731_WriteReg(hi2c, addr, WM8731_REG_ANALOG_PATH, ap);
 }
 
 /**

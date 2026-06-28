@@ -44,7 +44,7 @@ static int32_t _rfpwr_val, _alc_val, _tx_low_val, _tx_high_val;
 static int32_t _vox_val, _voxgain_val, _voxdelay_val;
 
 /* System group */
-static int32_t _bl_val, _usb_val, _iq_stream_val;
+static int32_t _bl_val, _usb_val, _iq_stream_val, _tx_src_val;
 
 /* Misc */
 static uint8_t s_pa_watts = 0U;
@@ -57,8 +57,9 @@ static const char *step_strs[] = { "1Hz","10Hz","100Hz","1KHz","10KHz","100KHz" 
 static const char *band_strs[] = { "160m","80m","60m","40m","30m",
                                     "20m","17m","15m","12m","10m","6m" };
 static const char *mode_strs[] = { "AM","FM","USB","LSB","CW","DIGU","DIGL","FDV" };
-static const char *usb_strs[]      = { "Off","On" };
+static const char *usb_strs[]       = { "Off","On" };
 static const char *iq_stream_strs[] = { "IQ","Demod" };
+static const char *tx_src_strs[]    = { "USB","MIC" };
 static const char *zoom_strs[] = { "+/-24k","+/-12k","+/-6k","+/-3k" };
 
 static MenuApplyFn s_apply_cb = NULL;
@@ -252,6 +253,9 @@ void Menu_Init(Menu_Handle_t *m)
 
   /* ── Root action (parent = -1) — last so it appears at end of root view ── */
   m->items[48] = (MenuItem_t){ "SWR Scan",  MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
+
+  /* ── TX group extras ─────────────────────────────────────── */
+  m->items[49] = (MenuItem_t){ "Mic In", MENU_TYPE_ENUM, 0,0,0, &_tx_src_val, tx_src_strs, 2U, NULL,NULL, 1 };
 
   Menu_BuildView(m);
   /* USER CODE END Menu_Init_0 */
@@ -460,6 +464,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint16_t cw_bk_delay_ms, bool cw_reverse,
                        uint16_t cw_filter_hz,
                        bool usb_iq_stream,
+                       uint8_t tx_src,
                        MenuApplyFn apply_cb)
 {
   /* USER CODE BEGIN Menu_LoadFromSDR_0 */
@@ -483,6 +488,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _mode_val = (int32_t)mode;
   _usb_val       = (int32_t)usb_mode;
   _iq_stream_val = usb_iq_stream ? 0 : 1;
+  _tx_src_val    = (int32_t)(tx_src & 1U);
   _zoom_val      = (int32_t)zoom;
   _alc_val  = ext_alc ? 1 : 0;
 
@@ -546,7 +552,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *sidetone_vol, uint8_t *cw_bkin,
                      uint16_t *cw_bk_delay_ms, bool *cw_reverse,
                      uint16_t *cw_filter_hz,
-                     bool *usb_iq_stream)
+                     bool *usb_iq_stream,
+                     uint8_t *tx_src)
 {
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
@@ -595,6 +602,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *cw_reverse       = (_cwrev_val != 0);
   *cw_filter_hz     = (uint16_t)(_cwfilter_val  >= 50  && _cwfilter_val <= 500  ? _cwfilter_val : 500);
   *usb_iq_stream    = (_iq_stream_val == 0);
+  *tx_src           = (uint8_t)(_tx_src_val != 0 ? 1U : 0U);
   /* USER CODE END Menu_SaveToSDR_0 */
 }
 

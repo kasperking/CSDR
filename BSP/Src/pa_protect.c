@@ -120,7 +120,8 @@ static void request_gain_reapply(void)
     if (g_sdr.tx_mode) g_sdr.cat_tx_dirty = true;
 }
 
-/* Hard trip: disable TX immediately via deferred relay path, store fault. */
+/* Hard trip: zero drive immediately; TX UI stays up — relay stays in TX
+ * position (no RF since gain=0), warning appears in INFO zone. */
 static void do_trip(PA_Fault_t fault)
 {
     s_fault         = fault;
@@ -129,11 +130,8 @@ static void do_trip(PA_Fault_t fault)
     s_cooldown_ms   = HAL_GetTick();
     s_state         = PA_STATE_TRIP;
 
-    /* Force TX off via the existing deferred-apply mechanism.
-     * csdr_apply_tx() will open the T/R relay and unmute the codec. */
-    g_sdr.tx_mode       = false;
-    g_sdr.cat_tx_dirty  = true;
-    g_sdr.display_dirty = 0xFFU;
+    /* Trigger immediate gain recompute (drive_pct=0 → audio_gain=0 → silent). */
+    request_gain_reapply();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -189,11 +187,12 @@ void PA_Protect_OnTxStop(void)
 
 void PA_Protect_ManualReset(void)
 {
-    if (s_state == PA_STATE_COOLDOWN && !g_sdr.tx_mode) {
+    if (s_state == PA_STATE_COOLDOWN) {
         s_state         = PA_STATE_NORMAL;
         s_fault         = PA_FAULT_NONE;
         s_drive_pct     = 100U;
         s_foldback_step = 0U;
+        request_gain_reapply();   /* restore drive if PTT still held */
         g_sdr.display_dirty = 0xFFU;
     }
 }
@@ -257,6 +256,7 @@ void PA_Protect_Update(void)
             s_fault         = PA_FAULT_NONE;
             s_drive_pct     = 100U;
             s_foldback_step = 0U;
+            request_gain_reapply();   /* resume TX drive if PTT still held */
             g_sdr.display_dirty = 0xFFU;
         }
         return;
@@ -358,7 +358,7 @@ void PA_Protect_Update(void)
 
 PA_State_t PA_Protect_GetState(void)      { return s_state;         }
 PA_Fault_t PA_Protect_GetFault(void)      { return s_fault;         }
-uint8_t    PA_Protect_GetDriveLimit(void) { return s_drive_pct;     }
+uint8_t    PA_Protect_GetDriveLimit(void) { return HW_Fault_PASensorMissing() ? 0U : s_drive_pct; }
 uint8_t    PA_Protect_GetALCDrive(void)   { return s_alc_drive_pct; }
 
 bool PA_Protect_IsTxAllowed(void)

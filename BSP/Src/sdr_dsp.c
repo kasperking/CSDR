@@ -1348,10 +1348,16 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
 
   for (uint32_t n = 0U; n < len; n++)
   {
-    /* ── 1. Pull mono audio from USB TX ring (L channel, int16 LE).
-     *       Silence (0.0f) when the ring is empty. */
+    /* ── 1. Pull mono audio from selected TX source.
+     *   MIC mode: SAI RX (WM8731 ADC mic_buf), 16-bit right-justified stereo,
+     *             left channel (index 2n) = mic audio.
+     *   USB mode: USB TX ring, int16 LE stereo, L channel only. */
     float audio = 0.0f;
-    if (n < (uint32_t)samples_avail) {
+    if (dsp->mic_buf != NULL) {
+      /* MIC IN path: s_rx_buf[2n] = L channel, 16-bit right-justified in int32 */
+      int16_t s = (int16_t)(dsp->mic_buf[n * 2U] & 0xFFFFU);
+      audio = (float)s * DSP_INV_32767;
+    } else if (n < (uint32_t)samples_avail) {
       uint8_t lo = g_usb_audio.tx_ring[g_usb_audio.tx_rd];
       g_usb_audio.tx_rd = (uint16_t)((g_usb_audio.tx_rd + 1U) % USB_AUDIO_RING_SIZE);
       uint8_t hi = g_usb_audio.tx_ring[g_usb_audio.tx_rd];

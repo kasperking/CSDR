@@ -232,6 +232,10 @@ typedef struct {
 
   /* TX state */
   TX_State_t tx;
+
+  /* TX MIC input: set to s_rx_buf before DSP_ProcessTX when tx_src==MIC.
+   * NULL = use USB audio ring (default). */
+  const int32_t *mic_buf;
 } DSP_State_t;
 
 /* Exported functions prototypes ---------------------------------------------*/
