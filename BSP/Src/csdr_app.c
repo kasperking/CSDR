@@ -12,6 +12,7 @@
 #include "wm8731.h"
 #include "sdr_ui.h"
 #include "sdr_dsp.h"
+#include "nr_spec.h"
 #include "encoder.h"
 #include "input_scan.h"
 #include "si5351.h"
@@ -79,6 +80,7 @@ SDR_State_t g_sdr = {
   .agc_speed     = 1U,     /* default FAST */
   .nb_on         = false,   /* NB disabled by default */
   .nb_level      = 50U,     /* moderate intensity; raise for more aggressive blanking */
+  .nr_level      = 50U,     /* half dry/wet mix; 100 = pure LMS prediction */
   .display_dirty = DIRTY_ALL,
   .lo_offset_hz  = LO_OFFSET_DEFAULT,
   .mic_gain      = 50,
@@ -228,7 +230,9 @@ static void     cat_set_mode(uint8_t m);
 static void     cat_set_tx(bool tx);
 static void     cat_set_att(uint8_t lv);
 static void     cat_set_volume(uint8_t vol);
-static void     cat_set_nr(bool on);
+static void     cat_set_nr(uint8_t mode);
+static void     cat_set_nr_level(uint8_t level);
+static void     cat_set_bc(uint8_t mode);
 static void     cat_set_nb(bool on);
 static void     cat_set_bw(uint32_t hz);
 static void     cat_set_agc_fast(bool fast);
@@ -243,7 +247,9 @@ static bool     cat_get_tx(void);
 static float    cat_get_signal(void);
 static uint8_t  cat_get_att(void);
 static uint8_t  cat_get_volume(void);
-static bool     cat_get_nr(void);
+static uint8_t  cat_get_nr(void);
+static uint8_t  cat_get_nr_level(void);
+static uint8_t  cat_get_bc(void);
 static bool     cat_get_nb(void);
 static uint32_t cat_get_bw(void);
 static bool     cat_get_agc_fast(void);
@@ -283,10 +289,14 @@ static void     cat_set_rf_agc(bool on);
 static bool     cat_get_rf_agc(void);
 static void     cat_set_tx_power(uint8_t pct);
 static uint8_t  cat_get_tx_power(void);
+static uint16_t cat_get_swr_x100(void);
+static uint8_t  cat_get_alc_reduction_pct(void);
 static void     cat_set_cw_wpm(uint8_t wpm);
 static uint8_t  cat_get_cw_wpm(void);
 static void     cat_set_usb_stream(uint8_t m);
 static uint8_t  cat_get_usb_stream(void);
+static void     cat_set_tune(bool on);
+static bool     cat_get_tune(void);
 
 /* ── Settings persistence helper ──────────────────────────
  * Serialises g_sdr to Flash_Settings_t and calls Flash_SaveSettings.
@@ -311,8 +321,10 @@ static void csdr_save_settings(void)
   /* Flags */
   fs.agc_speed       = g_sdr.agc_speed;
   fs.nb_on           = g_sdr.nb_on;
-  fs.nr_on           = g_sdr.nr_on;
+  fs.nr_mode         = g_sdr.nr_mode;
   fs.nb_level        = g_sdr.nb_level;
+  fs.nr_level        = g_sdr.nr_level;
+  fs.bc_mode         = g_sdr.bc_mode;
   fs.rf_agc_on       = g_sdr.rf_agc_on;
   fs.usb_mode        = g_sdr.usb_mode;
   fs.usb_iq_stream   = g_sdr.usb_iq_stream;
@@ -421,8 +433,10 @@ void CSDR_Init(void)
       g_sdr.att_db        = fs.att_db;
       g_sdr.agc_speed     = (fs.agc_speed <= 2U) ? fs.agc_speed : 1U;
       g_sdr.nb_on         = fs.nb_on;
-      g_sdr.nr_on         = fs.nr_on;
+      g_sdr.nr_mode       = (fs.nr_mode <= 2U) ? fs.nr_mode : 0U;
       g_sdr.nb_level      = fs.nb_level;
+      g_sdr.nr_level      = (fs.nr_level <= 100U) ? fs.nr_level : 50U;
+      g_sdr.bc_mode       = (fs.bc_mode <= 2U) ? fs.bc_mode : 0U;
       g_sdr.rf_agc_on     = fs.rf_agc_on;
       g_sdr.usb_mode      = (fs.usb_mode <= 1U) ? fs.usb_mode : 1U;
       g_sdr.usb_iq_stream = fs.usb_iq_stream;
@@ -560,7 +574,9 @@ void CSDR_Init(void)
   DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
   AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_speed, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, g_sdr.nb_on, g_sdr.nb_level);
-  DSP_NR_Set(&g_dsp, g_sdr.nr_on, 50U);
+  NRSpec_Init();  /* build NR2 FFT/window tables before any DSP_NR_Set */
+  DSP_NR_Set(&g_dsp, g_sdr.nr_mode, g_sdr.nr_level);
+  DSP_BC_Set(&g_dsp, g_sdr.bc_mode);
   DSP_SetSquelch(&g_dsp, g_sdr.squelch);
   /* LHPVOL is set by wm_out_vol in the WM8731_Init BYPASS-fix block below (after SAI start).
    * csdr_apply_volume is NOT called here — SAI has not started yet. */
@@ -616,6 +632,8 @@ void CSDR_Init(void)
     .set_att         = cat_set_att,
     .set_volume      = cat_set_volume,
     .set_nr          = cat_set_nr,
+    .set_nr_level    = cat_set_nr_level,
+    .set_bc          = cat_set_bc,
     .set_nb          = cat_set_nb,
     .set_bw          = cat_set_bw,
     .set_agc_fast    = cat_set_agc_fast,
@@ -629,6 +647,8 @@ void CSDR_Init(void)
     .get_att         = cat_get_att,
     .get_volume      = cat_get_volume,
     .get_nr          = cat_get_nr,
+    .get_nr_level    = cat_get_nr_level,
+    .get_bc          = cat_get_bc,
     .get_nb          = cat_get_nb,
     .get_bw          = cat_get_bw,
     .get_agc_fast    = cat_get_agc_fast,
@@ -654,10 +674,14 @@ void CSDR_Init(void)
     .get_rf_agc      = cat_get_rf_agc,
     .set_tx_power    = cat_set_tx_power,
     .get_tx_power    = cat_get_tx_power,
+    .get_swr_x100    = cat_get_swr_x100,
+    .get_alc_reduction_pct = cat_get_alc_reduction_pct,
     .set_cw_wpm      = cat_set_cw_wpm,
     .get_cw_wpm      = cat_get_cw_wpm,
     .set_usb_stream  = cat_set_usb_stream,
     .get_usb_stream  = cat_get_usb_stream,
+    .set_tune        = cat_set_tune,
+    .get_tune        = cat_get_tune,
   };
   CAT_Init(&g_cat, &cb);
 
@@ -1732,7 +1756,9 @@ static void csdr_factory_reset(void)
   g_sdr.agc_speed        = 1U;
   g_sdr.nb_on            = false;
   g_sdr.nb_level         = 50U;
-  g_sdr.nr_on            = false;
+  g_sdr.nr_mode          = 0U;
+  g_sdr.nr_level         = 50U;
+  g_sdr.bc_mode          = 0U;
   g_sdr.rf_agc_on        = false;
   g_sdr.ext_alc_on       = false;
   g_sdr.mic_gain         = 50;
@@ -1793,7 +1819,8 @@ static void csdr_factory_reset(void)
   DSP_SetBW(&g_dsp, 3000.0f);
   AGC_SetMode(&g_dsp.agc, MODE_USB, true, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, false, 50U);
-  DSP_NR_Set(&g_dsp, false, 50U);
+  DSP_NR_Set(&g_dsp, 0U, 50U);
+  DSP_BC_Set(&g_dsp, 0U);
   DSP_SetSquelch(&g_dsp, 0U);
   DSP_SetCWPitch(&g_dsp, 700U, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetCWReverse(&g_dsp, false);
@@ -1939,7 +1966,7 @@ static void csdr_handle_keys(void)
     g_sdr.display_dirty = 0U;  /* prevent status panel overwriting menu */
     if (!Menu_IsOpen(&g_menu))
       Menu_LoadFromSDR(&g_menu,
-        g_sdr.agc_speed, g_sdr.nb_on, g_sdr.nr_on, g_sdr.rit_hz,
+        g_sdr.agc_speed, g_sdr.nb_on, g_sdr.nr_mode, g_sdr.rit_hz,
         g_sdr.volume, (uint8_t)g_sdr.mic_gain, (uint8_t)g_sdr.digi_gain,
         g_sdr.squelch, (uint32_t)g_sdr.step, g_sdr.bw_hz,
         g_sdr.att_db, g_sdr.band_idx, (uint8_t)g_sdr.mode,
@@ -1957,6 +1984,8 @@ static void csdr_handle_keys(void)
         g_sdr.usb_iq_stream,
         g_sdr.tx_src,
         g_sdr.nb_level,
+        g_sdr.nr_level,
+        g_sdr.bc_mode,
         menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
@@ -2241,10 +2270,12 @@ static void csdr_refresh_display(void)
     ui.band_idx  = g_sdr.band_idx;      ui.volume    = g_sdr.volume;
     ui.squelch   = g_sdr.squelch;       ui.step      = (uint32_t)g_sdr.step;
     ui.agc_speed = g_sdr.agc_speed;     ui.nb_on     = g_sdr.nb_on;
-    ui.nr_on     = g_sdr.nr_on;         ui.rit_hz    = g_sdr.rit_hz;
+    ui.nr_on     = (g_sdr.nr_mode > 0U); ui.rit_hz    = g_sdr.rit_hz;
     ui.tx_mode   = g_sdr.tx_mode;
     ui.si5351_ok = g_sdr.si5351_ok;
-    ui.signal_db = g_dsp.signal_power_db + (float)g_sdr.smeter_offset_db
+    ui.signal_db = g_dsp.signal_power_db
+                 + (float)g_att.current_atten_x2 * 0.5f  /* antenna-referenced: add back front-end att */
+                 + (float)g_sdr.smeter_offset_db
                  + (float)(g_band_cal[g_sdr.band_idx].rx_gain_trim
                           + g_band_cal[g_sdr.band_idx].noise_floor_off);
     ui.bw_hz     = g_sdr.bw_hz;         ui.voltage_x10 = (int16_t)(g_analog.voltage_mv / 100);
@@ -2318,7 +2349,9 @@ static void csdr_refresh_display(void)
       RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     } else {
       RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
-      SDR_UI_UpdateSMeter(g_dsp.signal_power_db + (float)g_sdr.smeter_offset_db
+      SDR_UI_UpdateSMeter(g_dsp.signal_power_db
+                        + (float)g_att.current_atten_x2 * 0.5f
+                        + (float)g_sdr.smeter_offset_db
                         + (float)(g_band_cal[g_sdr.band_idx].rx_gain_trim
                                  + g_band_cal[g_sdr.band_idx].noise_floor_off));
       RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
@@ -2347,18 +2380,18 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m)
 
 static void menu_apply_cb(void)
 {
-  uint8_t agc_speed; bool nb, nr, ext_alc, notch_en, vox_en, cw_dec, paddle_rev, cw_rev, iq_stream; int16_t rit, rxshift, notch_f;
+  uint8_t agc_speed; bool nb, ext_alc, notch_en, vox_en, cw_dec, paddle_rev, cw_rev, iq_stream; int16_t rit, rxshift, notch_f;
   uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr, vox_gain, tx_src_new; uint32_t step, bw;
   uint16_t tx_low, tx_high, vox_delay;
   uint16_t cw_pitch, cw_filter, cw_bk_delay; uint8_t cw_wpm, keyer_mode, sidetone, cw_bkin;
-  uint8_t nb_level;
+  uint8_t nb_level, nr_level, nr, bc;
   Menu_SaveToSDR(&g_menu, &agc_speed, &nb, &nr, &rit,
                   &vol, &mic, &digi, &sq, &step, &bw, &att, &band, &mode, &usb, &zoom,
                   &ext_alc, &rfpwr, &tx_low, &tx_high, &rxshift, &notch_en, &notch_f,
                   &vox_en, &vox_gain, &vox_delay, &cw_dec,
                   &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
                   &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream,
-                  &tx_src_new, &nb_level);
+                  &tx_src_new, &nb_level, &nr_level, &bc);
   if (tx_low != g_sdr.tx_audio_low_hz || tx_high != g_sdr.tx_audio_high_hz) {
     g_sdr.tx_audio_low_hz  = tx_low;
     g_sdr.tx_audio_high_hz = tx_high;
@@ -2386,10 +2419,13 @@ static void menu_apply_cb(void)
   g_sdr.digi_gain = (int16_t)digi;
   if (agc_speed != g_sdr.agc_speed)
     AGC_SetMode(&g_dsp.agc, g_sdr.mode, agc_speed, CSDR_AUDIO_SAMPLE_RATE);
-  g_sdr.agc_speed = agc_speed; g_sdr.nb_on = nb; g_sdr.nr_on = nr;
+  g_sdr.agc_speed = agc_speed; g_sdr.nb_on = nb; g_sdr.nr_mode = nr;
   g_sdr.nb_level  = nb_level;
+  g_sdr.nr_level  = nr_level;
+  g_sdr.bc_mode   = bc;
   DSP_NB_Set(&g_dsp, nb, nb_level);
-  DSP_NR_Set(&g_dsp, nr, 50U);
+  DSP_NR_Set(&g_dsp, nr, nr_level);
+  DSP_BC_Set(&g_dsp, bc);
   g_sdr.rit_hz = rit;
   g_sdr.cat_rit_dirty = true;  /* apply new RIT offset to nco_if via CSDR_Loop */
   if (vol != g_sdr.volume) csdr_apply_volume(vol);
@@ -2683,6 +2719,14 @@ static void     cat_set_mode(uint8_t m)
 static void cat_set_tx(bool tx)
 {
   if (tx == g_sdr.tx_mode) return;
+  /* RX; while TUNE carrier active (AC111 or physical key): drop the tune
+   * state too — leaving tune_active/cw_key_out set would key a stray CW
+   * carrier on the next PTT TX. */
+  if (!tx && g_sdr.tune_mode) {
+    g_sdr.tune_mode      = false;
+    g_dsp.tx.tune_active = false;
+    g_dsp.cw_key_out     = false;
+  }
   if (g_sdr.cat_tx_dirty) dbg_cat_blocked_updates++;
   g_sdr.tx_mode    = tx;
   g_sdr.cat_tx_dirty = true;
@@ -2870,6 +2914,35 @@ static void csdr_tune_stop(void)
   csdr_apply_tx();
 }
 
+/* CAT callback — AC command (antenna tuner start/stop).  Same TUNE state as
+ * csdr_tune_start/stop but deferred like cat_set_tx: csdr_apply_tx (I2C/GPIO)
+ * runs in CSDR_Loop via cat_tx_dirty, never in the CAT handler.
+ * The TUNE_MAX_MS safety auto-stop in csdr_handle_keys covers CAT-started
+ * tuning too — s_tune_start_ms is armed here as well. */
+static void cat_set_tune(bool on)
+{
+  if (on == g_sdr.tune_mode) return;
+  if (on) {
+    if (g_sdr.tx_mode) return;   /* already transmitting (PTT/keyer) — ignore */
+    g_sdr.tune_mode      = true;
+    g_dsp.tx.tune_active = true;
+    g_dsp.cw_key_out     = true;
+    g_sdr.tx_mode        = true;
+    s_tune_start_ms      = HAL_GetTick();
+    g_sdr.display_dirty |= (uint8_t)(DIRTY_HDR | DIRTY_VFO | DIRTY_SBR);
+  } else {
+    g_sdr.tune_mode      = false;
+    g_dsp.tx.tune_active = false;
+    g_dsp.cw_key_out     = false;
+    g_sdr.tx_mode        = false;
+    g_sdr.display_dirty |= DIRTY_ALL;
+  }
+  if (g_sdr.cat_tx_dirty) dbg_cat_blocked_updates++;
+  g_sdr.cat_tx_dirty = true;
+}
+
+static bool cat_get_tune(void) { return g_sdr.tune_mode; }
+
 /* CAT callback — deferred: sets dirty flag, WM8731 applied by CSDR_Loop. */
 static void cat_set_volume(uint8_t vol)
 {
@@ -2878,7 +2951,25 @@ static void cat_set_volume(uint8_t vol)
   g_sdr.cat_vol_dirty = true;
   g_sdr.display_dirty |= DIRTY_SBL;
 }
-static void     cat_set_nr(bool on)       { g_sdr.nr_on = on; DSP_NR_Set(&g_dsp, on, 50U); g_sdr.display_dirty |= DIRTY_SBL; }
+static void     cat_set_nr(uint8_t mode)
+{
+  if (mode > 2U) mode = 2U;
+  g_sdr.nr_mode = mode;
+  DSP_NR_Set(&g_dsp, mode, g_sdr.nr_level);
+  g_sdr.display_dirty |= DIRTY_SBL;
+}
+static void     cat_set_nr_level(uint8_t level)
+{
+  if (level > 100U) level = 100U;
+  g_sdr.nr_level = level;
+  DSP_NR_Set(&g_dsp, g_sdr.nr_mode, level);
+}
+static void     cat_set_bc(uint8_t mode)
+{
+  if (mode > 2U) mode = 2U;
+  g_sdr.bc_mode = mode;
+  DSP_BC_Set(&g_dsp, mode);
+}
 static void     cat_set_nb(bool on)       { g_sdr.nb_on = on; DSP_NB_Set(&g_dsp, on, g_sdr.nb_level); g_sdr.display_dirty |= DIRTY_SBL; }
 /* BW command diagnostics — watch in Live Expressions.
  *  dbg_last_bw_value:      raw Hz value received from CAT before mode-dependent clamping
@@ -2929,10 +3020,15 @@ static void     cat_set_squelch(uint8_t s){ g_sdr.squelch = s; DSP_SetSquelch(&g
 static uint32_t cat_get_freq(void)        { return g_sdr.freq_hz; }
 static uint8_t  cat_get_mode(void)        { return (uint8_t)g_sdr.mode; }
 static bool     cat_get_tx(void)          { return g_sdr.tx_mode; }
-static float    cat_get_signal(void)      { return g_dsp.signal_power_db; }
+/* Antenna-referenced: add back front-end attenuation so SM does not drop
+ * when the RF AGC / manual ATT engages.  Must NOT be fed to RFAGC_Update —
+ * the RF AGC loop protects the ADC and needs the post-attenuator level. */
+static float    cat_get_signal(void)      { return g_dsp.signal_power_db + (float)g_att.current_atten_x2 * 0.5f; }
 static uint8_t  cat_get_att(void)         { return g_sdr.att_db; }
 static uint8_t  cat_get_volume(void)      { return g_sdr.volume; }
-static bool     cat_get_nr(void)          { return g_sdr.nr_on; }
+static uint8_t  cat_get_nr(void)          { return g_sdr.nr_mode; }
+static uint8_t  cat_get_nr_level(void)    { return g_sdr.nr_level; }
+static uint8_t  cat_get_bc(void)          { return g_sdr.bc_mode; }
 static bool     cat_get_nb(void)          { return g_sdr.nb_on; }
 static uint32_t cat_get_bw(void)          { return g_sdr.bw_hz; }
 static bool     cat_get_agc_fast(void)    { return (g_sdr.agc_speed >= 1U); }  /* FAST or AUTO → true */
@@ -3000,6 +3096,14 @@ static void cat_set_tx_power(uint8_t pct)
   csdr_save_settings();
 }
 static uint8_t cat_get_tx_power(void) { return g_sdr.tx_power; }
+
+/* RM1 SWR meter — pa_protect's filtered SWR, the same figure the protection
+ * state machine acts on (returns 100 = 1.00 flat when not transmitting). */
+static uint16_t cat_get_swr_x100(void) { return PA_Protect_GetSwrX100(); }
+
+/* RM3 ALC meter — external-ALC drive reduction from pa_protect, the same
+ * multiplier applied in csdr_apply_tx (0 when RX or ext_alc_on is off). */
+static uint8_t cat_get_alc_reduction_pct(void) { return PA_Protect_GetAlcReductionPct(); }
 
 static void cat_set_cw_wpm(uint8_t wpm)
 {

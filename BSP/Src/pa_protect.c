@@ -428,6 +428,28 @@ uint8_t    PA_Protect_GetALCDrive(void)   { return s_alc_drive_pct; }
 uint8_t    PA_Protect_GetPowerALCDrive(void) { return (uint8_t)s_pwr_corr_pct; }
 uint32_t   PA_Protect_GetFwdPowerEnvelope_mW(void) { return (g_sdr.pa_watts > 0U && g_sdr.tx_mode) ? (uint32_t)s_pwr_env : 0U; }
 
+uint16_t PA_Protect_GetSwrX100(void)
+{
+    /* Meaningful only while transmitting with a fitted PA + working sensor;
+     * otherwise report a flat 1.00 so meters rest at zero deflection. */
+    if (g_sdr.pa_watts == 0U || !g_sdr.tx_mode || HW_Fault_PASensorMissing()) {
+        return 100U;
+    }
+    float s = s_filt_swr;
+    if (s < 100.0f)  s = 100.0f;
+    if (s > 2000.0f) s = 2000.0f;
+    return (uint16_t)s;
+}
+
+uint8_t PA_Protect_GetAlcReductionPct(void)
+{
+    /* s_alc_drive_pct ∈ [ALC_MIN_DRIVE_PCT, 100]: 100 = ALC idle, 30 = full
+     * reduction → reported range 0-70 %-points.  Zero when the external ALC
+     * loop is disabled or not transmitting, so meters rest at no deflection. */
+    if (!g_sdr.tx_mode || !g_sdr.ext_alc_on) return 0U;
+    return (uint8_t)(100U - s_alc_drive_pct);
+}
+
 bool PA_Protect_IsTxAllowed(void)
 {
     /* Block TX if any PA protection sensor is absent: operating without

@@ -45,7 +45,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      52U   /* 7 groups (incl. About sub-group) + 45 leaf items */
+#define MENU_ITEM_COUNT      54U   /* 7 groups (incl. About sub-group) + 47 leaf items */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -140,7 +140,7 @@ typedef void (*MenuApplyFn)(void);
   * @brief  Load SDR state vào menu trước khi mở.
   */
 void Menu_LoadFromSDR(Menu_Handle_t *m,
-                       uint8_t agc_speed, bool nb, bool nr, int16_t rit,
+                       uint8_t agc_speed, bool nb, uint8_t nr_mode, int16_t rit,
                        uint8_t vol, uint8_t mic_gain, uint8_t digi_gain,
                        uint8_t sq, uint32_t step, uint32_t bw_hz,
                        uint8_t att, uint8_t band, uint8_t mode,
@@ -159,13 +159,15 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        bool usb_iq_stream,
                        uint8_t tx_src,
                        uint8_t nb_level,
+                       uint8_t nr_level,
+                       uint8_t bc_mode,
                        MenuApplyFn apply_cb);
 
 /**
   * @brief  Đọc giá trị từ menu ra SDR state sau khi đóng.
   */
 void Menu_SaveToSDR(Menu_Handle_t *m,
-                     uint8_t *agc_speed, bool *nb, bool *nr, int16_t *rit,
+                     uint8_t *agc_speed, bool *nb, uint8_t *nr_mode, int16_t *rit,
                      uint8_t *vol, uint8_t *mic_gain, uint8_t *digi_gain,
                      uint8_t *sq, uint32_t *step, uint32_t *bw_hz,
                      uint8_t *att, uint8_t *band, uint8_t *mode,
@@ -183,7 +185,9 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint16_t *cw_filter_hz,
                      bool *usb_iq_stream,
                      uint8_t *tx_src,
-                     uint8_t *nb_level);
+                     uint8_t *nb_level,
+                     uint8_t *nr_level,
+                     uint8_t *bc_mode);
 
 #ifdef __cplusplus
 }

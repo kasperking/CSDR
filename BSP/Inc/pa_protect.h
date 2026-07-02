@@ -157,6 +157,23 @@ uint8_t PA_Protect_GetPowerALCDrive(void);
   */
 uint32_t PA_Protect_GetFwdPowerEnvelope_mW(void);
 
+/**
+  * @brief IIR-filtered SWR ×100 (100 = 1.00, clamped 100-2000) — the same
+  *        figure the protection state machine acts on.  Returns 100 when not
+  *        transmitting, no PA fitted, or the PA sensor is missing, so meter
+  *        consumers (CAT RM1) rest at zero deflection.  Read-only; safe to
+  *        call from the main loop (same context as PA_Protect_Update).
+  */
+uint16_t PA_Protect_GetSwrX100(void);
+
+/**
+  * @brief External-ALC drive reduction in %-points (0 = ALC idle, 70 = max
+  *        reduction, i.e. 100 − GetALCDrive()).  Returns 0 when not
+  *        transmitting or g_sdr.ext_alc_on is off, so meter consumers
+  *        (CAT RM3) rest at zero deflection.  Read-only, main-loop safe.
+  */
+uint8_t PA_Protect_GetAlcReductionPct(void);
+
 /** @brief Current protection state (for UI display). */
 PA_State_t PA_Protect_GetState(void);
 

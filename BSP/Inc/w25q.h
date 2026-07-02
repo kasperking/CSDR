@@ -174,7 +174,7 @@ typedef struct {
   /* ── Bool flags ─────────────────────────────────────────────── */
   uint8_t    agc_speed;    /*!< 0=SLOW 1=FAST 2=AUTO */
   bool       nb_on;
-  bool       nr_on;
+  uint8_t    nr_mode;      /*!< 0=off 1=NR1 (LMS) 2=NR2 (spectral) */
   bool       rf_agc_on;
   uint8_t    usb_mode;     /*!< 0=Off 1=CAT 2=Audio                 */
   bool       usb_iq_stream;/*!< true=raw IQ false=demodulated audio  */
@@ -204,6 +204,8 @@ typedef struct {
   bool       cw_reverse;         /* CW reverse sideband flag             */
   bool       cw_decode_on;       /* CW decoder enable                    */
   uint8_t    tx_src;             /* TX audio source: 0=USB 1=MIC         */
+  uint8_t    nr_level;           /* NR strength 0-100, def 50            */
+  uint8_t    bc_mode;            /* Beat canceller: 0=off 1/2=on         */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;

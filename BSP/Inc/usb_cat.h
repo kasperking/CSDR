@@ -23,7 +23,7 @@
   *  │ TX   │ PTT on (TX1/TX0 variants)    │ REAL   │ ACK-only              │
   *  │ RX   │ PTT off                      │ REAL   │ ACK-only              │
   *  │ TQ   │ TX state query               │ REAL   │ TQ0; / TQ1;           │
-  *  │ RA   │ RX attenuator (PE4302)       │ REAL   │ RA00;..RA03;          │
+  *  │ RA   │ RX attenuator (PE4302)       │ REAL   │ RA0000;..RA0300;      │
   *  │ SM   │ Signal meter (DSP power)     │ REAL   │ SM00012;              │
   *  │ VS   │ Active VFO select            │ REAL   │ VS0; / VS1;           │
   *  │ FR   │ RX VFO route                 │ REAL   │ FR0; / FR1;           │
@@ -43,22 +43,24 @@
   *  │ FW   │ Filter width                 │ REAL   │ FWnnnn; live BW       │
   *  │ SH   │ IF high-cut                  │ REAL   │ SHnn; live BW→index   │
   *  │ SL   │ IF low-cut                   │ REAL   │ SLnn; live sl_hz→idx  │
-  *  │ SQ   │ Squelch                      │ STUB   │ SQ0000; (fixed off)   │
-  *  │ GT   │ AGC speed                    │ STUB   │ GT00; (fixed fast)    │
+  *  │ SQ   │ Squelch                      │ REAL   │ SQ0nnn; wire 0-255    │
+  *  │ GT   │ AGC speed                    │ STUB   │ GT005; (fixed fast)   │
   *  │ PC   │ TX power                     │ REAL   │ PC000-100; live scale │
-  *  │ PA   │ Preamp                       │ STUB   │ PA0; (no HW)          │
-  *  │ RG   │ RF gain                      │ STUB   │ RG100; (no HW)        │
-  *  │ RL   │ NR level                     │ STUB   │ RL00; (fixed)         │
-  *  │ BC   │ Beat canceller               │ STUB   │ BC0; (no HW)          │
-  *  │ TS   │ Tuning step                  │ STUB   │ TS006; (fixed)        │
+  *  │ PA   │ Preamp                       │ STUB   │ PA00; (no HW)         │
+  *  │ RG   │ RF gain                      │ STUB   │ RG255; (no manual HW) │
+  *  │ RM   │ TX meter (SWR/COMP/ALC)      │ REAL*  │ RM1/RM3 live, COMP 0  │
+  *  │ RL   │ NR level                     │ REAL   │ RL0n; live nr_level   │
+  *  │ BC   │ Beat canceller               │ REAL   │ BC0-2; DSP auto-notch │
+  *  │ TS   │ TF-SET                       │ STUB   │ TS0; (fixed off)      │
   *  │ IS   │ IF shift                     │ REAL   │ IS0±nnnn; live        │
   *  │ XT   │ XIT on/off                   │ STUB   │ XT0; (fixed off)      │
   *  │ MN   │ Menu item select             │ STUB   │ MN000; (fixed)        │
   *  │ MP   │ Menu parameter               │ STUB   │ MP0000; (fixed)       │
   *  │ KS   │ CW keyer speed               │ REAL   │ KSnnn; live WPM       │
-  *  │ LK   │ Panel lock                   │ STUB   │ LK0; (fixed unlock)   │
+  *  │ LK   │ Panel lock                   │ STUB   │ LK00; (fixed unlock)  │
   *  │ MG   │ Mic gain                     │ STUB   │ MG050; (fixed)        │
-  *  │ EX   │ Extended menu (TS-480)       │ STUB   │ echo + '0' suffix     │
+  *  │ EX   │ Extended menu (TS-2000)      │ STUB   │ echo + zero value     │
+  *  │ XA   │ RF AGC on/off (custom)       │ REAL   │ XA0;/XA1; PE4302 loop │
   *  │ XS   │ USB stream type (IQ/Demod)   │ REAL   │ XS0;=IQ  XS1;=Demod  │
   *  │ VV   │ VFO copy                     │ ACK    │ silent                │
   *  │ UP   │ Frequency up step            │ ACK    │ silent                │
@@ -121,12 +123,14 @@ typedef struct {
   void (*set_tx)(bool tx_on);
   void (*set_att)(uint8_t level_0_3);
   void (*set_volume)(uint8_t vol);         /*!< AG: 0-100       */
-  void (*set_nr)(bool on);                 /*!< NR on/off       */
+  void (*set_nr)(uint8_t mode);            /*!< NR: 0=off 1=NR1 2=NR2 */
+  void (*set_nr_level)(uint8_t level);     /*!< RL: NR level 0-100 */
+  void (*set_bc)(uint8_t mode);            /*!< BC: 0=off 1/2=on  */
   void (*set_nb)(bool on);                 /*!< NB on/off       */
   void (*set_bw)(uint32_t hz);             /*!< SH: high-cut Hz */
   void (*set_lo_cut)(uint32_t hz);         /*!< SL: low-cut Hz  */
   void (*set_agc_fast)(bool fast);         /*!< GT: fast/slow   */
-  void (*set_squelch)(uint8_t sq);         /*!< SQ: 0-255       */
+  void (*set_squelch)(uint8_t sq);         /*!< SQ: internal 0-100 (wire 0-255) */
   void (*set_rit_hz)(int32_t hz);          /*!< RIT offset Hz   */
   void (*set_step)(uint32_t hz);           /*!< Tuning step Hz  */
   void (*set_if_shift)(int32_t hz);        /*!< IS: IF shift Hz */
@@ -137,7 +141,9 @@ typedef struct {
   float    (*get_signal_db)(void);
   uint8_t  (*get_att)(void);
   uint8_t  (*get_volume)(void);
-  bool     (*get_nr)(void);
+  uint8_t  (*get_nr)(void);                /*!< NR: 0=off 1=NR1 2=NR2 */
+  uint8_t  (*get_nr_level)(void);          /*!< RL: NR level 0-100 */
+  uint8_t  (*get_bc)(void);                /*!< BC: 0=off 1/2=on  */
   bool     (*get_nb)(void);
   uint32_t (*get_bw)(void);
   uint32_t (*get_lo_cut)(void);
@@ -158,18 +164,28 @@ typedef struct {
   /* Active VFO selection – triggers hardware swap when changed */
   void     (*set_active_vfo)(uint8_t vfo); /*!< 0=A, 1=B                */
   uint8_t  (*get_active_vfo)(void);
-  /* RF AGC (PE4302 automatic front-end attenuation) — RG command */
-  void     (*set_rf_agc)(bool on);         /*!< RGn: 0=off, 1=on        */
+  /* RF AGC (PE4302 automatic front-end attenuation) — XA command (custom).
+   * Moved off RG: TS-2000 defines RG as 3-digit RF gain (see RG stub). */
+  void     (*set_rf_agc)(bool on);         /*!< XAn: 0=off, 1=on        */
   bool     (*get_rf_agc)(void);
   /* TX output power — PC command */
   void     (*set_tx_power)(uint8_t pct);   /*!< PCnnn: 0-100 percent     */
   uint8_t  (*get_tx_power)(void);
+  /* TX SWR meter — RM1 command (pa_protect filtered SWR ×100; 100 = 1.00) */
+  uint16_t (*get_swr_x100)(void);
+  /* TX ALC meter — RM3 command (pa_protect external-ALC reduction, 0-70 %-pts) */
+  uint8_t  (*get_alc_reduction_pct)(void);
   /* CW keyer speed — KS command */
   void     (*set_cw_wpm)(uint8_t wpm);     /*!< KSnnn: 5-40 WPM          */
   uint8_t  (*get_cw_wpm)(void);
   /* USB audio stream type — XS command (custom) */
   void     (*set_usb_stream)(uint8_t mode); /*!< XS0=IQ, XS1=Demod       */
   uint8_t  (*get_usb_stream)(void);
+  /* TUNE carrier — AC command (TS-2000 antenna tuner, P3 = start/stop).
+   * Keys the dedicated low-power continuous carrier used for external ATU
+   * tuning (fixed TUNE_POWER_PCT drive, PA_Protect SWR bypass). */
+  void     (*set_tune)(bool on);           /*!< AC xx1; = start, xx0; = stop */
+  bool     (*get_tune)(void);              /*!< true while TUNE carrier active */
 } CAT_Callbacks_t;
 
 /** CAT driver state */
@@ -193,6 +209,7 @@ typedef struct {
   bool     split_on;               /*!< Split: TX on VFO B        */
   bool     pa_on;                  /*!< PA preamp on/off (compatibility state) */
   uint8_t  ag_raw;                 /*!< last AG raw value 0-255 for lossless GET */
+  uint8_t  sq_raw;                 /*!< last SQ raw value 0-255 for lossless GET */
   CAT_Callbacks_t cb;
   bool     initialized;
   /* Parser state — kept in handle so CAT_Init resets them on USB reconnect.
@@ -470,15 +487,16 @@ uint8_t CAT_CatModeToSDR(uint8_t cat_mode);
 #define CAT_HAS_CW          0   /* No CW keyer: KS stub 10 WPM                          */
 #define CAT_HAS_MEMORY      0   /* No channel memories: MR/MW are ACK-only              */
 #define CAT_HAS_AI_PUSH     1   /* AI unsolicited IF: fires on freq/mode/TX change       */
-#define CAT_HAS_PREAMP      0   /* No hardware preamp: PA always PA0                    */
-#define CAT_HAS_RF_GAIN     0   /* No RF gain control: RG always RG100                  */
+#define CAT_HAS_PREAMP      0   /* No hardware preamp: PA always PA00                   */
+#define CAT_HAS_RF_GAIN     0   /* No manual RF gain: RG always RG255 (RF AGC on XA)    */
 #define CAT_HAS_BEAT_CANCEL 0   /* No beat canceller: BC always BC0                     */
 #define CAT_HAS_NR          1   /* NR: LMS predictive filter wired through CAT path      */
 #define CAT_HAS_NB          0   /* NB stub: NB0; fixed — no DSP NB through CAT path     */
 #define CAT_HAS_VOLUME      1   /* AG real: live get/set_volume callbacks, 0-100 ↔ 0-255 */
 #define CAT_HAS_BW          1   /* FW/SH: live BW read/write via get_bw/set_bw callbacks */
 #define CAT_HAS_SQUELCH     1
-#define CAT_HAS_AGC_CTRL    0   /* GT stub: GT00; fixed — AGC speed not in minimal set  */
+#define CAT_HAS_AGC_CTRL    0   /* GT stub: GT005; fixed — AGC speed not in minimal set */
+#define CAT_HAS_TUNE        1   /* AC P3 keys the dedicated low-power TUNE carrier      */
 
 #ifdef __cplusplus
 }

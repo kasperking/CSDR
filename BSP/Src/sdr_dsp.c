@@ -32,6 +32,7 @@
 #include "runtime_diag.h"
 #include "spi_assets.h"
 #include "freedv_mode.h"
+#include "nr_spec.h"
 /* USER CODE END Includes */
 
 /* FreeDV state — owned here; initialised on each MODE_FREEDV entry */
@@ -366,44 +367,88 @@ void DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level)
   dsp->nb.enabled = enabled;
 }
 
-/* ── LMS predictive noise reduction ────────────────────────────────────────
+/* ── NLMS adaptive-filter engine (shared by NR1 and BC) ────────────────────
  *
- *  Adaptive 32-tap Wiener predictor (Widrow-Hoff LMS).  Correlated signal
- *  (voice, CW tone) is predictable → lands in output y.  Uncorrelated
- *  background noise is not predictable → stays in error e.  Output: y.
+ *  Adaptive 32-tap predictor: estimates the current sample from samples
+ *  Δ..Δ+31 in the past.  With Δ past the noise correlation time, only
+ *  long-correlation content (voice pitch, steady carriers) is predictable →
+ *  lands in prediction y; band-limited noise stays in error e = in − y.
+ *  The decorrelation delay Δ is essential: predicting from x[n] itself would
+ *  let the filter converge to the identity (w[0]=1) and stop separating.
  *
- *  Step size µ = 0.005.  At 32 taps and typical audio levels this gives
- *  convergence in ~200 ms and < 0.5 % CPU at 48 kHz.
+ *  NLMS: step scaled by µ / (TAPS·P̂ + ε) where P̂ is an IIR power estimate,
+ *  so convergence is level-independent.  Tiny leakage on w prevents weight
+ *  drift during long silences.
+ *
+ *  Returns error e; prediction y via *pred.  NR1 blends in→y by wet;
+ *  BC uses e directly (predictable tones subtracted = auto-notch).
  * ─────────────────────────────────────────────────────────────────────────*/
-static float nr_process(NR_t *nr, float in)
+static float lms_run(LMS_t *s, float in, float *pred)
 {
-  /* Shift delay line */
-  for (uint32_t i = NR_TAPS - 1U; i > 0U; i--)
-    nr->x[i] = nr->x[i - 1U];
-  nr->x[0] = in;
+  const uint16_t mask = LMS_LINE_LEN - 1U;
+  s->x[s->widx] = in;
 
-  /* Compute prediction */
+  /* Reference vector = x[n-Δ], x[n-Δ-1], … (newest-first from Δ back) */
+  uint16_t base = (uint16_t)((s->widx + LMS_LINE_LEN - s->delay) & mask);
   float y = 0.0f;
-  for (uint32_t i = 0U; i < NR_TAPS; i++)
-    y += nr->w[i] * nr->x[i];
+  uint16_t idx = base;
+  for (uint32_t i = 0U; i < LMS_TAPS; i++) {
+    y += s->w[i] * s->x[idx];
+    idx = (uint16_t)((idx + mask) & mask);   /* idx-- mod LINE_LEN */
+  }
 
-  /* LMS weight update */
-  float mu_e = 0.005f * (in - y);
-  for (uint32_t i = 0U; i < NR_TAPS; i++)
-    nr->w[i] += mu_e * nr->x[i];
+  float e = in - y;
+  s->pow_est += 0.01f * (in * in - s->pow_est);
+  float mu_e = e * (s->mu / ((float)LMS_TAPS * s->pow_est + 1e-9f));
 
-  return y;
+  idx = base;
+  for (uint32_t i = 0U; i < LMS_TAPS; i++) {
+    s->w[i] = s->w[i] * (1.0f - 1e-5f) + mu_e * s->x[idx];
+    idx = (uint16_t)((idx + mask) & mask);
+  }
+
+  s->widx = (uint16_t)((s->widx + 1U) & mask);
+  *pred = y;
+  return e;
 }
 
-void DSP_NR_Set(DSP_State_t *dsp, bool enabled, uint8_t level)
+static void lms_reset(LMS_t *s)
 {
-  (void)level;  /* step size fixed; level reserved for future tuning */
-  if (!enabled && dsp->nr.enabled) {
-    /* Reset on disable so filter reconverges cleanly if re-enabled */
-    memset(dsp->nr.w, 0, sizeof(dsp->nr.w));
-    memset(dsp->nr.x, 0, sizeof(dsp->nr.x));
+  memset(s->w, 0, sizeof(s->w));
+  memset(s->x, 0, sizeof(s->x));
+  s->widx    = 0U;
+  s->pow_est = 1e-4f;  /* non-zero so the NLMS denominator is sane at start */
+}
+
+/* mode 0=off, 1=NR1 (LMS line enhancer), 2=NR2 (spectral, see nr_spec.c).
+ * level 0-100: NR1 dry/wet mix (100 = pure prediction); NR2 suppression
+ * depth (100 = −24 dB floor).  Scalar stores only; safe from the main loop. */
+void DSP_NR_Set(DSP_State_t *dsp, uint8_t mode, uint8_t level)
+{
+  if (mode  > 2U)   mode  = 2U;
+  if (level > 100U) level = 100U;
+  dsp->nr.wet   = (float)level * 0.01f;
+  dsp->nr.mu    = 0.05f;
+  dsp->nr.delay = 32U;   /* ≈ fs/BW for 1.5-3 kHz noise at 48 kHz */
+  NRSpec_SetLevel(level);
+  if (mode != dsp->nr_mode) {
+    /* Clean start on any mode change so filters reconverge from scratch */
+    lms_reset(&dsp->nr);
+    if (mode == 2U) NRSpec_Reset();
   }
-  dsp->nr.enabled = enabled;
+  dsp->nr.enabled = (mode == 1U);
+  dsp->nr_mode    = mode;
+}
+
+/* Beat canceller: mode 0=off, 1/2=on (TS-2000 BC1/BC2 — same engine here) */
+void DSP_BC_Set(DSP_State_t *dsp, uint8_t mode)
+{
+  bool en = (mode > 0U);
+  dsp->bc.mu    = 0.15f;  /* faster than NR1 — track drifting carriers */
+  dsp->bc.delay = 96U;    /* 2 ms: speech decorrelated, steady tones remain */
+  if (en && !dsp->bc.enabled)
+    lms_reset(&dsp->bc);
+  dsp->bc.enabled = en;
 }
 
 /* Set mode-specific AGC timing and bypass.  Primary configuration entry point.
@@ -1312,9 +1357,21 @@ void DSP_Process(DSP_State_t *dsp,
     if (dsp->notch_on)
       audio = IIR_Biquad_Process(&dsp->notch, audio);
 
-    /* ── 7d. LMS Noise Reduction */
-    if (dsp->nr.enabled)
-      audio = nr_process(&dsp->nr, audio);
+    /* ── 7c2. Beat canceller – LMS auto-notch, removes steady carriers so the
+     *         NR stage below sees voice+noise only */
+    if (dsp->bc.enabled) {
+      float bc_pred;
+      audio = lms_run(&dsp->bc, audio, &bc_pred);
+    }
+
+    /* ── 7d. Noise Reduction – NR1 LMS line enhancer / NR2 spectral Wiener */
+    if (dsp->nr_mode == 1U) {
+      float pred;
+      (void)lms_run(&dsp->nr, audio, &pred);
+      audio = audio + (pred - audio) * dsp->nr.wet;
+    } else if (dsp->nr_mode == 2U) {
+      audio = NRSpec_Process(audio);
+    }
 
     /* ── 8. AGC */
     audio = AGC_Process(&dsp->agc, audio);

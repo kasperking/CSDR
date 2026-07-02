@@ -43,12 +43,12 @@ void RTC_Clock_Init(void)
   __DSB();
 
   /* Check if RTC is already correctly configured (LSE selected + running) */
-  uint32_t bdcr = RCC->BDCR;
-  bool lse_rdy  = ((bdcr & RCC_BDCR_LSERDY) != 0U);
-  bool rtc_en   = ((bdcr & RCC_BDCR_RTCEN)  != 0U);
-  bool sel_lse  = ((bdcr & RCC_BDCR_RTCSEL) == RCC_BDCR_RTCSEL_0);
+  uint32_t bdcr    = RCC->BDCR;
+  bool     lse_rdy = ((bdcr & RCC_BDCR_LSERDY) != 0U);
+  bool     rtc_en  = ((bdcr & RCC_BDCR_RTCEN)  != 0U);
+  uint32_t rtc_sel = (bdcr & RCC_BDCR_RTCSEL);
 
-  if (lse_rdy && rtc_en && sel_lse) {
+  if (lse_rdy && rtc_en && (rtc_sel == RCC_BDCR_RTCSEL_0)) {
     /* RTC already running — just enable bypass shadow for direct reads */
     rtc_unlock();
     SET_BIT(RTC->CR, RTC_CR_BYPSHAD);
@@ -59,17 +59,27 @@ void RTC_Clock_Init(void)
 
   /* ── First-time configuration ── */
 
-  /* Backup domain reset (required to change RTCSEL) */
-  SET_BIT(RCC->BDCR, RCC_BDCR_BDRST);
-  __DSB();
-  CLEAR_BIT(RCC->BDCR, RCC_BDCR_BDRST);
-  __DSB();
+  /* RTCSEL is write-once only after it has been written: reset value 00 means
+   * it can still be set directly.  Only force a backup-domain reset when it
+   * already holds a wrong non-zero source — that reset also stops LSE. */
+  if ((rtc_sel != 0U) && (rtc_sel != RCC_BDCR_RTCSEL_0)) {
+    SET_BIT(RCC->BDCR, RCC_BDCR_BDRST);
+    __DSB();
+    CLEAR_BIT(RCC->BDCR, RCC_BDCR_BDRST);
+    __DSB();
+  }
 
-  /* Re-enable LSE (backup domain reset turns it off) */
-  SET_BIT(RCC->BDCR, RCC_BDCR_LSEON);
-  uint32_t t = 1000000U;
-  while (!READ_BIT(RCC->BDCR, RCC_BDCR_LSERDY) && --t) {}
-  if (t == 0U) return;  /* LSE failed to start — leave s_rtc_ok = false */
+  /* LSE normally still runs from SystemClock_Config; it only needs a restart
+   * after the backup-domain reset above.  LSE crystals take hundreds of ms
+   * (up to seconds) to start, so wait on the HAL tick, not a spin count. */
+  if (!READ_BIT(RCC->BDCR, RCC_BDCR_LSERDY)) {
+    SET_BIT(RCC->BDCR, RCC_BDCR_LSEON);
+    uint32_t t0 = HAL_GetTick();
+    while (!READ_BIT(RCC->BDCR, RCC_BDCR_LSERDY)) {
+      if ((HAL_GetTick() - t0) > 5000U)
+        return;  /* LSE failed to start — leave s_rtc_ok = false */
+    }
+  }
 
   /* Select LSE as RTC clock source */
   MODIFY_REG(RCC->BDCR, RCC_BDCR_RTCSEL, RCC_BDCR_RTCSEL_0);

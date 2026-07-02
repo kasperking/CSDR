@@ -125,13 +125,26 @@ typedef struct {
   float    current_threshold_sq; /*!< floor_sq × threshold_ratio_sq, last sample  */
 } NoiseBlanker_t;
 
-/** LMS Predictive Noise Reduction (audio domain) */
-#define NR_TAPS  32U
+/** Shared NLMS adaptive-filter engine (audio domain).
+ *  Two uses, differing only in decorrelation delay Δ and output tap:
+ *   NR1 line enhancer: Δ small (32) — output = dry/wet blend of prediction y
+ *   BC auto-notch:     Δ large (96) — output = error e = in − y (tones removed)
+ *  Δ must exceed the noise correlation time (≈ fs/BW samples) so broadband
+ *  noise is unpredictable while voice pitch / steady carriers remain
+ *  predictable.  Step size is NLMS-normalised by an IIR input-power estimate
+ *  so convergence speed is independent of band noise level. */
+#define LMS_TAPS      32U
+#define LMS_LINE_LEN 128U  /* power of 2, ≥ LMS_TAPS + max Δ (32+96) */
 typedef struct {
-  float   w[NR_TAPS];   /*!< LMS weight vector (adapts to signal) */
-  float   x[NR_TAPS];   /*!< Input delay line                     */
-  bool    enabled;
-} NR_t;
+  float    w[LMS_TAPS];     /*!< Adaptive weight vector               */
+  float    x[LMS_LINE_LEN]; /*!< Input delay-line ring                */
+  float    pow_est;         /*!< IIR input-power estimate (τ ≈ 2 ms)  */
+  float    mu;              /*!< Normalised step size                 */
+  float    wet;             /*!< NR1 dry/wet mix 0..1 (unused by BC)  */
+  uint16_t widx;            /*!< Ring write index                     */
+  uint16_t delay;           /*!< Decorrelation delay Δ (samples)      */
+  bool     enabled;
+} LMS_t;
 
 /** FM Demodulator (phân biệt pha tức thời) */
 typedef struct {
@@ -195,7 +208,9 @@ typedef struct {
   FM_Demod_t   fm;
   AGC_t        agc;
   NoiseBlanker_t nb;  /*!< HF impulse noise blanker (disabled by default) */
-  NR_t           nr;  /*!< LMS predictive noise reduction (audio domain)  */
+  LMS_t          nr;  /*!< NR1 — LMS line enhancer (audio domain)         */
+  LMS_t          bc;  /*!< BC — LMS auto-notch / beat canceller           */
+  uint8_t        nr_mode; /*!< 0 = off, 1 = NR1 (LMS), 2 = NR2 (spectral) */
 
   /* Static ADC DC offset (from auto-cal, applied pre-IIR in DSP_Process) */
   float         dc_i_static;   /*!< ADC count units subtracted from raw I */
@@ -325,7 +340,11 @@ void  DSP_SetNotch(DSP_State_t *dsp, bool on, float hz);
 
 /* Noise Blanker */
 void  DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level);
-void  DSP_NR_Set(DSP_State_t *dsp, bool enabled, uint8_t level);
+/* Noise reduction: mode 0=off, 1=NR1 (LMS line enhancer), 2=NR2 (spectral).
+ * level 0-100: NR1 dry/wet mix; NR2 max suppression depth (100 = −24 dB). */
+void  DSP_NR_Set(DSP_State_t *dsp, uint8_t mode, uint8_t level);
+/* Beat canceller (LMS auto-notch): mode 0=off, 1/2=on (BC1/BC2 both map to on) */
+void  DSP_BC_Set(DSP_State_t *dsp, uint8_t mode);
 
 /* IQ correction */
 void  DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad);

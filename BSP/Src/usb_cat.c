@@ -259,7 +259,7 @@ volatile uint32_t dbg_cat_opc_mask = 0U;
  *
  *  dbg_cat_tx_min_gap_ms:  minimum ms between consecutive CDC IN packets (0=off).
  *    Default 2ms — enough to separate consecutive responses without being slow.
- *    Real TS-480 at 9600 baud sends a 14-char response in ~14ms.
+ *    A real TS-2000 at 9600 baud sends a 14-char response in ~14ms.
  *    Set to 0 to disable pacing and measure raw throughput.
  *  dbg_pacing_skips:       FlushTX calls deferred by the pacing guard.
  *    Data is NOT dropped — it stays in the FIFO and retries on the next tick.
@@ -624,8 +624,8 @@ void CAT_FlushTX(CAT_Handle_t *cat)
     }
     s_busy_since_ms = 0U;   /* clear on every successful not-busy check */
 
-    /* Pacing: enforce minimum inter-frame gap to emulate TS-480 UART cadence.
-     * Real TS-480 at 9600 baud: a 14-char "FA00007100000;" takes ~14ms.
+    /* Pacing: enforce minimum inter-frame gap to emulate real-rig UART cadence.
+     * A TS-2000 at 9600 baud: a 14-char "FA00007100000;" takes ~14ms.
      * dbg_cat_tx_min_gap_ms=2 is conservative — prevents zero-gap bursts without
      * slowing normal polling.  dbg_last_flush_ms is maintained below and is 0
      * on first call (guarantees the first packet goes through without delay). */
@@ -725,6 +725,10 @@ void CAT_Receive(CAT_Handle_t *cat, const uint8_t *data, uint16_t len)
  * ========================================================= */
 static uint32_t s_tx_ready_ms = 0U;
 
+/* RM meter select — which meter (1=SWR 2=COMP 3=ALC) the host last chose with
+ * RMn;.  File-scope so CAT_Init resets it on USB reconnect. */
+static uint8_t s_rm_sel = 1U;
+
 /* =========================================================
  * Init
  * ========================================================= */
@@ -752,6 +756,12 @@ void CAT_Init(CAT_Handle_t *cat, const CAT_Callbacks_t *cb)
         uint8_t vol = cat->cb.get_volume ? cat->cb.get_volume() : 50U;
         cat->ag_raw = (uint8_t)((uint32_t)vol * 255U / 100U);
     }
+    /* Seed sq_raw from current squelch (internal 0-100 → wire 0-255) */
+    {
+        uint8_t sq = cat->cb.get_squelch ? cat->cb.get_squelch() : 0U;
+        cat->sq_raw = (uint8_t)(((uint32_t)sq * 255U + 50U) / 100U);
+    }
+    s_rm_sel = 1U;   /* RM meter select back to SWR on reconnect */
 
     cat->initialized = true;
     cat->rx_len      = 0U;
@@ -1054,6 +1064,24 @@ static void cat_build_DC(CAT_Handle_t *cat, char *buf)
     *p = '\0';
 }
 
+/* SWR ×100 → TS-2000 meter segments 0-30.  Piecewise-linear inverse of
+ * Hamlib's TS2000_SWR_CAL table (raw 0→SWR 1.0, 4→1.5, 8→2.0, 12→3.0,
+ * 20→10.0) so the host converts the RM1 reading back to the same SWR figure
+ * pa_protect measured.  Beyond the calibrated range: 1 segment per 1.0 SWR,
+ * saturating at 30 (full scale, input clamp is 2000 = SWR 20:1). */
+static uint32_t cat_swr_to_meter(uint32_t swr_x100)
+{
+    if (swr_x100 <= 100U)  return 0U;
+    if (swr_x100 <= 150U)  return (swr_x100 - 100U) * 4U / 50U;
+    if (swr_x100 <= 200U)  return 4U  + (swr_x100 - 150U) * 4U / 50U;
+    if (swr_x100 <= 300U)  return 8U  + (swr_x100 - 200U) * 4U / 100U;
+    if (swr_x100 <= 1000U) return 12U + (swr_x100 - 300U) * 8U / 700U;
+    {
+        uint32_t raw = 20U + (swr_x100 - 1000U) / 100U;
+        return (raw > 30U) ? 30U : raw;
+    }
+}
+
 /* =========================================================
  * Command executor
  * ========================================================= */
@@ -1108,7 +1136,7 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
             } else if (cat->cb.set_mode) {
                 cat->cb.set_mode(CAT_CatModeToSDR(m));
             }
-            /* ACK-only: TS-480 spec; Hamlib kenwood_transaction(NULL,0) does not read */
+            /* ACK-only: Kenwood SET convention; Hamlib kenwood_transaction(NULL,0) does not read */
         }
     }
 
@@ -1152,6 +1180,26 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
+    /* AC — antenna tuner (TS-2000): AC P1 P2 P3; P1=RX tuner, P2=TX tuner,
+     * P3=tuning start/stop.  No ATU relay is fitted, so P1/P2 are accepted and
+     * ignored; P3 keys the dedicated TUNE carrier (fixed low-power drive,
+     * PA_Protect SWR bypass — see csdr_tune_start/stop).
+     * Hamlib RIG_OP_TUNE sends AC111; with no readback → AC is in the
+     * auto-echo suppress list below.  GET answers AC00n; n = tuning active. */
+    else if (cmd[0] == 'A' && cmd[1] == 'C') {
+        if (cmd[2] == '\0') {
+            bool tuning = cat->cb.get_tune ? cat->cb.get_tune() : false;
+            resp[0] = 'A'; resp[1] = 'C'; resp[2] = '0'; resp[3] = '0';
+            resp[4] = tuning ? '1' : '0'; resp[5] = ';'; resp[6] = '\0';
+        } else {
+            /* SET: P3 = cmd[4].  A short/malformed frame (missing P3) is
+             * treated as stop — a TX-keying command must never start the
+             * carrier on a truncated frame.  ACK-only, no response. */
+            char p3 = (cmd[3] != '\0' && cmd[4] != '\0') ? cmd[4] : '0';
+            if (cat->cb.set_tune) cat->cb.set_tune(p3 != '0');
+        }
+    }
+
     /* AG — volume control: GET returns AG0nnn; (0-255), SET applies via callback.
      * TS-2000 format: AG0P2; where P2 = 000-255 (channel 0 = main receiver).
      * ag_raw caches the last raw 0-255 value so GET echoes exactly what SET sent
@@ -1176,13 +1224,17 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
 
     else if (cmd[0] == 'N' && cmd[1] == 'R') {
         if (cmd[2] == '\0') {
+            /* TS-2000: NR0=off, NR1=LMS line enhancer, NR2=spectral */
             char tmp[5] = { 'N', 'R', '0', ';', '\0' };
-            if (cat->cb.get_nr && cat->cb.get_nr()) { tmp[2] = '1'; }
+            uint8_t m = cat->cb.get_nr ? cat->cb.get_nr() : 0U;
+            if (m > 2U) m = 2U;
+            tmp[2] = (char)('0' + m);
             cat_copy(resp, tmp);
             dbg_cat_nr_get_count++;
             dbg_cat_nr_last_get_char = tmp[2];
         } else {
-            if (cat->cb.set_nr) { cat->cb.set_nr(cmd[2] != '0'); }
+            uint8_t m = (cmd[2] == '2') ? 2U : ((cmd[2] != '0') ? 1U : 0U);
+            if (cat->cb.set_nr) { cat->cb.set_nr(m); }
             dbg_cat_nr_set_count++;
             dbg_cat_nr_last_set_char = cmd[2];
         }
@@ -1266,19 +1318,33 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* SQ — squelch 0-100 */
+    /* SQ — squelch.  TS-2000 wire scale is 0-255 (SQ0nnn); internal squelch is
+     * 0-100 (→ -70..0 dBFS gate).  The old handler clamped SETs to 100 and
+     * returned the raw 0-100 value on GET, so any host slider above ~39%
+     * saturated and read back wrong.  sq_raw caches the last raw 0-255 value
+     * for lossless GET-after-SET (same pattern as ag_raw for AG); when the
+     * squelch is changed from the local UI instead, GET re-derives the raw
+     * value from the live internal setting. */
     else if (cmd[0] == 'S' && cmd[1] == 'Q') {
         if (cmd[2] == '\0' || (cmd[2] == '0' && cmd[3] == '\0')) {
-            uint8_t sq = cat->cb.get_squelch ? cat->cb.get_squelch() : 0U;
-            resp[0]='S'; resp[1]='Q'; resp[2]='0';
-            resp[3]=(char)('0' + sq/100U);
-            resp[4]=(char)('0' + (sq%100U)/10U);
-            resp[5]=(char)('0' + sq%10U);
-            resp[6]=';'; resp[7]='\0';
+            uint8_t  sq  = cat->cb.get_squelch ? cat->cb.get_squelch() : 0U;
+            uint32_t raw = cat->sq_raw;
+            if ((uint8_t)((raw * 100U + 127U) / 255U) != sq) {
+                raw = ((uint32_t)sq * 255U + 50U) / 100U;  /* UI changed it */
+            }
+            {
+                char *p = resp;
+                *p++ = 'S'; *p++ = 'Q'; *p++ = '0';
+                p = cat_put_u32(p, raw, 3U);
+                *p++ = ';'; *p = '\0';
+            }
         } else if (cmd[2] == '0' && cmd[3] >= '0' && cmd[3] <= '9') {
-            uint8_t sq = (uint8_t)((cmd[3]-'0')*100 + (cmd[4]-'0')*10 + (cmd[5]-'0'));
-            if (sq > 100U) sq = 100U;
+            uint32_t raw = cat_parse_u(&cmd[3], 3U);
+            if (raw > 255U) raw = 255U;
+            cat->sq_raw = (uint8_t)raw;
+            uint8_t sq = (uint8_t)((raw * 100U + 127U) / 255U);  /* round, not truncate */
             if (cat->cb.set_squelch) cat->cb.set_squelch(sq);
+            /* ACK-only: SQ is in suppress list — Hamlib/flrig send no readback */
         }
     }
 
@@ -1287,7 +1353,43 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         cat_build_SM(cat, resp);
     }
 
-    /* RA */
+    /* RM — TX meter read/select.  Hamlib TS-2000 selects a meter with RMn;
+     * (1=SWR 2=COMP 3=ALC, no readback) and polls RM; expecting exactly
+     * "RMnnnnn" (7 chars: P1 meter digit + P2 4-digit reading).
+     * SWR (RM1) is REAL: pa_protect's IIR-filtered SWR — the same figure the
+     * FOLDBACK/TRIP state machine acts on — mapped to the 0-30 needle scale
+     * via cat_swr_to_meter.  The getter returns 1.00 flat in RX / no PA /
+     * sensor fault, so the needle rests at zero.
+     * ALC (RM3) is REAL: pa_protect's external-ALC drive reduction (0-70
+     * %-points, the multiplier applied in csdr_apply_tx) mapped linearly to
+     * the 0-20 needle scale Hamlib expects (val = raw/4 → 0..5.0); zero in
+     * RX or when ext_alc_on is off.  COMP (RM2) reads 0000. */
+    else if (cmd[0] == 'R' && cmd[1] == 'M') {
+        if (cmd[2] == '\0') {
+            uint32_t reading = 0U;
+            if (s_rm_sel == 1U && cat->cb.get_swr_x100) {
+                reading = cat_swr_to_meter(cat->cb.get_swr_x100());
+            } else if (s_rm_sel == 3U && cat->cb.get_alc_reduction_pct) {
+                reading = (uint32_t)cat->cb.get_alc_reduction_pct() * 2U / 7U;
+                if (reading > 20U) reading = 20U;
+            }
+            char *p = resp;
+            *p++ = 'R'; *p++ = 'M';
+            *p++ = (char)('0' + s_rm_sel);
+            p = cat_put_u32(p, reading, 4U);
+            *p++ = ';'; *p = '\0';
+        } else if (cmd[2] >= '0' && cmd[2] <= '3') {
+            s_rm_sel = (uint8_t)(cmd[2] - '0');
+            /* SET RMn; — ACK-only (suppress list: no readback) */
+        } else {
+            cat_mark_malformed(cmd); cat_copy(resp, "?;");
+        }
+    }
+
+    /* RA — RX attenuator.
+     * TS-2000 GET answer is 4 digits (P1 att level + P2 reserved "00"); Hamlib
+     * requires exactly "RAnnnn" (6 chars) and reads digit [3] ('1' = 12 dB).
+     * The old 2-digit "RAnn" answer was the TS-480 format → RIG_EPROTO. */
     else if (cmd[0] == 'R' && cmd[1] == 'A') {
         if (cmd[2] == '\0') {
             uint8_t att = cat->cb.get_att ? cat->cb.get_att() : 0U;
@@ -1295,8 +1397,10 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
             resp[0] = 'R'; resp[1] = 'A';
             resp[2] = (char)('0' + (lv / 10U));
             resp[3] = (char)('0' + (lv % 10U));
-            resp[4] = ';';
-            resp[5] = '\0';
+            resp[4] = '0';
+            resp[5] = '0';
+            resp[6] = ';';
+            resp[7] = '\0';
         } else if (strlen(cmd) == 4U) {
             uint8_t lv = (uint8_t)(cmd[2] - '0') * 10U + (uint8_t)(cmd[3] - '0');
             if (cat->cb.set_att) cat->cb.set_att(lv > 3U ? 3U : lv);
@@ -1306,10 +1410,13 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* GT — stub: AGC speed not in minimal CAT set */
+    /* GT — stub: AGC speed not in minimal CAT set.
+     * TS-2000 format: 3 digits, 000=off / 001-020=fast→slow.  Hamlib requires
+     * exactly "GTnnn" (5 chars) on GET — the old 2-digit "GT00" answer was the
+     * TS-480 format and made every AGC query fail with RIG_EPROTO. */
     else if (cmd[0] == 'G' && cmd[1] == 'T') {
-        if (cmd[2] == '\0') { cat_copy(resp, "GT00;"); }  /* fast AGC */
-        /* SET GT0n; — ACK-only stub */
+        if (cmd[2] == '\0') { cat_copy(resp, "GT005;"); }  /* 005 = fast AGC */
+        /* SET GTnnn; — ACK-only stub (suppress list: Hamlib sends no readback) */
     }
 
     /* PS */
@@ -1337,28 +1444,31 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* BC — Beat Canceller stub (no hardware) */
+    /* BC — Beat Canceller (LMS auto-notch).  TS-2000: 0=off, 1=BC1, 2=BC2. */
     else if (cmd[0] == 'B' && cmd[1] == 'C') {
-        if (cmd[2] == '\0') { cat_copy(resp, "BC0;"); }
-        /* SET BCn; — ACK-only */
+        if (cmd[2] == '\0') {
+            uint8_t m = cat->cb.get_bc ? cat->cb.get_bc() : 0U;
+            if (m > 2U) m = 2U;
+            resp[0]='B'; resp[1]='C'; resp[2]=(char)('0' + m);
+            resp[3]=';'; resp[4]='\0';
+        } else {
+            uint8_t m = (cmd[2] == '2') ? 2U : ((cmd[2] != '0') ? 1U : 0U);
+            if (cat->cb.set_bc) { cat->cb.set_bc(m); }
+            /* ACK-only: BC SET is in suppress list — no readback from hosts */
+        }
     }
 
-    /* RG — RF AGC (PE4302 automatic front-end attenuator control)
-     *   GET  RG;   → RG0; (off) or RG1; (on)
-     *   SET  RG0;  → disable RF AGC (manual att control)
-     *        RG1;  → enable RF AGC  (automatic overload prevention)
-     * Non-standard extension; safe to ignore on TS-2000 compatible software. */
+    /* RG — RF gain stub.
+     * TS-2000 standard: RG = RF gain, 3 digits 000-255; Hamlib requires exactly
+     * "RGnnn" (5 chars) on GET and sends RGnnn on SET with no readback.
+     * The RF AGC toggle that previously hijacked this opcode (1-digit RG0/RG1)
+     * broke every Hamlib RF-gain query with RIG_EPROTO and made the host's
+     * RF-gain slider randomly toggle the AGC — it now lives on XA below.
+     * No manual RF-gain hardware: front-end gain is handled by the PE4302
+     * attenuator (RA) and its automatic control loop (XA).  Stub: always max. */
     else if (cmd[0] == 'R' && cmd[1] == 'G') {
-        if (cmd[2] == '\0') {
-            bool on = cat->cb.get_rf_agc ? cat->cb.get_rf_agc() : false;
-            resp[0] = 'R'; resp[1] = 'G';
-            resp[2] = on ? '1' : '0';
-            resp[3] = ';'; resp[4] = '\0';
-        } else if (cmd[2] == '0' || cmd[2] == '1') {
-            if (cat->cb.set_rf_agc) cat->cb.set_rf_agc(cmd[2] == '1');
-        } else {
-            cat_mark_malformed(cmd); cat_copy(resp, "?;");
-        }
+        if (cmd[2] == '\0') { cat_copy(resp, "RG255;"); }
+        /* SET RGnnn; — ACK-only stub (suppress list: no readback) */
     }
 
     /* VS — GET returns active VFO; SET selects active VFO (triggers hardware swap) */
@@ -1427,7 +1537,8 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         /* ACK-only */
     }
 
-    /* RU — RIT up. TS-480: RUnnnnn; (5-digit Hz step). Bare RU; = 10 Hz. */
+    /* RU — RIT up.  Accepts optional 5-digit Hz step (RUnnnnn;); a bare RU;
+     * (the TS-2000 form — step by current rate) steps 10 Hz. */
     else if (cmd[0] == 'R' && cmd[1] == 'U') {
         int32_t step = (cmd[2] != '\0') ? (int32_t)cat_parse_u(&cmd[2], 5U) : 10;
         int32_t cur  = cat->cb.get_rit_hz ? cat->cb.get_rit_hz() : 0;
@@ -1488,10 +1599,14 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* TS — stub: tuning step not in minimal CAT set */
+    /* TS — TF-SET stub.  On the TS-2000, TS is TF-SET (listen-on-TX-freq while
+     * the key is down), a 1-digit on/off — NOT the tuning step (that is ST).
+     * The old "TS006;" answer misread it as a step index, and its strlen<=3
+     * guard also matched SETs ("TS1" is 3 chars), emitting an unsolicited
+     * response that would desync any host sending TF-SET. */
     else if (cmd[0] == 'T' && cmd[1] == 'S') {
-        if ((uint8_t)strlen(cmd) <= 3U) { cat_copy(resp, "TS006;"); }  /* 100 Hz */
-        /* SET TS0nn; — ACK-only stub */
+        if (cmd[2] == '\0') { cat_copy(resp, "TS0;"); }  /* TF-SET off */
+        /* SET TS0;/TS1; — TF-SET not supported, ACK-only (suppress list) */
     }
 
     /* VV — ACK-only stub: VFO copy not triggered from CAT path */
@@ -1509,7 +1624,7 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
     else if (cmd[0] == 'K' && cmd[1] == 'Y') { /* ACK-only */ }
     else if (cmd[0] == 'M' && cmd[1] == 'R') { /* ACK-only: memory recall not implemented */ }
 
-    /* MN — menu item select.  flrig TS-480 init probes this; a ?; response
+    /* MN — menu item select.  flrig init probes this; a ?; response
      * causes stoi("") → std::invalid_argument → crash in flrig. Stub = 000. */
     else if (cmd[0] == 'M' && cmd[1] == 'N') {
         if (cmd[2] == '\0') { cat_copy(resp, "MN000;"); }
@@ -1547,15 +1662,18 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* LK — panel lock query/set.  Stub: always unlocked */
+    /* LK — panel lock query/set.  Stub: always unlocked.
+     * TS-2000 format is 2 digits (P1 key lock + P2 tuning lock); Hamlib sends
+     * "LK11"/"LK00" on SET and requires exactly "LKnn" (4 chars) on GET.
+     * The old 1-digit "LK0" was the TS-480 format → RIG_EPROTO. */
     else if (cmd[0] == 'L' && cmd[1] == 'K') {
         if (cmd[2] == '\0') {
-            cat_copy(resp, "LK0;");
+            cat_copy(resp, "LK00;");
         }
-        /* SET LK0;/LK1; — ACK-only */
+        /* SET LKnn; — ACK-only */
     }
 
-    /* MG — microphone gain.  flrig TS-480 probes this; stub 50% */
+    /* MG — microphone gain.  flrig/Hamlib probe this (TS-2000: 3-digit 0-100); stub 50% */
     else if (cmd[0] == 'M' && cmd[1] == 'G') {
         if (cmd[2] == '\0') {
             cat_copy(resp, "MG050;");
@@ -1563,43 +1681,80 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         /* SET MGnnn; — ACK-only */
     }
 
-    /* EX — extended menu (TS-480 specific).
-     * READ: flrig sends EXnnnXXXX; (9-char cmd, e.g. "EX0450000;") and expects an
-     *       11-char response: EXnnnXXXXY; where Y is the current menu value digit.
-     *       Stub: echo command back with '0' appended → all menu values = 0.
-     *       menu_45 = false → standard SL/SH filter tables (correct for stub).
-     * SET:  flrig sends EXnnnXXXXX; (10-char cmd, e.g. "EX01200000;") via
-     *       sendCommand() with NO readback.  Must be ACK-only and NOT auto-echoed
-     *       or the stale echo corrupts the next command's response buffer. */
+    /* EX — extended menu stub (TS-2000 menu system).
+     * READ: Hamlib ts2000.c and flrig send EXnnn0000; (9-char cmd, nnn = menu
+     *       number) and expect the command echoed back with the current value
+     *       appended: EXnnn0000V…; — 9+value_len data chars.  Hamlib reads
+     *       1-digit values for menus 012/013/020/021/022 and a 2-digit value
+     *       for menu 031 (CW pitch).  Stub: echo + zeros → all menu values 0.
+     * SET:  EXnnn0000V…; (≥10-char cmd) via sendCommand()/no readback.  Must be
+     *       ACK-only and NOT auto-echoed or the stale echo corrupts the next
+     *       command's response buffer. */
     else if (cmd[0] == 'E' && cmd[1] == 'X') {
         size_t exlen = strlen(cmd);
         if (exlen == 9U) {
-            /* READ: EXnnnXXXX → respond EXnnnXXXXY; (11 chars, Y='0' stub) */
             memcpy(resp, cmd, 9U);
-            resp[9]  = '0';
-            resp[10] = ';';
-            resp[11] = '\0';
+            if (cmd[2] == '0' && cmd[3] == '3' && cmd[4] == '1') {
+                /* Menu 031 (CW pitch) — Hamlib expects a 2-digit value */
+                resp[9]  = '0';
+                resp[10] = '0';
+                resp[11] = ';';
+                resp[12] = '\0';
+            } else {
+                resp[9]  = '0';
+                resp[10] = ';';
+                resp[11] = '\0';
+            }
         }
-        /* SET (exlen==10) or bare EX; — ACK-only, no response */
+        /* SET (exlen>=10) or bare EX; — ACK-only, no response */
     }
 
-    /* PA — preamplifier stub (no hardware preamp) */
+    /* PA — preamplifier stub (no hardware preamp).
+     * TS-2000 GET answer is 2 digits (P1 main + P2 sub RX); Hamlib requires
+     * exactly "PAnn" (4 chars).  The old 1-digit "PA0" was the TS-480 format
+     * (no sub receiver) → RIG_EPROTO. */
     else if (cmd[0] == 'P' && cmd[1] == 'A') {
-        if (cmd[2] == '\0') { cat_copy(resp, "PA0;"); }
+        if (cmd[2] == '\0') { cat_copy(resp, "PA00;"); }
         /* SET PAn; — ACK-only */
     }
 
-    /* RG — RF gain stub (no hardware RF gain control) */
-    else if (cmd[0] == 'R' && cmd[1] == 'G') {
-        if (cmd[2] == '\0') { cat_copy(resp, "RG100;"); }
-        /* SET RGnnn; — ACK-only */
+    /* RL — noise reduction level.  TS-2000: P1 = 2 digits 00-09 ↔ internal
+     * nr_level 0-100 (dry/wet mix).  Hamlib ts2000.c reads exactly 4 chars
+     * ("RLnn") before ';'.  Rounding both ways keeps GET-after-SET stable
+     * (5→56→5). */
+    else if (cmd[0] == 'R' && cmd[1] == 'L') {
+        if (cmd[2] == '\0') {
+            uint8_t level = cat->cb.get_nr_level ? cat->cb.get_nr_level() : 0U;
+            uint8_t idx   = (uint8_t)(((uint32_t)level * 9U + 50U) / 100U);
+            resp[0]='R'; resp[1]='L'; resp[2]='0';
+            resp[3]=(char)('0' + idx);
+            resp[4]=';'; resp[5]='\0';
+        } else {
+            uint32_t idx = cat_parse_u(&cmd[2], 2U);
+            if (idx > 9U) idx = 9U;
+            if (cat->cb.set_nr_level) cat->cb.set_nr_level((uint8_t)((idx * 100U + 4U) / 9U));
+            /* ACK-only: RL SET is in suppress list — Hamlib/flrig send with no readback */
+        }
     }
 
-    /* RL — noise reduction level (0-09).  flrig TS-480 queries this during state read.
-     * Stub: level 00 (minimum) — consistent with NR0 (off) stub. */
-    else if (cmd[0] == 'R' && cmd[1] == 'L') {
-        if (cmd[2] == '\0') { cat_copy(resp, "RL00;"); }
-        /* SET RLnn; — ACK-only */
+    /* XA — RF AGC on/off (custom command, PE4302 front-end attenuator control).
+     * Moved here from RG: TS-2000 defines RG as 3-digit RF gain, so hijacking
+     * it made Hamlib's RF-gain slider toggle the AGC (see RG handler above).
+     *   GET  XA;   → XA0; (off) or XA1; (on)
+     *   SET  XA0;  → disable RF AGC (manual att control)
+     *        XA1;  → enable RF AGC  (automatic overload prevention)
+     * X-prefix custom namespace shared with XS; unknown to standard hosts. */
+    else if (cmd[0] == 'X' && cmd[1] == 'A') {
+        if (cmd[2] == '\0') {
+            bool on = cat->cb.get_rf_agc ? cat->cb.get_rf_agc() : false;
+            resp[0] = 'X'; resp[1] = 'A';
+            resp[2] = on ? '1' : '0';
+            resp[3] = ';'; resp[4] = '\0';
+        } else if (cmd[2] == '0' || cmd[2] == '1') {
+            if (cat->cb.set_rf_agc) cat->cb.set_rf_agc(cmd[2] == '1');
+        } else {
+            cat_mark_malformed(cmd); cat_copy(resp, "?;");
+        }
     }
 
     /* XS — USB audio stream type (custom command).
@@ -1713,9 +1868,11 @@ void CAT_Process(CAT_Handle_t *cat)
                 memset(dbg_cat_last_cmd + clen, 0, sizeof(dbg_cat_last_cmd) - clen);
             }
 
-            /* Suppress AI IF notification for the cycle that contains a PTT command */
+            /* Suppress AI IF notification for the cycle that contains a PTT command
+             * (AC SET changes TX state too — TUNE carrier start/stop) */
             if ((cat->parser_cmd[0] == 'T' && cat->parser_cmd[1] == 'X') ||
-                (cat->parser_cmd[0] == 'R' && cat->parser_cmd[1] == 'X')) {
+                (cat->parser_cmd[0] == 'R' && cat->parser_cmd[1] == 'X') ||
+                (cat->parser_cmd[0] == 'A' && cat->parser_cmd[1] == 'C')) {
                 skip_ai = true;
             }
 
@@ -1744,6 +1901,8 @@ void CAT_Process(CAT_Handle_t *cat)
                     (_c[0]=='M' && _c[1]=='W') ||  /* MW  — Hamlib no-read               */
                     (_c[0]=='D' && _c[1]=='S') ||  /* DS  — Hamlib no-read               */
                     (_c[0]=='N' && _c[1]=='R') ||  /* NR SET: kenwood_set_func() sendCommand(), no readback — echo desynchs */
+                    (_c[0]=='R' && _c[1]=='L') ||  /* RL SET: kenwood_set_level(NR)/flrig sendCommand(), no readback — echo desynchs */
+                    (_c[0]=='B' && _c[1]=='C') ||  /* BC SET: kenwood_set_func(BC)/flrig sendCommand(), no readback — echo desynchs */
                     (_c[0]=='N' && _c[1]=='B') ||  /* NB SET: kenwood_set_func() sendCommand(), no readback — echo desynchs */
                     (_c[0]=='T' && _c[1]=='C') ||  /* TC  — Hamlib no-read               */
                     (_c[0]=='K' && _c[1]=='Y') ||  /* KY  — Hamlib no-read               */
@@ -1759,7 +1918,16 @@ void CAT_Process(CAT_Handle_t *cat)
                     (_c[0]=='V' && _c[1]=='S') ||  /* VS SET: flrig init/VFO switch, sendCommand(), no readback        */
                     (_c[0]=='S' && _c[1]=='P') ||  /* SP SET: flrig split, sendCommand(), no readback                  */
                     (_c[0]=='R' && _c[1]=='T') ||  /* RT SET: flrig RIT toggle, sendCommand(), no readback             */
-                    (_c[0]=='D' && _c[1]=='C');    /* DC SET: flrig VFO routing, sendCommand(), no readback            */
+                    (_c[0]=='D' && _c[1]=='C') ||  /* DC SET: flrig VFO routing, sendCommand(), no readback            */
+                    (_c[0]=='S' && _c[1]=='Q') ||  /* SQ SET: ts2000_set_level(SQL), no readback — echo desynchs       */
+                    (_c[0]=='R' && _c[1]=='G') ||  /* RG SET: ts2000_set_level(RF), no readback — echo desynchs        */
+                    (_c[0]=='G' && _c[1]=='T') ||  /* GT SET: ts2000_set_level(AGC), no readback                       */
+                    (_c[0]=='R' && _c[1]=='A') ||  /* RA SET: ts2000_set_level(ATT), no readback                       */
+                    (_c[0]=='P' && _c[1]=='A') ||  /* PA SET: ts2000_set_level(PREAMP), no readback                    */
+                    (_c[0]=='L' && _c[1]=='K') ||  /* LK SET: ts2000_set_func(LOCK), no readback                       */
+                    (_c[0]=='R' && _c[1]=='M') ||  /* RM SET: ts2000_set_level(METER), no readback                     */
+                    (_c[0]=='A' && _c[1]=='C') ||  /* AC SET: kenwood_vfo_op(TUNE) sends AC111 with no readback        */
+                    (_c[0]=='T' && _c[1]=='S');    /* TS SET: TF-SET, Kenwood set convention — no readback             */
                 if (!_suppress) {
                     uint8_t clen = (uint8_t)strlen(cat->parser_cmd);
                     if (clen < (uint8_t)(CAT_TX_BUF_SIZE - 1U)) {

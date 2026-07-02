@@ -22,6 +22,7 @@
 #include "bpf_lpf.h"
 #include "w25q.h"
 #include "csdr_app.h"
+#include "pe4302.h"     /* g_att — display path adds back front-end attenuation */
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -497,10 +498,13 @@ static void auto_smeter_zero(void)
 
   float floor_db = s_dsp->signal_power_db;
 
-  /* Want noise to read S0 (bars=0).  S-meter formula:
-   *   bars = (signal_db + smeter_offset_db + 73) / 3
-   * For bars=0 at floor_db: offset = -(floor_db + 73) */
-  int16_t offset = (int16_t)(-(floor_db + 73.0f));
+  /* Want noise to read S0 (bars=0).  Display formula (antenna-referenced):
+   *   bars = (signal_db + att + smeter_offset_db + 73) / 3
+   * For bars=0 at floor_db: offset = -(floor_db + att + 73).
+   * The att term must match the display path or the offset absorbs
+   * whatever attenuation happens to be engaged during calibration. */
+  float att_db = (float)g_att.current_atten_x2 * 0.5f;
+  int16_t offset = (int16_t)(-(floor_db + att_db + 73.0f));
   if (offset < -60) offset = -60;
   if (offset >  60) offset =  60;
 
@@ -552,9 +556,10 @@ static void auto_band_noise_floor(void)
 
   float floor_db = s_dsp->signal_power_db;
   /* Solve for noise_floor_off so that S-meter reads S0 at the noise floor:
-   *   signal_power_db + smeter_offset + rx_gain_trim + noise_floor_off = -73
-   *   noise_floor_off = -(floor_db + smeter_offset + rx_gain_trim + 73)    */
+   *   signal_power_db + att + smeter_offset + rx_gain_trim + noise_floor_off = -73
+   *   noise_floor_off = -(floor_db + att + smeter_offset + rx_gain_trim + 73)  */
   int16_t off = (int16_t)(-(floor_db
+                           + (float)g_att.current_atten_x2 * 0.5f
                            + (float)v_smeter_off
                            + (float)v_band_rx_gain
                            + 73.0f));

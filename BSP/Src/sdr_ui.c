@@ -842,7 +842,10 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
   uint8_t  clk_h, clk_m, clk_s;
   RTC_Clock_GetTime(&clk_h, &clk_m, &clk_s);
   char     clk_str[9];
-  snprintf(clk_str, sizeof(clk_str), "%02u:%02u:%02u", clk_h, clk_m, clk_s);
+  /* Range-clamp keeps each field at 2 digits — guards a garbage RTC read and
+   * lets the compiler prove the buffer fits (silences -Wformat-truncation) */
+  snprintf(clk_str, sizeof(clk_str), "%02u:%02u:%02u",
+           (unsigned)(clk_h % 24U), (unsigned)(clk_m % 60U), (unsigned)(clk_s % 60U));
   uint16_t clk_w      = (uint16_t)(8U * (uint16_t)Font8x10.width);
   uint16_t sep_clk_x  = (uint16_t)(volt_x - (uint16_t)Font8x10.width - 4U);
   uint16_t clock_x    = (uint16_t)(sep_clk_x - clk_w - 4U);

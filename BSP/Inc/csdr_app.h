@@ -84,7 +84,9 @@ typedef struct {
   uint8_t     agc_speed;   /*!< 0=SLOW 1=FAST 2=AUTO */
   bool        nb_on;
   uint8_t     nb_level;  /*!< NB intensity 0-100, default 50; RX menu → "NB Level" */
-  bool        nr_on;
+  uint8_t     nr_mode;   /*!< 0=off 1=NR1 (LMS) 2=NR2 (spectral); CAT NR0/1/2 */
+  uint8_t     nr_level;  /*!< NR strength 0-100 (NR1 wet / NR2 depth); RX menu → "NR Level" */
+  uint8_t     bc_mode;   /*!< Beat canceller: 0=off 1/2=on; CAT BC0/1/2 */
   int16_t     rit_hz;
   bool        tx_mode;
   bool        tune_mode;     /*!< TUNE button held: fixed low-power carrier, PA_Protect
