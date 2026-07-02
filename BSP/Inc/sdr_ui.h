@@ -438,6 +438,7 @@ typedef struct {
   int16_t   mic_gain;
   uint8_t   tx_power;     /*!< TX output power 0-100% for sidebar display */
   uint8_t   pa_watts;     /*!< PA rating 0/20/45/100 W; 0 = no PA */
+  uint32_t  fwd_power_mw; /*!< Measured fwd power envelope (mW), TX only; PW badge source */
   uint16_t  filter_len;
   uint8_t   dsp_level;
   uint8_t   active_vfo;    /*!< 0 = VFO A active, 1 = VFO B active */
@@ -483,9 +484,12 @@ void SDR_UI_DrawWaterfall(const float *fft_db, uint16_t bins);
 
 /* CW decoder text strip (INFO zone, Y=120..144, 24 px).
  * text: null-terminated string of decoded chars; drawn amber in CW mode.
- * Call SDR_UI_ClearCWText() when leaving CW mode to restore INFO to blank. */
+ * Call SDR_UI_ClearCWText() when leaving CW mode to restore INFO to blank.
+ * Call SDR_UI_SetCWDecActive(true) when decode is enabled — shows dim [DEC]
+ * placeholder until first decoded char arrives; false clears it. */
 void SDR_UI_DrawCWText(const char *text);
 void SDR_UI_ClearCWText(void);
+void SDR_UI_SetCWDecActive(bool on);
 
 /* Meter fast-update (10 Hz) */
 void SDR_UI_UpdateSMeter(float signal_db);
@@ -493,10 +497,12 @@ void SDR_UI_UpdateSMeter_SetTX(bool tx);
 void SDR_UI_UpdateSMeter_SetVoltage(int16_t v_x10);  /*!< v × 10, e.g. 132 = 13.2 V */
 void SDR_UI_UpdateTXMeters(int32_t alc_pct, int32_t swr_x10); /*!< alc 0-100 %, swr × 10 */
 
-void SDR_UI_DrawFuncBar(const SDR_UI_State_t *ui);
-
 /* Redraw footer (frequency scale labels) without changing zoom state. */
 void SDR_UI_RedrawFooter(void);
+
+/* Update VFO frequency and tuning step for the frequency ruler.
+ * Grid marks are placed at multiples of step_hz; redraws only when changed. */
+void SDR_UI_SetFooterFreq(uint32_t freq_hz, uint32_t step_hz);
 
 /* Spectrum delta-skip counters */
 void SDR_UI_GetSpecSkipStats(uint32_t *skip_hits, uint32_t *draw_hits);
@@ -518,9 +524,15 @@ bool SDR_UI_IsTXZoneBlanked(void);
 void SDR_UI_DrawTXSpectrum(const float *fft_db, uint16_t bins,
                             uint8_t mode, uint32_t sr);
 
+/* Software UTC clock displayed in the header topbar.
+ * Call once after boot (or after NTP/CAT sync) to set HH:MM:SS.
+ * Counts forward using HAL_GetTick(); wraps at 24 h. */
+void SDR_UI_SetClock(uint8_t h, uint8_t m, uint8_t s);
+void SDR_UI_GetClock(uint8_t *h, uint8_t *m, uint8_t *s);  /*!< Read current HH:MM:SS from the running clock */
+
 /* Persistent PA fault warning in the INFO zone (between S-meter and spectrum).
  * Safe to call at any rate; redraws only when state changes (or always when
- * active to survive DrawFuncBar / DrawCWText overwrites).
+ * active to survive DrawCWText overwrites).
  * Call from csdr_refresh_display() and from a periodic 500 ms timer. */
 void SDR_UI_UpdatePAWarn(PA_State_t state, PA_Fault_t fault);
 

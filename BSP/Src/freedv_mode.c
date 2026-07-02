@@ -7,7 +7,7 @@
   *    • 48 kHz → 8 kHz polyphase FIR decimator   (FDVR_RATIO = 6)
   *    • 8 kHz → 48 kHz polyphase FIR interpolator (FDVR_RATIO = 6)
   *    • 8 kHz narrowband USB (NBUSB) SSB modulator (Hilbert phasing)
-  *    • 8 kHz NBUSB SSB demodulator (stub)
+  *    • 8 kHz NBUSB SSB demodulator + OFDM DQPSK RX + LPC_Decode
   *    • LPC-10 analysis → 64-bit quantizer → 16-carrier DQPSK OFDM TX
   *
   *  All processing is sample-by-sample to slot into the existing per-sample
@@ -173,7 +173,7 @@ static bool decimate_push(Resampler6_t *r, float x, float *out)
  *  Each call to interp_push pushes one 8 kHz sample and fills out[0..5]
  *  with the 6 corresponding 48 kHz samples.
  * ────────────────────────────────────────────────────────────────────────── */
-static void __attribute__((unused)) interp_push(Resampler6_t *r, float x, float out[FDVR_PHASES])
+static void interp_push(Resampler6_t *r, float x, float out[FDVR_PHASES])
 {
     /* Shift history by 1 (store one 8 kHz sample per slot) */
     for (int i = FDVR_TAPS_PER_PHASE - 1; i > 0; i--)
@@ -201,6 +201,11 @@ void FreeDV_Init(FreeDV_State_t *fdv, float audio_gain)
     hilbert8_init(&fdv->hilbert8);
     LPC_Voc_Init(&fdv->voc);
     FdvModem_Init(&fdv->modem);
+    /* RX pipeline */
+    FdvModem_RxInit(&fdv->rx_demod);
+    LPC_Voc_Init(&fdv->rx_voc);
+    dc8_init(&fdv->rx_dc8);
+    /* rx_dec, rx_pcm8_buf, rx_out_buf zeroed by memset above */
 }
 
 /* ── TX: one 48 kHz sample in → IQ pair out ─────────────────────────────
@@ -279,31 +284,68 @@ void FreeDV_TX_Sample(FreeDV_State_t *fdv,
     *out_q = fdv->rx_prev_im;
 }
 
-/* ── RX: one IQ pair at 48 kHz → 48 kHz audio ──────────────────────────
+/* ── RX: one IQ pair at 48 kHz → 48 kHz decoded voice audio ────────────
  *
- *  Decimates the IQ pair to 8 kHz (using I channel only — the IF-shifted
- *  SDR output is already USB-demodulated in sdr_dsp before reaching here;
- *  for FreeDV the IQ pair is passed in directly for future DPSK/OFDM demod).
+ *  rx_i = band-limited I (filt_i_d from sdr_dsp, 31-sample delayed)
+ *  rx_q = H{Q}           (filt_q_h from sdr_dsp, 48 kHz Hilbert output)
  *
- *  Phase 1: simple NBUSB demod (Hilbert method at 8 kHz), then upsample.
- *  Phase 2: DPSK/OFDM demodulator + codec2_decode.
+ *  Pipeline (per 48 kHz call):
+ *    1. USB SSB demod: audio = rx_i + rx_q  (gives 450-1575 Hz OFDM audio)
+ *    2. 48→8 kHz polyphase decimate (rx_dec)
+ *    3. DC block at 8 kHz (rx_dc8)
+ *    4. OFDM DQPSK demodulate (rx_demod, 16 carriers × 2 bits)
+ *    5. On frame boundary (320 samples):
+ *         – verify sync 0xA55, LPC_Dequantize, LPC_Decode → rx_pcm8_buf
+ *    6. Pull one 8 kHz PCM sample (or raw audio fallback before first frame)
+ *    7. 8→48 kHz polyphase interpolate (interp) → rx_out_buf[0..5]
  *
- *  Returns one 48 kHz audio sample (zero for the 5 non-output slots).
+ *  Returns one interpolated 48 kHz sample per call.
+ *  Holds last sample for the 5 non-output slots (until next 8 kHz tick).
  * ────────────────────────────────────────────────────────────────────────── */
 float FreeDV_RX_Sample(FreeDV_State_t *fdv, float rx_i, float rx_q)
 {
+    /* 1. USB SSB demodulation (same phasing as Demod_USB in sdr_dsp) */
+    float audio_48 = rx_i + rx_q;
+
     float pcm8;
-    /* Decimate IQ magnitude (envelope detect for Phase 1 test) */
-    float env = rx_i;   /* USB convention: I is the real signal */
-    (void)rx_q;
+    if (decimate_push(&fdv->rx_dec, audio_48, &pcm8)) {
 
-    if (decimate_push(&fdv->interp, env, &pcm8)) {
-        /* Phase 2: codec2_decode_sample(fdv->c2, pcm8) */
+        /* 2. DC block at 8 kHz */
+        pcm8 = dc8_process(&fdv->rx_dc8, pcm8);
 
-        /* Interpolate back to 48 kHz and return first output sample.
-         * For now return the 8 kHz sample held at 48 kHz rate. */
-        fdv->rx_prev_re = pcm8;
+        /* 3. OFDM DQPSK demodulate */
+        FdvModem_RxPush(&fdv->rx_demod, pcm8);
+
+        /* 4. LPC decode when a complete frame arrives with valid sync */
+        if (fdv->rx_demod.frame_ready) {
+            fdv->rx_demod.frame_ready = false;
+            if (fdv->rx_demod.rx_bits[0] == 0xA5U &&
+                (fdv->rx_demod.rx_bits[1] & 0xF0U) == 0x50U) {
+                LPC_Frame_t rx_frame;
+                LPC_Dequantize(fdv->rx_demod.rx_bits, &rx_frame);
+                LPC_Decode(&fdv->rx_voc, &rx_frame, fdv->rx_pcm8_buf);
+                fdv->rx_pcm8_rd = 0U;
+                fdv->rx_pcm8_wr = LPC_FRAME_SAMPS;
+                fdv->rx_frames++;
+            }
+        }
+
+        /* 5. Pull one 8 kHz sample: decoded LPC or raw OFDM audio (pre-sync) */
+        float src8 = (fdv->rx_pcm8_wr > fdv->rx_pcm8_rd)
+                     ? fdv->rx_pcm8_buf[fdv->rx_pcm8_rd++]
+                     : pcm8;
+
+        /* 6. Polyphase interpolate 8→48 kHz, fill output FIFO */
+        float iout[FDVR_PHASES];
+        interp_push(&fdv->interp, src8, iout);
+        for (uint8_t p = 0U; p < FDVR_PHASES; p++)
+            fdv->rx_out_buf[p] = iout[p];
+        fdv->rx_out_idx = 0U;
     }
 
-    return fdv->rx_prev_re;
+    /* Return next interpolated sample; hold last when FIFO exhausted */
+    float out = fdv->rx_out_buf[fdv->rx_out_idx];
+    if (fdv->rx_out_idx < (uint8_t)(FDVR_PHASES - 1U))
+        fdv->rx_out_idx++;
+    return out;
 }

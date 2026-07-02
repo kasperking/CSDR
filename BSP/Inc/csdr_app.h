@@ -83,10 +83,12 @@ typedef struct {
   bool        mute;
   uint8_t     agc_speed;   /*!< 0=SLOW 1=FAST 2=AUTO */
   bool        nb_on;
-  uint8_t     nb_level;  /*!< NB intensity 0-100, default 50; not currently in menu */
+  uint8_t     nb_level;  /*!< NB intensity 0-100, default 50; RX menu → "NB Level" */
   bool        nr_on;
   int16_t     rit_hz;
   bool        tx_mode;
+  bool        tune_mode;     /*!< TUNE button held: fixed low-power carrier, PA_Protect
+                                   ignores SWR warn/trip (see pa_protect.c)             */
   bool        si5351_ok;
   uint8_t     att_db;
   bool        pwr_hold;
@@ -107,7 +109,7 @@ typedef struct {
   int16_t     digi_gain;  /*!< DIGU/DIGL TX drive 0-100 (default 70)        */
   uint8_t     tx_power;         /*!< TX output power 0-100% (default 100); PC cmd */
   uint8_t     pa_watts;         /*!< PA hardware rating: 0=None, 20, 45, 100 W    */
-  uint8_t     pa_oc_limit_idx;  /*!< OC threshold index 0-4 → 2.0/2.5/3.0/3.5/4.0A */
+  uint8_t     pa_oc_limit_idx;  /*!< OC limit ×10 A — 10..200 = 1.0..20.0 A, step 0.1 A */
   int16_t     smeter_offset_db;
   uint32_t    lo_offset_hz;
   /* Dual VFO */

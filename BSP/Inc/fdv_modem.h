@@ -41,6 +41,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* ── Constants ───────────────────────────────────────────── */
 #define FDV_CARRIERS      16U    /*!< Number of DQPSK carriers             */
@@ -78,6 +79,51 @@ void FdvModem_Init(FdvModem_t *m);
 void FdvModem_EncodeSuperFrame(FdvModem_t *m,
                                const uint8_t bits[8],
                                float out[FDV_FRAME_SAMPS]);
+
+/* ── RX demodulator ──────────────────────────────────────── */
+
+#define FDV_RXBITS_BYTES  8U   /*!< 64 bits = 8 bytes per LPC frame */
+
+/**
+ * @brief  Per-carrier DQPSK RX correlator state.
+ *
+ *  Each call to FdvModem_RxPush() accumulates one 8 kHz sample.
+ *  At each symbol boundary the correlators are snapshotted and reset.
+ *  After the third symbol (DATA2) the 64-bit LPC frame is recovered
+ *  via differential phase detection and frame_ready is set.
+ *
+ *  Frame structure (320 samples @ 8 kHz):
+ *    PILOT  : 107 samples — all carriers at reference phase
+ *    DATA1  : 107 samples — DQPSK bits  0-31 vs PILOT
+ *    DATA2  : 106 samples — DQPSK bits 32-63 vs DATA1
+ */
+typedef struct {
+    uint32_t phase_inc[FDV_CARRIERS];    /*!< Fixed carrier increments         */
+    uint32_t phase_acc[FDV_CARRIERS];    /*!< Continuous NCO accumulators      */
+    float    corr_i[FDV_CARRIERS];       /*!< Current symbol I correlator      */
+    float    corr_q[FDV_CARRIERS];       /*!< Current symbol Q correlator      */
+    float    pilot_i[FDV_CARRIERS];      /*!< PILOT I snapshot                 */
+    float    pilot_q[FDV_CARRIERS];      /*!< PILOT Q snapshot                 */
+    float    sym1_i[FDV_CARRIERS];       /*!< DATA1 I snapshot                 */
+    float    sym1_q[FDV_CARRIERS];       /*!< DATA1 Q snapshot                 */
+    uint16_t samp_cnt;                   /*!< Samples within current frame     */
+    uint8_t  rx_bits[FDV_RXBITS_BYTES];  /*!< Recovered 64-bit LPC frame       */
+    bool     frame_ready;                /*!< True when rx_bits[] is valid     */
+} FdvModemRx_t;
+
+/**
+ * @brief  Initialise RX demodulator state.
+ */
+void FdvModem_RxInit(FdvModemRx_t *rx);
+
+/**
+ * @brief  Push one 8 kHz baseband sample into the OFDM demodulator.
+ *
+ *  Call once per 8 kHz sample.  Sets rx->frame_ready when 320 samples
+ *  have been processed and rx->rx_bits[] contains the decoded LPC frame.
+ *  Caller must clear frame_ready after consuming the bits.
+ */
+void FdvModem_RxPush(FdvModemRx_t *rx, float s);
 
 #ifdef __cplusplus
 }

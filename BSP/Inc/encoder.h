@@ -35,10 +35,12 @@ typedef struct {
   int32_t            accel_mult;    /*!< Hệ số nhân                         */
   uint32_t           last_tick;     /*!< Tick lần đọc trước                 */
   /* Nút nhấn (polling PB3) */
-  bool               btn_pressed;   /*!< Nhấn ngắn pending                  */
-  bool               btn_long;      /*!< Nhấn dài pending                   */
-  volatile uint32_t  btn_down_tick; /*!< Tick lúc bắt đầu nhấn             */
+  volatile bool      btn_pressed;   /*!< Nhấn ngắn pending (ISR→main)       */
+  volatile bool      btn_long;      /*!< Nhấn dài pending  (ISR→main)       */
+  uint32_t           btn_down_tick; /*!< Tick khi press ổn định (sau debounce) */
   bool               btn_prev_state;/*!< Trạng thái nút lần poll trước     */
+  uint32_t           btn_edge_tick; /*!< Tick khi phát hiện edge gần nhất   */
+  bool               btn_in_press;  /*!< Press ổn định đang được tracking   */
   uint32_t           debounce_ms;
   uint32_t           long_press_ms;
   /* Direction guard – EC11 bounce filter */

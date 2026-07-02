@@ -33,6 +33,7 @@
 #include "lcd_dma.h"    /* LCD_Wait / LCD_PushWindowAsync / diagnostics */
 #include "selftest.h"   /* g_selftest, SelfTest_AnyFail — top-bar HW warnings */
 #include "pa_protect.h" /* PA_State_t / PA_Fault_t for TX warning overlay */
+#include "rtc_clock.h"  /* RTC_Clock_GetTime / SetTime */
 #include "core_cm7.h"   /* DWT->CYCCNT for chunk render timing */
 #include <string.h>
 #include <stdio.h>
@@ -151,6 +152,8 @@ static bool s_tx_zone_blanked = false;
 static PA_State_t s_pa_warn_drawn  = (PA_State_t)0xFFU;
 static PA_Fault_t s_pa_wflt_drawn  = (PA_Fault_t)0xFFU;
 
+/* Clock display is driven by RTC hardware (rtc_clock.h) — no SRAM state needed */
+
 /* CPU-only: IIR smoother + colour LUT + ring head */
 static float    s_wf_smooth[DSP_FFT_SIZE];
 static uint16_t s_wf_lut[256];
@@ -187,6 +190,7 @@ static struct {
   uint8_t  active_vfo;
   uint8_t  tx_power;
   uint8_t  pa_watts;
+  uint32_t fwd_power_mw;
   /* Inline-params fields (ST7789 portrait right panel) */
   uint8_t  mode;
   uint8_t  volume;
@@ -630,6 +634,27 @@ static uint8_t  s_spec_zoom     = 0U;
 static uint32_t s_spec_sr       = 48000U;
 static uint32_t s_spec_orig_sr  = 48000U;   /* SR at DrawFrame (never changes with zoom) */
 static uint16_t s_spec_bins     = 256U;
+static uint32_t s_footer_freq_hz = 0U;      /* VFO frequency for absolute ruler labels */
+static uint32_t s_footer_step_hz = 0U;      /* Tuning step for grid spacing */
+
+#define FMARK_MAX 16U
+typedef struct {
+  uint16_t px;
+  uint16_t lbl_lx;   /* 0xFFFFU = label suppressed */
+  char     lbl[10];
+} FootMark_t;
+static FootMark_t s_fmarks[FMARK_MAX];
+static uint8_t    s_n_fmarks = 0U;
+
+static uint32_t pick_grid_hz(uint32_t step_hz, uint32_t half_hz)
+{
+  /* Target ≤8 intermediate marks per half-span: min grid = half_hz/4.
+   * Round up to next multiple of step_hz so marks land on tuning positions. */
+  if (step_hz == 0U) return 0U;
+  uint32_t min_g = half_hz / 4U;
+  if (min_g < step_hz) min_g = step_hz;
+  return ((min_g + step_hz - 1U) / step_hz) * step_hz;
+}
 
 /* Display-crop table (zoom 0 only, others use full decimated FFT) */
 static const uint8_t s_zoom_half[SPEC_ZOOM_COUNT] = { 128U, 128U, 128U, 128U };
@@ -659,6 +684,14 @@ static uint32_t spec_half_span_hz(void)
   return (uint32_t)((uint32_t)(n_vis >> 1U) * s_spec_sr / s_spec_bins);
 }
 
+/* Format Hz as "MHz.kkk" (e.g. 14225000 → "14.225") using integer only. */
+static void fmt_mhz(char *buf, size_t sz, uint32_t hz)
+{
+  snprintf(buf, sz, "%lu.%03lu",
+           (unsigned long)(hz / 1000000U),
+           (unsigned long)((hz % 1000000U) / 1000U));
+}
+
 /* ── draw_footer_rows ────────────────────────────────────────────────────────
  * Renders FTR_H scanlines into the shared line buffer (480px) and pushes each
  * as a 1-row window.  Footer is 32 rows at 480px = 30,720 bytes total,
@@ -668,72 +701,97 @@ static void draw_footer_rows(uint32_t half_hz)
 {
   char lbuf[12] = "";
   char rbuf[12] = "";
-  char lm_buf[6] = "";
-  char rm_buf[6] = "";
   uint16_t rx_x  = 0U;
-  uint16_t lm_lx = 0U;   /* -12K label left edge */
-  uint16_t rm_lx = 0U;   /* +12K label left edge */
-  uint16_t lm_px = 0U;   /* -12K marker pixel (for tick) */
-  uint16_t rm_px = 0U;   /* +12K marker pixel (for tick) */
-  bool show_mid = false;
+  uint16_t cx_px = (uint16_t)(LCD_W / 2U);
 
+  /* ── Left / right edge labels ────────────────────────────────────────────── */
   if (half_hz > 0U) {
-    uint32_t bk = half_hz / 1000U;
-    snprintf(lbuf, sizeof(lbuf), "-%luK", (unsigned long)bk);
-    snprintf(rbuf, sizeof(rbuf), "+%luK", (unsigned long)bk);
+    if (s_footer_freq_hz > 0U) {
+      uint32_t f_lo = (s_footer_freq_hz > half_hz) ? (s_footer_freq_hz - half_hz) : 0U;
+      fmt_mhz(lbuf, sizeof(lbuf), f_lo);
+      fmt_mhz(rbuf, sizeof(rbuf), s_footer_freq_hz + half_hz);
+    } else {
+      uint32_t bk = half_hz / 1000U;
+      snprintf(lbuf, sizeof(lbuf), "-%luK", (unsigned long)bk);
+      snprintf(rbuf, sizeof(rbuf), "+%luK", (unsigned long)bk);
+    }
     rx_x = (uint16_t)(LCD_W - (uint16_t)(strlen(rbuf) * Font6x8.width) - 4U);
   }
 
-  /* ±12k intermediate markers — only rendered when span > ±12kHz */
-  if (half_hz > 12000U) {
-    uint16_t cx  = (uint16_t)(LCD_W / 2U);
-    uint16_t off = (uint16_t)((uint32_t)12000U * (uint32_t)(LCD_W / 2U) / half_hz);
-    lm_px = (uint16_t)(cx - off);
-    rm_px = (uint16_t)(cx + off);
-    snprintf(lm_buf, sizeof(lm_buf), "-12K");
-    snprintf(rm_buf, sizeof(rm_buf), "+12K");
-    uint16_t lw = (uint16_t)(4U * (uint16_t)Font6x8.width);  /* 4 chars wide */
-    lm_lx = (lm_px >= lw / 2U) ? (uint16_t)(lm_px - lw / 2U) : 0U;
-    rm_lx = (rm_px >= lw / 2U) ? (uint16_t)(rm_px - lw / 2U) : 0U;
-    if (rm_lx + lw > LCD_W) rm_lx = (uint16_t)(LCD_W - lw);
-    show_mid = true;
+  /* ── Step-based intermediate grid marks ─────────────────────────────────── */
+  s_n_fmarks = 0U;
+  if (s_footer_freq_hz > 0U && s_footer_step_hz > 0U && half_hz > 0U) {
+    uint32_t grid_hz = pick_grid_hz(s_footer_step_hz, half_hz);
+    uint32_t f_left  = (s_footer_freq_hz > half_hz) ? (s_footer_freq_hz - half_hz) : 0U;
+    uint32_t f_right = s_footer_freq_hz + half_hz;
+    uint32_t span_hz = 2U * half_hz;
+    /* edge guard: labels close to the screen edge would overlap the edge labels */
+    uint16_t left_guard  = (uint16_t)(strlen(lbuf) * Font6x8.width + 8U);
+    uint16_t right_guard = (rx_x > 4U) ? (uint16_t)(rx_x - 4U) : 0U;
+    /* first grid mark at or above f_left */
+    uint32_t f_mark = (grid_hz > 0U) ? ((f_left / grid_hz) * grid_hz) : f_left;
+    if (f_mark < f_left) f_mark += grid_hz;
+    for (; f_mark <= f_right && s_n_fmarks < FMARK_MAX; f_mark += grid_hz) {
+      if (f_mark == s_footer_freq_hz) continue;  /* center drawn separately */
+      uint16_t px = (uint16_t)((uint32_t)(f_mark - f_left) * LCD_W / span_hz);
+      if (px < 2U || px >= (uint16_t)(LCD_W - 1U)) continue;
+      s_fmarks[s_n_fmarks].px = px;
+      fmt_mhz(s_fmarks[s_n_fmarks].lbl, sizeof(s_fmarks[0].lbl), f_mark);
+      uint16_t lw = (uint16_t)(strlen(s_fmarks[s_n_fmarks].lbl) * Font6x8.width);
+      uint16_t lx = (px > lw / 2U) ? (uint16_t)(px - lw / 2U) : 0U;
+      if (lx + lw > LCD_W) lx = (uint16_t)(LCD_W - lw);
+      /* suppress if would overlap the edge labels */
+      s_fmarks[s_n_fmarks].lbl_lx =
+        (lx >= left_guard && lx + lw <= right_guard) ? lx : 0xFFFFU;
+      s_n_fmarks++;
+    }
+    /* suppress labels that overlap each other (left-to-right sweep) */
+    uint16_t last_rx = 0U;
+    for (uint8_t i = 0U; i < s_n_fmarks; i++) {
+      if (s_fmarks[i].lbl_lx == 0xFFFFU) continue;
+      uint16_t lbl_w = (uint16_t)(strlen(s_fmarks[i].lbl) * Font6x8.width);
+      if (s_fmarks[i].lbl_lx < last_rx + 4U) {
+        s_fmarks[i].lbl_lx = 0xFFFFU;
+      } else {
+        last_rx = (uint16_t)(s_fmarks[i].lbl_lx + lbl_w);
+      }
+    }
   }
 
-  uint16_t fh    = Font6x8.height;
-  uint16_t pad   = (FTR_H - fh) / 2U;
-  uint16_t cx_px = (uint16_t)(LCD_W / 2U);
-
-  /* Tick marks above labels — 2-row blank gap separates tick bottom from text.
-   * Major (0 kHz): 4-row tall, bright.  Medium (±12k): 2-row tall, dimmer.  */
-  uint16_t tick_end  = (pad >= 2U) ? (uint16_t)(pad - 2U) : 0U;  /* gap = 2 rows */
-  uint16_t tmaj0     = (tick_end >= 4U) ? (uint16_t)(tick_end - 4U) : 0U;
-  uint16_t tmed0     = (tick_end >= 2U) ? (uint16_t)(tick_end - 2U) : 0U;
-  uint16_t tick_maj  = SWAP16(UI_STATUS_VAL);   /* bright white */
-  uint16_t tick_med  = SWAP16(UI_SMETER_TICK);  /* medium gray  */
+  /* ── Tick geometry ───────────────────────────────────────────────────────── */
+  uint16_t fh       = Font6x8.height;
+  uint16_t pad      = (FTR_H - fh) / 2U;
+  uint16_t tick_end = (pad >= 2U) ? (uint16_t)(pad - 2U) : 0U;
+  uint16_t tmaj0    = (tick_end >= 4U) ? (uint16_t)(tick_end - 4U) : 0U;
+  uint16_t tmed0    = (tick_end >= 2U) ? (uint16_t)(tick_end - 2U) : 0U;
+  uint16_t tick_maj = SWAP16(UI_STATUS_VAL);
+  uint16_t tick_med = SWAP16(UI_SMETER_TICK);
 
   for (uint16_t row = 0U; row < FTR_H; row++) {
     uint16_t *ln = LCD_GetLineBuf();
     LCD_LineFill(ln, 0U, LCD_W, UI_BG);
 
-    /* 4-row center tick */
+    /* center tick: 4-row, bright */
     if (row >= tmaj0 && row < tick_end && cx_px < LCD_W)
       ln[cx_px] = tick_maj;
 
-    /* 2-row ±12k ticks */
-    if (show_mid && row >= tmed0 && row < tick_end) {
-      if (lm_px < LCD_W) ln[lm_px] = tick_med;
-      if (rm_px < LCD_W) ln[rm_px] = tick_med;
+    /* grid ticks: 2-row, dim */
+    if (row >= tmed0 && row < tick_end) {
+      for (uint8_t i = 0U; i < s_n_fmarks; i++) {
+        if (s_fmarks[i].px < LCD_W) ln[s_fmarks[i].px] = tick_med;
+      }
     }
 
     if (half_hz > 0U && row >= pad && row < pad + fh) {
       uint16_t frow = row - pad;
-      LCD_LineStr(ln, 4U,   frow, lbuf,  &Font6x8, UI_SMETER_TICK, UI_BG);
-      LCD_LineStr(ln, rx_x, frow, rbuf,  &Font6x8, UI_SMETER_TICK, UI_BG);
-      LCD_LineStr(ln, (uint16_t)(cx_px - Font6x8.width / 2U + 1U), frow,
-                  "0", &Font6x8, UI_STATUS_VAL, UI_BG);
-      if (show_mid) {
-        LCD_LineStr(ln, lm_lx, frow, lm_buf, &Font6x8, UI_SMETER_TICK, UI_BG);
-        LCD_LineStr(ln, rm_lx, frow, rm_buf, &Font6x8, UI_SMETER_TICK, UI_BG);
+      /* edge labels */
+      LCD_LineStr(ln, 4U,   frow, lbuf, &Font6x8, UI_SMETER_TICK, UI_BG);
+      LCD_LineStr(ln, rx_x, frow, rbuf, &Font6x8, UI_SMETER_TICK, UI_BG);
+      /* grid mark labels */
+      for (uint8_t i = 0U; i < s_n_fmarks; i++) {
+        if (s_fmarks[i].lbl_lx != 0xFFFFU)
+          LCD_LineStr(ln, s_fmarks[i].lbl_lx, frow,
+                      s_fmarks[i].lbl, &Font6x8, UI_SMETER_TICK, UI_BG);
       }
     }
 
@@ -777,10 +835,24 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
   uint16_t att_vc  = ui->rf_agc_on ? UI_STATUS_ON : UI_STATUS_VAL;
   uint16_t sep1_x  = (uint16_t)(4U + (uint16_t)(strlen(agc_str) * Font8x10.width) + 4U);
   uint16_t att_x   = (uint16_t)(sep1_x + (uint16_t)Font8x10.width + 4U);
+  uint16_t left_end = (uint16_t)(att_x + (uint16_t)(strlen(att_hdr) * Font8x10.width) + 4U);
   uint16_t volt_x  = (uint16_t)(LCD_W - (uint16_t)(strlen(vstr) * Font8x10.width) - 4U);
-  uint16_t sep2_x  = (uint16_t)(volt_x - (uint16_t)Font8x10.width - 4U);
 
-  /* ── Hardware warning: centred between ATT label and voltage ─ */
+  /* ── RTC clock: HH:MM:SS ────────────────────────────────────────────────── */
+  uint8_t  clk_h, clk_m, clk_s;
+  RTC_Clock_GetTime(&clk_h, &clk_m, &clk_s);
+  char     clk_str[9];
+  snprintf(clk_str, sizeof(clk_str), "%02u:%02u:%02u", clk_h, clk_m, clk_s);
+  uint16_t clk_w      = (uint16_t)(8U * (uint16_t)Font8x10.width);
+  uint16_t sep_clk_x  = (uint16_t)(volt_x - (uint16_t)Font8x10.width - 4U);
+  uint16_t clock_x    = (uint16_t)(sep_clk_x - clk_w - 4U);
+  /* Use clock slot only when it doesn't overrun the ATT label */
+  bool     clk_fits   = (clock_x > left_end + 8U);
+  uint16_t sep2_x     = clk_fits
+                        ? (uint16_t)(clock_x - (uint16_t)Font8x10.width - 4U)
+                        : (uint16_t)(volt_x   - (uint16_t)Font8x10.width - 4U);
+
+  /* ── Hardware warning: centred between ATT label and sep2 ─ */
   char     warn_str[32] = {0};
   uint16_t warn_x       = 0U;
   if (SelfTest_AnyFail()) {
@@ -796,9 +868,8 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
       }
     }
     warn_str[pos] = '\0';
-    uint16_t left_end = (uint16_t)(att_x + (uint16_t)(strlen(att_hdr) * Font8x10.width) + 4U);
-    uint16_t warn_w   = (uint16_t)((uint16_t)strlen(warn_str) * Font8x10.width);
-    uint16_t avail    = (sep2_x > left_end + 4U) ? (uint16_t)(sep2_x - left_end - 4U) : 0U;
+    uint16_t warn_w = (uint16_t)((uint16_t)strlen(warn_str) * Font8x10.width);
+    uint16_t avail  = (sep2_x > left_end + 4U) ? (uint16_t)(sep2_x - left_end - 4U) : 0U;
     warn_x = (avail > warn_w)
              ? (uint16_t)(left_end + (avail - warn_w) / 2U)
              : left_end;
@@ -811,12 +882,18 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
       continue;
     }
     LCD_LineFill(ln, 0, LCD_W, UI_HDR_BG);
-    LCD_LineFill(ln, sep1_x, 2U, UI_DIVIDER);
-    LCD_LineFill(ln, sep2_x, 2U, UI_DIVIDER);
+    LCD_LineFill(ln, sep1_x, 1U, UI_DIVIDER);
+    LCD_LineFill(ln, sep2_x, 1U, UI_DIVIDER);
+    if (clk_fits) {
+      LCD_LineFill(ln, sep_clk_x, 1U, UI_DIVIDER);
+    }
     if (row >= txt_y && row < txt_y + Font8x10.height) {
       uint16_t fr = row - txt_y;
       LCD_LineStrW(ln, 4U,     fr, agc_str,  &Font8x10, UI_STATUS_LBL, UI_HDR_BG);
       LCD_LineStrW(ln, att_x,  fr, att_hdr,  &Font8x10, att_vc,        UI_HDR_BG);
+      if (clk_fits) {
+        LCD_LineStrW(ln, clock_x, fr, clk_str, &Font8x10, UI_STATUS_HINT, UI_HDR_BG);
+      }
       LCD_LineStrW(ln, volt_x, fr, vstr,     &Font8x10, vcol,          UI_HDR_BG);
       if (warn_str[0]) {
         LCD_LineStrW(ln, warn_x, fr, warn_str, &Font8x10, UI_STATUS_WARN, UI_HDR_BG);
@@ -1255,9 +1332,14 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 #if LCD_PANEL != LCD_PANEL_ST7789
   char pw_str[8] = "";
   if (ui->tx_mode) {
-    uint16_t actual_w = (ui->pa_watts > 0U)
-      ? (uint16_t)((uint32_t)ui->pa_watts * ui->tx_power / 100U)
-      : (uint16_t)ui->tx_power;
+    /* Measured fwd power (tandem match) when a PA is fitted; falls back to
+     * the commanded setpoint while the closed-loop envelope is still settling
+     * (fwd_power_mw reads 0 for the first ~100 ms of TX) or with no PA fitted. */
+    uint16_t actual_w = (ui->pa_watts > 0U && ui->fwd_power_mw > 0U)
+      ? (uint16_t)((ui->fwd_power_mw + 500U) / 1000U)
+      : (ui->pa_watts > 0U)
+        ? (uint16_t)((uint32_t)ui->pa_watts * ui->tx_power / 100U)
+        : (uint16_t)ui->tx_power;
     snprintf(pw_str, sizeof(pw_str), "%dW", (int)actual_w);
   }
 #endif
@@ -1570,6 +1652,7 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
       || s_vfo_cache.active_vfo != ui->active_vfo
       || s_vfo_cache.tx_power   != ui->tx_power
       || s_vfo_cache.pa_watts   != ui->pa_watts
+      || s_vfo_cache.fwd_power_mw != ui->fwd_power_mw
 #if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
       /* Landscape: NB/NR (row 4, rows 43..58) are in lower section → push on any rp change */
       || rp_chg
@@ -1602,6 +1685,7 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   s_vfo_cache.active_vfo = ui->active_vfo;
   s_vfo_cache.tx_power   = ui->tx_power;
   s_vfo_cache.pa_watts   = ui->pa_watts;
+  s_vfo_cache.fwd_power_mw = ui->fwd_power_mw;
 #if LCD_PANEL == LCD_PANEL_ST7796
   s_vfo_cache.mode    = ui->mode;
 #endif
@@ -2210,7 +2294,7 @@ void SDR_UI_UpdateTXMeters(int32_t alc_pct, int32_t swr_x10)
  *
  *  When PA state is NORMAL the zone is cleared once and then left alone.
  *  When PA state is not NORMAL the zone is redrawn on every call so it
- *  survives SDR_UI_DrawFuncBar / SDR_UI_DrawCWText overwriting it.
+ *  survives SDR_UI_DrawCWText overwriting it.
  *
  *  ST7789 (INFO_H = 0): no-op — warning already appears in the left SPEC
  *  strip via pa_warn_render_push() inside DrawTXSpectrum.
@@ -2225,7 +2309,7 @@ void SDR_UI_UpdatePAWarn(PA_State_t state, PA_Fault_t fault)
   /* No active warning and nothing to clear: nothing to do. */
   if (!active && !was_active) return;
 
-  /* Active warning and no change: still redraw to survive DrawFuncBar overwrites. */
+  /* Active warning and no change: still redraw to survive DrawCWText overwrites. */
 
   s_pa_warn_drawn = state;
   s_pa_wflt_drawn = fault;
@@ -2268,6 +2352,17 @@ void SDR_UI_UpdatePAWarn(PA_State_t state, PA_Fault_t fault)
 #else
   (void)state; (void)fault;
 #endif
+}
+
+/* ── RTC clock wrappers ───────────────────────────────────────────────────── */
+void SDR_UI_SetClock(uint8_t h, uint8_t m, uint8_t s)
+{
+  RTC_Clock_SetTime(h, m, s);
+}
+
+void SDR_UI_GetClock(uint8_t *h, uint8_t *m, uint8_t *s)
+{
+  RTC_Clock_GetTime(h, m, s);
 }
 
 /* ── Compat wrappers ─────────────────────────────────────────────────────── */
@@ -2625,16 +2720,20 @@ void SDR_UI_RedrawFooter(void)
   draw_footer_rows(spec_half_span_hz());
 }
 
+void SDR_UI_SetFooterFreq(uint32_t freq_hz, uint32_t step_hz)
+{
+  if (freq_hz == s_footer_freq_hz && step_hz == s_footer_step_hz) return;
+  s_footer_freq_hz = freq_hz;
+  s_footer_step_hz = step_hz;
+  draw_footer_rows(spec_half_span_hz());
+}
+
 /* ── Spectrum skip statistics ─────────────────────────────────────────────── */
 void SDR_UI_GetSpecSkipStats(uint32_t *skip_hits, uint32_t *draw_hits)
 {
   if (skip_hits) *skip_hits = s_spec_skip_hits;
   if (draw_hits) *draw_hits = s_spec_draw_hits;
 }
-
-/* ── Stub ────────────────────────────────────────────────────────────────── */
-void SDR_UI_DrawFuncBar(const SDR_UI_State_t *ui)
-{ (void)ui; }
 
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawCWText  –  INFO strip (Y=120..144, 24 px × LCD_W)
@@ -2647,18 +2746,23 @@ void SDR_UI_DrawFuncBar(const SDR_UI_State_t *ui)
  *  static buffer for a 24-row zone.
  * ════════════════════════════════════════════════════════════════════════════ */
 #if INFO_H > 0
+static bool s_cw_dec_active = false;
+
 static void cw_text_draw_rows(const char *text)
 {
   uint16_t *ln    = LCD_GetLineBuf();
   uint16_t  txt_y = (uint16_t)((INFO_H - Font6x8.height) / 2U);
+  /* When decode is armed but no text yet, show dim "[DEC]" placeholder */
+  const char *render = text ? text : (s_cw_dec_active ? "[DEC]" : NULL);
+  uint16_t    color  = text ? UI_MODE_CW : UI_STATUS_LBL;
 
   for (uint16_t row = 0U; row < INFO_H; row++) {
     LCD_LineFill(ln, 0U, LCD_W, UI_BG);
-    if (text && row >= txt_y && row < txt_y + Font6x8.height) {
+    if (render && row >= txt_y && row < txt_y + Font6x8.height) {
       uint16_t fr = row - txt_y;
       uint16_t x  = 4U;
-      for (const char *p = text; *p && x + Font6x8.width <= LCD_W; p++) {
-        LCD_LineChar(ln, x, fr, *p, &Font6x8, UI_MODE_CW, UI_BG);
+      for (const char *p = render; *p && x + Font6x8.width <= LCD_W; p++) {
+        LCD_LineChar(ln, x, fr, *p, &Font6x8, color, UI_BG);
         x = (uint16_t)(x + Font6x8.width);
       }
     }
@@ -2670,6 +2774,7 @@ static void cw_text_draw_rows(const char *text)
 
 void SDR_UI_DrawCWText(const char *text)  { cw_text_draw_rows(text); }
 void SDR_UI_ClearCWText(void)             { cw_text_draw_rows(NULL);  }
+void SDR_UI_SetCWDecActive(bool on)       { s_cw_dec_active = on; cw_text_draw_rows(NULL); }
 
 /* RSSI display in the right column of INFO zone (below SBR, above spectrum).
  * Writes only [SBR_X .. SBR_X+SBR_W-1] per row — CW text in the left portion is unaffected. */
@@ -2709,4 +2814,5 @@ static void rssi_info_draw(void)
 #else
 void SDR_UI_DrawCWText(const char *text)  { (void)text; }
 void SDR_UI_ClearCWText(void)             {}
+void SDR_UI_SetCWDecActive(bool on)       { (void)on; }
 #endif

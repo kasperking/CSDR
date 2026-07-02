@@ -38,7 +38,7 @@
   *  │ ID   │ Device identity              │ STUB   │ ID019;                │
   *  │ PS   │ Power status                 │ STUB   │ PS1;                  │
   *  │ AG   │ Audio gain                   │ REAL   │ AG0nnn; live 0-255    │
-  *  │ NR   │ Noise reduction              │ STUB   │ NR0; (fixed off)      │
+  *  │ NR   │ Noise reduction              │ REAL   │ NR0;/NR1; + DSP live  │
   *  │ NB   │ Noise blanker                │ REAL   │ NB0;/NB1; + DSP live  │
   *  │ FW   │ Filter width                 │ REAL   │ FWnnnn; live BW       │
   *  │ SH   │ IF high-cut                  │ REAL   │ SHnn; live BW→index   │
@@ -473,7 +473,7 @@ uint8_t CAT_CatModeToSDR(uint8_t cat_mode);
 #define CAT_HAS_PREAMP      0   /* No hardware preamp: PA always PA0                    */
 #define CAT_HAS_RF_GAIN     0   /* No RF gain control: RG always RG100                  */
 #define CAT_HAS_BEAT_CANCEL 0   /* No beat canceller: BC always BC0                     */
-#define CAT_HAS_NR          0   /* NR stub: NR0; fixed — no DSP NR through CAT path     */
+#define CAT_HAS_NR          1   /* NR: LMS predictive filter wired through CAT path      */
 #define CAT_HAS_NB          0   /* NB stub: NB0; fixed — no DSP NB through CAT path     */
 #define CAT_HAS_VOLUME      1   /* AG real: live get/set_volume callbacks, 0-100 ↔ 0-255 */
 #define CAT_HAS_BW          1   /* FW/SH: live BW read/write via get_bw/set_bw callbacks */

@@ -323,10 +323,13 @@ void AGC_Init(AGC_t *agc, uint32_t sample_rate)
  *   100 → ratio=4            (~12 dB), aggressive – may false-trigger on strong SSB
  *
  *  blank_width: 2 samples at low levels, 6 at max (~42-125 µs at 48 kHz).
- *  FIR LPF after the blank point smooths the zeroing transient to audio BW.
+ *  Blanked samples are ramped between the pre/post-impulse anchors (see
+ *  NoiseBlanker_t doc) rather than zeroed, so no FIR smoothing is needed.
  *
  *  On first enable, floor_sq is seeded from agc.level² so the threshold
  *  starts conservatively high and descends to the real noise floor over ~200 ms.
+ *  The interpolation delay line is also re-primed (see prime_ctr) so it
+ *  never plays out stale ring contents from a previous enable.
  * ============================================================ */
 void DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level)
 {
@@ -349,14 +352,58 @@ void DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level)
      * initial threshold is well above the current signal.  This prevents false
      * blanking during the ~200 ms IIR settling period after enable. */
     float a = dsp->agc.level;
-    dsp->nb.floor_sq  = (a > 0.0f) ? (a * a) : 1e-6f;
-    dsp->nb.blank_ctr = 0U;
+    dsp->nb.floor_sq        = (a > 0.0f) ? (a * a) : 1e-6f;
+    dsp->nb.blank_ctr       = 0U;
+    dsp->nb.awaiting_anchor = false;
+    dsp->nb.widx            = 0U;
+    dsp->nb.prime_ctr       = NB_RING_LEN;  /* re-fill delay line before use */
   } else if (!enabled) {
-    dsp->nb.blank_ctr = 0U;
+    dsp->nb.blank_ctr       = 0U;
+    dsp->nb.awaiting_anchor = false;
   }
 
   dsp->nb.level   = level;
   dsp->nb.enabled = enabled;
+}
+
+/* ── LMS predictive noise reduction ────────────────────────────────────────
+ *
+ *  Adaptive 32-tap Wiener predictor (Widrow-Hoff LMS).  Correlated signal
+ *  (voice, CW tone) is predictable → lands in output y.  Uncorrelated
+ *  background noise is not predictable → stays in error e.  Output: y.
+ *
+ *  Step size µ = 0.005.  At 32 taps and typical audio levels this gives
+ *  convergence in ~200 ms and < 0.5 % CPU at 48 kHz.
+ * ─────────────────────────────────────────────────────────────────────────*/
+static float nr_process(NR_t *nr, float in)
+{
+  /* Shift delay line */
+  for (uint32_t i = NR_TAPS - 1U; i > 0U; i--)
+    nr->x[i] = nr->x[i - 1U];
+  nr->x[0] = in;
+
+  /* Compute prediction */
+  float y = 0.0f;
+  for (uint32_t i = 0U; i < NR_TAPS; i++)
+    y += nr->w[i] * nr->x[i];
+
+  /* LMS weight update */
+  float mu_e = 0.005f * (in - y);
+  for (uint32_t i = 0U; i < NR_TAPS; i++)
+    nr->w[i] += mu_e * nr->x[i];
+
+  return y;
+}
+
+void DSP_NR_Set(DSP_State_t *dsp, bool enabled, uint8_t level)
+{
+  (void)level;  /* step size fixed; level reserved for future tuning */
+  if (!enabled && dsp->nr.enabled) {
+    /* Reset on disable so filter reconverges cleanly if re-enabled */
+    memset(dsp->nr.w, 0, sizeof(dsp->nr.w));
+    memset(dsp->nr.x, 0, sizeof(dsp->nr.x));
+  }
+  dsp->nr.enabled = enabled;
 }
 
 /* Set mode-specific AGC timing and bypass.  Primary configuration entry point.
@@ -793,6 +840,13 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   memset(dsp->fir_audio.buf, 0, sizeof(dsp->fir_audio.buf));
   dsp->fir_audio.idx = 0U;
 
+  /* Per-mode audio LPF cutoff: CW uses narrow 1 kHz to reject harmonics and
+   * interference above the 700 Hz BFO tone; all other modes use 4 kHz. */
+  {
+    float audio_lp_hz = (mode == MODE_CW) ? 1000.0f : 4000.0f;
+    FIR_Init_LPF(&dsp->fir_audio, audio_lp_hz / (float)sample_rate, 32U);
+  }
+
   /* Reset RX Hilbert FIR and I delay line: 31-sample startup transient is
    * inaudible (~0.65 ms) and prevents stale data leaking across modes. */
   memset(dsp->rx_hilbert.buf, 0, sizeof(dsp->rx_hilbert.buf));
@@ -1031,49 +1085,90 @@ void DSP_Process(DSP_State_t *dsp,
      *        Cost: 2 multiplies + 1 subtract per sample. */
     mix_q = (mix_q - dsp->iq_p * mix_i) * dsp->iq_g_inv;
 
-    /* ── 3d. HF Noise Blanker — impulse detection and zeroing.
+    /* ── 3d. HF Noise Blanker — impulse detection + interpolating (soft) blank.
      *
      *  Placement rationale:
      *    • Full ±Fs/2 = ±24 kHz bandwidth here maximises impulse detectability.
-     *    • FIR LPF that follows smooths the zeroing transient to audio bandwidth.
      *    • AGC after the blank avoids hang-time pumping from blanked samples.
-     *    • FFT receives potentially-zeroed samples; a 4/512-sample blank is ~0.8%
-     *      duty and produces negligible spectral artefact at display refresh rates.
+     *    • FFT receives the (already-repaired) delayed IQ; a 4/512-sample
+     *      blank is ~0.8% duty and produces negligible spectral artefact.
      *
      *  Algorithm:
      *    floor_sq : IIR power estimate (α=0.9999 → τ≈208 ms at 48 kHz).
      *               Frozen during active blanking so spikes do not bias the floor.
      *    Trigger  : I²+Q² > floor_sq × threshold_ratio_sq → start blank window.
-     *    Blank    : zero mix_i/mix_q for blank_width consecutive samples.
+     *    Blank    : instead of zeroing, the blanked samples are linearly
+     *               ramped between the last good sample before the impulse
+     *               (anchor_i/q) and the first good sample after it. Since
+     *               the "after" endpoint is not known until blank_width
+     *               samples later, IQ is run through a small fixed
+     *               NB_RING_LEN-sample delay line — the ramp is written
+     *               into the ring before those slots are read back out, so
+     *               downstream stages never see a raw zero or the endpoint
+     *               guess is wrong. NB disabled = zero added latency.
      *
-     *  CPU cost: 4 FPU mul + 2 FPU add + 2 compare ≈ 0.07% at 48 kHz / 400 MHz.
+     *  CPU cost: ~0.15% at 48 kHz / 400 MHz (ring copy + occasional ramp fill).
      *  Disabled by default; enable via DSP_NB_Set() + g_sdr.nb_on flag. */
     if (dsp->nb.enabled) {
-      float nb_mag_sq = mix_i * mix_i + mix_q * mix_q;
+      if (dsp->nb.prime_ctr > 0U) {
+        /* Delay line not yet full of real samples since enable — bypass
+         * (no delay) while filling it so stale/garbage data is never output. */
+        dsp->nb.ring_i[dsp->nb.widx] = mix_i;
+        dsp->nb.ring_q[dsp->nb.widx] = mix_q;
+        dsp->nb.widx = (uint8_t)((dsp->nb.widx + 1U) & (NB_RING_LEN - 1U));
+        dsp->nb.prime_ctr--;
+      } else {
+        float nb_mag_sq = mix_i * mix_i + mix_q * mix_q;
 
-      /* Update background floor only outside blanking window */
-      if (dsp->nb.blank_ctr == 0U) {
-        dsp->nb.floor_sq = 0.9999f * dsp->nb.floor_sq
-                         + 0.0001f * nb_mag_sq;
-      }
-
-      float nb_thr = dsp->nb.floor_sq * dsp->nb.threshold_ratio_sq;
-      dsp->nb.current_threshold_sq = nb_thr;
-
-      /* Trigger: start a new blank window on the rising edge of an impulse */
-      if (dsp->nb.blank_ctr == 0U && nb_mag_sq > nb_thr) {
-        dsp->nb.blank_ctr = dsp->nb.blank_width;
-        dsp->nb.trig_count++;
-        if (nb_mag_sq > dsp->nb.peak_mag_sq) {
-          dsp->nb.peak_mag_sq = nb_mag_sq;
+        /* Update background floor only outside blanking window */
+        if (dsp->nb.blank_ctr == 0U && !dsp->nb.awaiting_anchor) {
+          dsp->nb.floor_sq = 0.9999f * dsp->nb.floor_sq
+                           + 0.0001f * nb_mag_sq;
         }
-      }
 
-      /* Attenuate: zero the IQ sample while the blank window is active */
-      if (dsp->nb.blank_ctr > 0U) {
-        mix_i = 0.0f;
-        mix_q = 0.0f;
-        dsp->nb.blank_ctr--;
+        float nb_thr = dsp->nb.floor_sq * dsp->nb.threshold_ratio_sq;
+        dsp->nb.current_threshold_sq = nb_thr;
+
+        if (dsp->nb.awaiting_anchor) {
+          /* This sample is the first good one after the impulse — the
+           * "after" endpoint is now known, so retroactively fill the
+           * blanked ring slots with a linear ramp anchor -> this sample. */
+          uint8_t width = dsp->nb.blank_width;
+          for (uint8_t k = 0U; k < width; k++) {
+            float t   = (float)(k + 1U) / (float)(width + 1U);
+            uint8_t pos = (uint8_t)((dsp->nb.blank_start_widx + k) & (NB_RING_LEN - 1U));
+            dsp->nb.ring_i[pos] = dsp->nb.anchor_i + t * (mix_i - dsp->nb.anchor_i);
+            dsp->nb.ring_q[pos] = dsp->nb.anchor_q + t * (mix_q - dsp->nb.anchor_q);
+          }
+          dsp->nb.awaiting_anchor = false;
+        } else if (dsp->nb.blank_ctr == 0U && nb_mag_sq > nb_thr) {
+          /* Trigger: start a new blank window on the rising edge of an impulse */
+          dsp->nb.blank_ctr        = dsp->nb.blank_width;
+          dsp->nb.blank_start_widx = dsp->nb.widx;
+          uint8_t prev = (uint8_t)((dsp->nb.widx + NB_RING_LEN - 1U) & (NB_RING_LEN - 1U));
+          dsp->nb.anchor_i = dsp->nb.ring_i[prev];
+          dsp->nb.anchor_q = dsp->nb.ring_q[prev];
+          dsp->nb.trig_count++;
+          if (nb_mag_sq > dsp->nb.peak_mag_sq) {
+            dsp->nb.peak_mag_sq = nb_mag_sq;
+          }
+        }
+
+        /* Buffer this tick's raw sample (bad samples get ramp-repaired by
+         * the awaiting_anchor branch above before their slot is ever read). */
+        dsp->nb.ring_i[dsp->nb.widx] = mix_i;
+        dsp->nb.ring_q[dsp->nb.widx] = mix_q;
+
+        if (dsp->nb.blank_ctr > 0U) {
+          dsp->nb.blank_ctr--;
+          if (dsp->nb.blank_ctr == 0U) { dsp->nb.awaiting_anchor = true; }
+        }
+
+        dsp->nb.widx = (uint8_t)((dsp->nb.widx + 1U) & (NB_RING_LEN - 1U));
+
+        /* Output = oldest ring slot → fixed NB_RING_LEN-sample delay */
+        mix_i = dsp->nb.ring_i[dsp->nb.widx];
+        mix_q = dsp->nb.ring_q[dsp->nb.widx];
       }
     }
 
@@ -1198,7 +1293,7 @@ void DSP_Process(DSP_State_t *dsp,
       case MODE_FM:   audio = Demod_FM(&dsp->fm, filt_i, filt_q);               break;
       case MODE_USB:
       case MODE_DIGU:
-      case MODE_FREEDV: audio = Demod_USB(filt_i_d, filt_q_h);                  break;
+      case MODE_FREEDV: audio = FreeDV_RX_Sample(&s_fdv, filt_i_d, filt_q_h);   break;
       case MODE_LSB:
       case MODE_DIGL: audio = Demod_LSB(filt_i_d, filt_q_h);                    break;
       case MODE_CW:   audio = Demod_CW(filt_i, filt_q, &dsp->cw_phase_acc, dsp->cw_bfo_inc, dsp->cw_reverse); break;
@@ -1216,6 +1311,10 @@ void DSP_Process(DSP_State_t *dsp,
     /* ── 7c. Notch filter – narrow-band rejection before AGC */
     if (dsp->notch_on)
       audio = IIR_Biquad_Process(&dsp->notch, audio);
+
+    /* ── 7d. LMS Noise Reduction */
+    if (dsp->nr.enabled)
+      audio = nr_process(&dsp->nr, audio);
 
     /* ── 8. AGC */
     audio = AGC_Process(&dsp->agc, audio);
@@ -1422,7 +1521,11 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
 
     /* ── 5. Modulate */
     float tx_i = 0.0f, tx_q = 0.0f;
-    switch (dsp->mode) {
+    /* TUNE: force the CW carrier branch regardless of the displayed operating
+     * mode — reuses the same envelope/oscillator so PA_Protect's drive limit
+     * (audio_gain) still applies (see csdr_app.c / pa_protect.c). */
+    SDR_Mode_t mod_sel = dsp->tx.tune_active ? MODE_CW : dsp->mode;
+    switch (mod_sel) {
       case MODE_USB:
       case MODE_LSB:
       case MODE_DIGU:
@@ -1454,8 +1557,10 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         break;
       case MODE_CW: {
         /* Keyed CW carrier at LO+pitch Hz (USB sideband) with click-free envelope.
-         * cw_key_out is written by the main-loop keyer; volatile for ISR safety. */
-        float env_tgt = dsp->cw_key_out ? dsp->tx.cw_sidetone_amp : 0.0f;
+         * cw_key_out is written by the main-loop keyer; volatile for ISR safety.
+         * Scaled by audio_gain so PA_Protect foldback/trip actually reduces the
+         * carrier (previously the CW path bypassed audio_gain entirely). */
+        float env_tgt = dsp->cw_key_out ? (dsp->tx.cw_sidetone_amp * dsp->tx.audio_gain) : 0.0f;
         /* Attack ~3 ms, release ~6 ms at 48 kHz (1 sample ≈ 0.021 ms) */
         float coeff = (env_tgt > dsp->tx.cw_env_amp) ? 0.9994f : 0.9988f;
         dsp->tx.cw_env_amp = dsp->tx.cw_env_amp * coeff + env_tgt * (1.0f - coeff);

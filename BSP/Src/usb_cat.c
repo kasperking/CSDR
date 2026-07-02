@@ -290,6 +290,21 @@ volatile uint32_t dbg_last_bw_cmd = 0U;
  *  Compare with dbg_last_bw_value (post-boundary, in csdr_app.c) to see how much was clipped. */
 volatile uint32_t dbg_last_bw_cat_value = 0U;
 
+/* NR command tracking — proves whether flrig's NR SET ever reaches the parser
+ * and what cat_get_nr() reports back on the next poll.
+ *  dbg_cat_nr_set_count: incremented every NRx; SET parsed (cmd[2] != '\0').
+ *  dbg_cat_nr_last_set_char: raw cmd[2] byte of the last SET ('0'/'1'/'2'...).
+ *  dbg_cat_nr_get_count: incremented every bare NR; GET parsed.
+ *  dbg_cat_nr_last_get_char: the digit actually sent back in the last GET reply.
+ * If set_count stays 0 while toggling NR in flrig, the command never arrives
+ * (flrig/USB/parser issue, not cat_set_nr/DSP). If set_count increases but the
+ * NEXT get_char keeps reading the old value, check cat_set_nr → DSP_NR_Set wiring
+ * and g_dsp.nr.enabled directly in Live Expressions. */
+volatile uint32_t dbg_cat_nr_set_count     = 0U;
+volatile char     dbg_cat_nr_last_set_char = '?';
+volatile uint32_t dbg_cat_nr_get_count     = 0U;
+volatile char     dbg_cat_nr_last_get_char = '?';
+
 /* =========================================================
  * FIFO lifecycle snapshot — updated after every enqueue and every flush.
  * These four variables form a consistent snapshot of the last FIFO operation.
@@ -1159,10 +1174,18 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
         }
     }
 
-    /* NR — stub: no DSP NR wired through CAT path */
     else if (cmd[0] == 'N' && cmd[1] == 'R') {
-        if (cmd[2] == '\0') { cat_copy(resp, "NR0;"); }
-        /* SET NRn; — ACK-only stub */
+        if (cmd[2] == '\0') {
+            char tmp[5] = { 'N', 'R', '0', ';', '\0' };
+            if (cat->cb.get_nr && cat->cb.get_nr()) { tmp[2] = '1'; }
+            cat_copy(resp, tmp);
+            dbg_cat_nr_get_count++;
+            dbg_cat_nr_last_get_char = tmp[2];
+        } else {
+            if (cat->cb.set_nr) { cat->cb.set_nr(cmd[2] != '0'); }
+            dbg_cat_nr_set_count++;
+            dbg_cat_nr_last_set_char = cmd[2];
+        }
     }
 
     /* NB — noise blanker: GET returns real state; SET wires to DSP via callback */
@@ -1720,6 +1743,8 @@ void CAT_Process(CAT_Handle_t *cat)
                     (_c[0]=='B' && _c[1]=='D') ||  /* BD  — Hamlib no-read               */
                     (_c[0]=='M' && _c[1]=='W') ||  /* MW  — Hamlib no-read               */
                     (_c[0]=='D' && _c[1]=='S') ||  /* DS  — Hamlib no-read               */
+                    (_c[0]=='N' && _c[1]=='R') ||  /* NR SET: kenwood_set_func() sendCommand(), no readback — echo desynchs */
+                    (_c[0]=='N' && _c[1]=='B') ||  /* NB SET: kenwood_set_func() sendCommand(), no readback — echo desynchs */
                     (_c[0]=='T' && _c[1]=='C') ||  /* TC  — Hamlib no-read               */
                     (_c[0]=='K' && _c[1]=='Y') ||  /* KY  — Hamlib no-read               */
                     (_c[0]=='M' && _c[1]=='R') ||  /* MR  — Hamlib no-read               */

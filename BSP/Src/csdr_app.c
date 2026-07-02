@@ -23,6 +23,7 @@
 #include "usb_audio.h"
 #include "menu.h"
 #include "band_sel.h"
+#include "mode_sel.h"
 #include "cal.h"
 #include "sdr_scan.h"
 #include "runtime_diag.h"
@@ -35,6 +36,7 @@
 #include "spi_assets.h"
 #include "cw_decode.h"
 #include "cw_keyer.h"
+#include "rtc_clock.h"
 #include <string.h>
 #include <math.h>
 
@@ -83,6 +85,7 @@ SDR_State_t g_sdr = {
   .digi_gain     = 70,
   .tx_power      = 100,
   .pa_watts      = 0,
+  .pa_oc_limit_idx = 100U,     /* 10.0A default (stored ×10) */
   .tx_audio_low_hz  = 200U,
   .tx_audio_high_hz = 2800U,
   .notch_on  = false,
@@ -177,6 +180,7 @@ extern char              dbg_cat_last_resp[];       /* last non-empty response e
  * s_save_on_disconnect: set by CSDR_CDC_ResetCAT so CSDR_Loop flushes immediately. */
 static uint32_t s_freq_save_tick      = 0U;
 static volatile bool s_save_on_disconnect = false;
+static uint32_t s_tune_start_ms       = 0U;   /* HAL_GetTick() at TUNE start; TUNE_MAX_MS safety */
 /* Suppress SAI stop/start volume apply for 500ms after USB connect so flrig
  * init sequence completes before the ~15ms audio gap. 0 = no active window. */
 static volatile uint32_t s_usb_connect_tick = 0U;
@@ -199,6 +203,8 @@ static volatile uint8_t dbg_disable_lcd_dma = 0;
 static void csdr_apply_volume(uint8_t vol);
 static void csdr_apply_tx(void);
 static void csdr_factory_reset(void);
+static void csdr_tune_start(void);
+static void csdr_tune_stop(void);
 
 
 #define CSDR_UI_SPEC_RX_PERIOD_MS    75U    /* ~13 fps spectrum in RX — decoupled from waterfall */
@@ -209,9 +215,12 @@ static void csdr_factory_reset(void);
 #define CSDR_UI_TX_DIRTY_MIN_MS      1000U  /* defer knob/menu redraws while TX audio is time-critical */
 #define CSDR_UI_TX_SPEC_PERIOD_MS     200U  /* TX mic spectrum ~5 fps */
 
+#define TUNE_POWER_PCT  25U     /* fixed drive cap while TUNE is active, independent of tx_power */
+#define TUNE_MAX_MS     30000U  /* safety auto-stop in case the TUNE button sticks */
+
 
 /* ── Function key state machines ── */
-static Key_t k_menu, k_f1, k_f2, k_f3, k_f4, k_band, k_mode, k_ptt;
+static Key_t k_menu, k_f1, k_f2, k_f3, k_f4, k_band, k_mode, k_ptt, k_tune;
 
 /* ── CAT callbacks ── */
 static void     cat_set_freq(uint32_t f);
@@ -242,6 +251,7 @@ static uint8_t  cat_get_squelch(void);
 static int32_t  cat_get_rit_hz(void);
 static uint32_t cat_get_step(void);
 
+static void csdr_apply_mode_idx(uint8_t m);
 static void csdr_apply_band(uint8_t band);
 static void csdr_handle_encoder(void);
 static void csdr_handle_keys(void);
@@ -368,6 +378,9 @@ void CSDR_Init(void)
   /* Power hold */
   PWR_Init();
 
+  /* RTC — must be before flash restore so IsSet() works */
+  RTC_Clock_Init();
+
   /* ═══ I2C BUS SCANNER - find devices on I2C1 ═══
    * Kết quả trong dbg_i2c_devices[addr7bit] = 1 nếu device có mặt.
    * WM8731 thường ở 0x1A (CSB=0) hoặc 0x1B (CSB=1).
@@ -419,7 +432,8 @@ void CSDR_Init(void)
       g_sdr.digi_gain     = fs.digi_gain;
       g_sdr.tx_power        = fs.tx_power ? fs.tx_power : 100U; /* default 100 for old EEPROM */
       g_sdr.pa_watts        = fs.pa_watts;
-      g_sdr.pa_oc_limit_idx = (fs.pa_oc_limit_idx <= 4U) ? fs.pa_oc_limit_idx : 3U;
+      g_sdr.pa_oc_limit_idx = (fs.pa_oc_limit_idx >= 10U && fs.pa_oc_limit_idx <= 200U)
+                               ? fs.pa_oc_limit_idx : 100U;
       g_sdr.tx_audio_low_hz  = (fs.tx_audio_low_hz  >= 100U && fs.tx_audio_low_hz  <= 500U)
                                ? fs.tx_audio_low_hz  : 200U;
       g_sdr.tx_audio_high_hz = (fs.tx_audio_high_hz >= 2200U && fs.tx_audio_high_hz <= 3500U)
@@ -484,6 +498,7 @@ void CSDR_Init(void)
   }
 
   SDR_UI_DrawFrame(CSDR_AUDIO_SAMPLE_RATE, DSP_FFT_SIZE);
+  SDR_UI_SetFooterFreq(g_sdr.freq_hz, (uint32_t)g_sdr.step);
 
   /* Delay nhỏ trước I2C để bus settle sau power-on */
   HAL_Delay(10);
@@ -521,8 +536,10 @@ void CSDR_Init(void)
 
   /* PA overcurrent protection: INA226 trên I2C2, ALERT hardware-gate bias line */
   PA_OC_Init(&hi2c2);
-  { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
-    PA_OC_SetCurrentLimit(oc_lut[g_sdr.pa_oc_limit_idx]); }
+  { float _lim = (float)g_sdr.pa_oc_limit_idx * 0.1f;
+    PA_OC_SetCurrentLimit(_lim);
+    g_pa_cfg.current_warn_a = _lim * 0.75f;
+    g_pa_cfg.current_trip_a = _lim * 0.90f; }
 
   /* PA protection manager: centralized state machine (foldback, trip, cooldown) */
   PA_Protect_Init();
@@ -543,6 +560,7 @@ void CSDR_Init(void)
   DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
   AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_speed, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, g_sdr.nb_on, g_sdr.nb_level);
+  DSP_NR_Set(&g_dsp, g_sdr.nr_on, 50U);
   DSP_SetSquelch(&g_dsp, g_sdr.squelch);
   /* LHPVOL is set by wm_out_vol in the WM8731_Init BYPASS-fix block below (after SAI start).
    * csdr_apply_volume is NOT called here — SAI has not started yet. */
@@ -583,6 +601,7 @@ void CSDR_Init(void)
   Key_InitPCA(&k_f4,   &g_pca9555_raw, PCA_BIT_F4);
   Key_InitPCA(&k_band, &g_pca9555_raw, PCA_BIT_BAND);
   Key_InitPCA(&k_mode, &g_pca9555_raw, PCA_BIT_MODE);
+  Key_InitPCA(&k_tune, &g_pca9555_raw, PCA_BIT_TUNE);
   Key_Init(&k_ptt, PTT_GPIO_Port, PTT_Pin);   /* PB12 – direct MCU */
 
   /* Analog subsystem */
@@ -1019,8 +1038,12 @@ static void csdr_on_mode_changed(SDR_Mode_t old_mode)
     } else {
         g_dsp.cw_key_out = false;
     }
+    if (g_sdr.mode == MODE_CW) {
+        SDR_UI_SetCWDecActive(g_sdr.cw_decode_on);
+    }
     if (old_mode == MODE_CW && g_sdr.mode != MODE_CW) {
         g_sdr.cw_decode_on = false;
+        SDR_UI_SetCWDecActive(false);
         SDR_UI_ClearCWText();
     }
 }
@@ -1291,6 +1314,9 @@ void CSDR_Loop(void)
   }
   if (disp_due || dirty_due) {
     t_disp = now;
+    /* Piggyback the PW badge (measured fwd power) on the existing 1 Hz TX
+     * meter cadence — same budget already spent on SWR/ALC, no new timer. */
+    if (disp_due && g_sdr.tx_mode) g_sdr.display_dirty |= (uint8_t)DIRTY_VFO;
     if (!dbg_disable_lcd_dma) {
       csdr_process_audio_pending();
       RuntimeDiag_UiRenderBegin();
@@ -1652,6 +1678,22 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *h)
 /* ══════════════════════════════════════════════════════════
  *  Private functions
  * ══════════════════════════════════════════════════════════ */
+static void csdr_apply_mode_idx(uint8_t m)
+{
+  SDR_Mode_t new_mode = (m < MODE_COUNT) ? (SDR_Mode_t)m : g_sdr.mode;
+  SDR_Mode_t old_mode = g_sdr.mode;
+  if (new_mode == old_mode) { g_sdr.display_dirty |= DIRTY_ALL; return; }
+  g_sdr.mode  = new_mode;
+  g_sdr.bw_hz = default_bw_for_mode(new_mode);
+  g_sdr.sl_hz = 0U;
+  DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
+  AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_speed, CSDR_AUDIO_SAMPLE_RATE);
+  csdr_apply_nco_if();
+  csdr_on_mode_changed(old_mode);
+  g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
+}
+
 static void csdr_apply_band(uint8_t band)
 {
   BPF_SetBand(band); LPF_SetBand(band);
@@ -1751,6 +1793,7 @@ static void csdr_factory_reset(void)
   DSP_SetBW(&g_dsp, 3000.0f);
   AGC_SetMode(&g_dsp.agc, MODE_USB, true, CSDR_AUDIO_SAMPLE_RATE);
   DSP_NB_Set(&g_dsp, false, 50U);
+  DSP_NR_Set(&g_dsp, false, 50U);
   DSP_SetSquelch(&g_dsp, 0U);
   DSP_SetCWPitch(&g_dsp, 700U, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetCWReverse(&g_dsp, false);
@@ -1775,6 +1818,11 @@ static void csdr_handle_encoder(void)
       BandSel_Render();
       return;
     }
+    if (ModeSel_IsOpen()) {
+      if (delta > 0) ModeSel_CursorDown(); else ModeSel_CursorUp();
+      ModeSel_Render();
+      return;
+    }
     if (Menu_IsOpen(&g_menu)) { Menu_EncoderEdit(&g_menu, delta); return; }
     int64_t f = (int64_t)g_sdr.freq_hz + (int64_t)delta*(int64_t)g_sdr.step;
     if (f < CSDR_FREQ_MIN_HZ) f = CSDR_FREQ_MIN_HZ;
@@ -1792,6 +1840,13 @@ static void csdr_handle_encoder(void)
       uint8_t b = BandSel_Cursor();
       BandSel_Close();
       csdr_apply_band(b);
+      g_sdr.display_dirty |= DIRTY_ALL;
+      return;
+    }
+    if (ModeSel_IsOpen()) {
+      uint8_t m = ModeSel_Cursor();
+      ModeSel_Close();
+      csdr_apply_mode_idx(m);
       g_sdr.display_dirty |= DIRTY_ALL;
       return;
     }
@@ -1827,8 +1882,10 @@ static void csdr_handle_encoder(void)
             g_sdr.lo_offset_hz    = cp.lo_offset_hz;
             g_sdr.pa_watts        = cp.pa_watts;
             g_sdr.pa_oc_limit_idx = cp.pa_oc_limit_idx;
-            { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
-              PA_OC_SetCurrentLimit(oc_lut[cp.pa_oc_limit_idx]); }
+            { float _lim = (float)cp.pa_oc_limit_idx * 0.1f;
+              PA_OC_SetCurrentLimit(_lim);
+              g_pa_cfg.current_warn_a = _lim * 0.75f;
+              g_pa_cfg.current_trip_a = _lim * 0.90f; }
             DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
             DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
             DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
@@ -1876,6 +1933,7 @@ static void csdr_handle_keys(void)
 {
   Key_Poll(&k_menu); Key_Poll(&k_f1);   Key_Poll(&k_f2); Key_Poll(&k_f3);
   Key_Poll(&k_f4);   Key_Poll(&k_band); Key_Poll(&k_mode); Key_Poll(&k_ptt);
+  Key_Poll(&k_tune);
 
   if (Key_Press(&k_menu)) {
     g_sdr.display_dirty = 0U;  /* prevent status panel overwriting menu */
@@ -1898,6 +1956,7 @@ static void csdr_handle_keys(void)
         g_sdr.cw_filter_hz,
         g_sdr.usb_iq_stream,
         g_sdr.tx_src,
+        g_sdr.nb_level,
         menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
@@ -1920,6 +1979,23 @@ static void csdr_handle_keys(void)
     return;  /* consume all remaining key processing this frame */
   }
 
+  /* Mode-sel overlay input — intercepts F1/F2/F3/F4 and mode key */
+  if (ModeSel_IsOpen()) {
+    if (Key_PressOrRepeat(&k_f1)) { ModeSel_CursorUp();   ModeSel_Render(); }
+    if (Key_PressOrRepeat(&k_f2)) { ModeSel_CursorDown(); ModeSel_Render(); }
+    if (Key_Press(&k_f3)) {
+      uint8_t m = ModeSel_Cursor();
+      ModeSel_Close();
+      csdr_apply_mode_idx(m);
+      g_sdr.display_dirty |= DIRTY_ALL;
+    }
+    if (Key_Press(&k_f4) || Key_Press(&k_mode)) {
+      ModeSel_Close();
+      g_sdr.display_dirty |= DIRTY_ALL;
+    }
+    return;
+  }
+
   /* F1: menu UP / Volume Down */
   if (Key_PressOrRepeat(&k_f1)) {
     if (Menu_IsOpen(&g_menu)) {
@@ -1939,76 +2015,86 @@ static void csdr_handle_keys(void)
     }
   }
 
-  /* F3: menu confirm / VFO A↔B swap */
-  if (Key_Press(&k_f3)) {
-    if (Menu_IsOpen(&g_menu)) {
-      { MenuItem_t *_cur2 = Menu_CurrentItem(&g_menu);
-      if (_cur2 && _cur2->type == MENU_TYPE_ACTION) {
-        const char *name = _cur2->label;
-        Menu_Toggle(&g_menu);
-        g_sdr.display_dirty |= DIRTY_ALL;
-        if (strcmp(name, "Calibration") == 0) {
-          Cal_Params_t cp = {
-            .xtal_ppm        = g_sdr.xtal_ppm,
-            .iq_gain         = g_sdr.iq_gain,
-            .iq_phase        = g_sdr.iq_phase,
-            .dc_i_offset     = g_sdr.dc_i_offset,
-            .dc_q_offset     = g_sdr.dc_q_offset,
-            .audio_gain_db   = g_sdr.audio_gain_db,
-            .mic_gain        = g_sdr.mic_gain,
-            .smeter_offset_db= g_sdr.smeter_offset_db,
-            .lo_offset_hz    = g_sdr.lo_offset_hz,
-            .pa_watts        = g_sdr.pa_watts,
-          };
-          if (Cal_Run(&cp, &g_dsp)) {
-            g_sdr.xtal_ppm        = cp.xtal_ppm;
-            g_sdr.iq_gain         = cp.iq_gain;
-            g_sdr.iq_phase        = cp.iq_phase;
-            g_sdr.dc_i_offset     = cp.dc_i_offset;
-            g_sdr.dc_q_offset     = cp.dc_q_offset;
-            g_sdr.audio_gain_db   = cp.audio_gain_db;
-            g_sdr.mic_gain        = cp.mic_gain;
-            g_sdr.smeter_offset_db= cp.smeter_offset_db;
-            g_sdr.lo_offset_hz    = cp.lo_offset_hz;
-            g_sdr.pa_watts        = cp.pa_watts;
-            g_sdr.pa_oc_limit_idx = cp.pa_oc_limit_idx;
-            { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
-              PA_OC_SetCurrentLimit(oc_lut[cp.pa_oc_limit_idx]); }
-            DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
-            DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
-            DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
-            if (g_sdr.si5351_ok) {
-              g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
-                SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
-              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+  /* F3: menu confirm / VFO A↔B swap (short) / CW decode toggle (hold, CW mode only)
+   * Uses pending pattern: Press sets pending; Hold cancels pending and fires hold
+   * action; Release fires swap only if pending (not consumed by hold). */
+  { static bool s_f3_pending = false;
+    if (Key_Press(&k_f3)) {
+      if (Menu_IsOpen(&g_menu)) {
+        MenuItem_t *_cur2 = Menu_CurrentItem(&g_menu);
+        if (_cur2 && _cur2->type == MENU_TYPE_ACTION) {
+          const char *name = _cur2->label;
+          Menu_Toggle(&g_menu);
+          g_sdr.display_dirty |= DIRTY_ALL;
+          if (strcmp(name, "Calibration") == 0) {
+            Cal_Params_t cp = {
+              .xtal_ppm        = g_sdr.xtal_ppm,
+              .iq_gain         = g_sdr.iq_gain,
+              .iq_phase        = g_sdr.iq_phase,
+              .dc_i_offset     = g_sdr.dc_i_offset,
+              .dc_q_offset     = g_sdr.dc_q_offset,
+              .audio_gain_db   = g_sdr.audio_gain_db,
+              .mic_gain        = g_sdr.mic_gain,
+              .smeter_offset_db= g_sdr.smeter_offset_db,
+              .lo_offset_hz    = g_sdr.lo_offset_hz,
+              .pa_watts        = g_sdr.pa_watts,
+            };
+            if (Cal_Run(&cp, &g_dsp)) {
+              g_sdr.xtal_ppm        = cp.xtal_ppm;
+              g_sdr.iq_gain         = cp.iq_gain;
+              g_sdr.iq_phase        = cp.iq_phase;
+              g_sdr.dc_i_offset     = cp.dc_i_offset;
+              g_sdr.dc_q_offset     = cp.dc_q_offset;
+              g_sdr.audio_gain_db   = cp.audio_gain_db;
+              g_sdr.mic_gain        = cp.mic_gain;
+              g_sdr.smeter_offset_db= cp.smeter_offset_db;
+              g_sdr.lo_offset_hz    = cp.lo_offset_hz;
+              g_sdr.pa_watts        = cp.pa_watts;
+              g_sdr.pa_oc_limit_idx = cp.pa_oc_limit_idx;
+              { float _lim = (float)cp.pa_oc_limit_idx * 0.1f;
+                PA_OC_SetCurrentLimit(_lim);
+                g_pa_cfg.current_warn_a = _lim * 0.75f;
+                g_pa_cfg.current_trip_a = _lim * 0.90f; }
+              DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
+              DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
+              DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+              if (g_sdr.si5351_ok) {
+                g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
+                  SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
+                SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+              }
+              csdr_save_settings();
+            } else {
+              DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
+              DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
             }
-            csdr_save_settings();
-          } else {
-            /* Cancelled — restore live DSP state from saved settings */
-            DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
-            DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
+          } else if (strcmp(name, "SWR Scan") == 0) {
+            SWR_Scan_Run();
+          } else if (strcmp(name, "Factory Reset") == 0) {
+            csdr_factory_reset();
           }
-        } else if (strcmp(name, "SWR Scan") == 0) {
-          SWR_Scan_Run();
-        } else if (strcmp(name, "Factory Reset") == 0) {
-          csdr_factory_reset();
+          g_sdr.display_dirty |= DIRTY_ALL;
+        } else {
+          Menu_Confirm(&g_menu);
         }
-        g_sdr.display_dirty |= DIRTY_ALL;
       } else {
-        Menu_Confirm(&g_menu);
+        s_f3_pending = true;  /* arm — wait for release or hold */
       }
-      } /* end MenuItem_t *_cur2 block */
-    } else {
-      /* F3 outside menu: short press = VFO A↔B swap */
-      csdr_vfo_swap();
     }
-  }
-
-  /* F3 hold outside menu: toggle CW decode (only in CW mode) */
-  if (!Menu_IsOpen(&g_menu) && Key_Hold(&k_f3) && g_sdr.mode == MODE_CW) {
-    g_sdr.cw_decode_on = !g_sdr.cw_decode_on;
-    if (!g_sdr.cw_decode_on) SDR_UI_ClearCWText();
-    CWDec_Reset(&g_cw_dec);
+    if (!Menu_IsOpen(&g_menu) && Key_Hold(&k_f3)) {
+      s_f3_pending = false;   /* hold consumed — cancel swap */
+      if (g_sdr.mode == MODE_CW) {
+        g_sdr.cw_decode_on = !g_sdr.cw_decode_on;
+        SDR_UI_SetCWDecActive(g_sdr.cw_decode_on);
+        if (!g_sdr.cw_decode_on) SDR_UI_ClearCWText();
+        CWDec_Reset(&g_cw_dec);
+        g_sdr.display_dirty |= DIRTY_ALL; /* refresh INFO: hints or [DEC] placeholder */
+      }
+    }
+    if (!Menu_IsOpen(&g_menu) && Key_Release(&k_f3)) {
+      if (s_f3_pending) { csdr_vfo_swap(); }
+      s_f3_pending = false;
+    }
   }
 
   /* F4: Back / Exit menu  –or–  quick SWR scan */
@@ -2020,6 +2106,20 @@ static void csdr_handle_keys(void)
       SWR_Scan_Run();
       g_sdr.display_dirty |= DIRTY_ALL;
     }
+  }
+
+  /* TUNE: dedicated momentary push-to-tune button on its own PCA9555 line
+   * (PCA_BIT_TUNE) — continuous low-power carrier for as long as it's held.
+   * See csdr_tune_start/csdr_tune_stop. Ignored while the menu is open. */
+  if (!Menu_IsOpen(&g_menu)) {
+    if (Key_Press(&k_tune))   { csdr_tune_start(); }
+    if (Key_Release(&k_tune)) { csdr_tune_stop();  }
+  }
+
+  /* TUNE safety auto-stop: in case the button sticks or input glitches and
+   * Key_Release never fires, force-stop after TUNE_MAX_MS regardless. */
+  if (g_sdr.tune_mode && (HAL_GetTick() - s_tune_start_ms) >= TUNE_MAX_MS) {
+    csdr_tune_stop();
   }
 
 
@@ -2037,24 +2137,31 @@ static void csdr_handle_keys(void)
                                  s_band_pending = false; }
   }
 
-  if (Key_Press(&k_mode)) {
-    SDR_Mode_t old_mode_key = g_sdr.mode;
-    g_sdr.mode  = (SDR_Mode_t)((g_sdr.mode + 1U) % MODE_COUNT);
-    g_sdr.bw_hz = default_bw_for_mode(g_sdr.mode);
-    g_sdr.sl_hz = 0U;
-    DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
-    DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
-    AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_speed, CSDR_AUDIO_SAMPLE_RATE);
-    csdr_apply_nco_if();
-    csdr_on_mode_changed(old_mode_key);
-    g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
+  /* MODE key: short press = ModeUp on release; long hold = cancel.
+   * Same pending-flag pattern as BAND key: action fires on release only
+   * if no hold fired, preventing accidental mode change when holding. */
+  { static bool s_mode_pending = false;
+    if (Key_Press(&k_mode))   { s_mode_pending = true; }
+    if (Key_Hold(&k_mode))    { s_mode_pending = false;
+                                 g_sdr.display_dirty = 0U;
+                                 ModeSel_Open(g_sdr.mode, g_sdr.mode);
+                                 ModeSel_Render(); }
+    if (Key_Release(&k_mode)) {
+      if (s_mode_pending) {
+        csdr_apply_mode_idx((uint8_t)((g_sdr.mode + 1U) % MODE_COUNT));
+      }
+      s_mode_pending = false;
+    }
   }
 
   if (Key_Press(&k_ptt)) {
-    bool _tx = !g_sdr.tx_mode;
-    g_sdr.tx_mode = _tx;
-    g_sdr.display_dirty |= _tx ? (uint8_t)(DIRTY_HDR | DIRTY_VFO | DIRTY_SBR) : (uint8_t)DIRTY_ALL;
-    csdr_apply_tx();   /* immediate for physical PTT — no deferred path */
+    g_sdr.tx_mode = true;
+    g_sdr.display_dirty |= (uint8_t)(DIRTY_HDR | DIRTY_VFO | DIRTY_SBR);
+    csdr_apply_tx();
+  } else if (Key_Release(&k_ptt)) {
+    g_sdr.tx_mode = false;
+    g_sdr.display_dirty |= (uint8_t)DIRTY_ALL;
+    csdr_apply_tx();
   }
 }
 
@@ -2070,7 +2177,7 @@ static void csdr_update_tx_spectrum(void)
 
 static void csdr_update_spectrum(void)
 {
-  if (g_sdr.tx_mode || !g_dsp.fft_ready || Menu_IsOpen(&g_menu) || BandSel_IsOpen()) return;
+  if (g_sdr.tx_mode || !g_dsp.fft_ready || Menu_IsOpen(&g_menu) || BandSel_IsOpen() || ModeSel_IsOpen()) return;
 
   /* Race-window guard: do_trip() sets tx_mode=false immediately but
    * csdr_apply_tx() (which calls SetTXMode(false)) runs up to 10 ms later
@@ -2105,7 +2212,7 @@ static void csdr_update_spectrum(void)
 
 static void csdr_update_waterfall(void)
 {
-  if (g_sdr.tx_mode || Menu_IsOpen(&g_menu) || BandSel_IsOpen()) return;
+  if (g_sdr.tx_mode || Menu_IsOpen(&g_menu) || BandSel_IsOpen() || ModeSel_IsOpen()) return;
   RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_WATERFALL);
   g_dsp.wf_lines = 0U;                   /* consume pending lines; render latest FFT frame */
   SDR_UI_DrawWaterfall(g_dsp.fft_mag_db, DSP_FFT_SIZE);
@@ -2115,6 +2222,16 @@ static void csdr_update_waterfall(void)
 static void csdr_refresh_display(void)
 {
   bool menu_open = Menu_IsOpen(&g_menu);
+
+  /* Clock: force DIRTY_HDR once per second so HH:MM:SS ticks live */
+  if (!menu_open) {
+    static uint32_t s_clk_sec = UINT32_MAX;
+    uint32_t sec = HAL_GetTick() / 1000U;
+    if (sec != s_clk_sec) {
+      s_clk_sec = sec;
+      g_sdr.display_dirty |= DIRTY_HDR;
+    }
+  }
 
   uint8_t dirty = g_sdr.display_dirty;
   if (dirty != 0U) {
@@ -2139,11 +2256,14 @@ static void csdr_refresh_display(void)
                    ? g_sdr.digi_gain : g_sdr.mic_gain;
     ui.tx_power  = g_sdr.tx_power;
     ui.pa_watts  = g_sdr.pa_watts;
+    ui.fwd_power_mw = PA_Protect_GetFwdPowerEnvelope_mW();
     ui.freq_b_hz = g_sdr.vfo_b.freq_hz; /* inactive VFO shown in sub-line */
     ui.active_vfo = g_sdr.active_vfo;
 
     if (BandSel_IsOpen()) {
       BandSel_Render();
+    } else if (ModeSel_IsOpen()) {
+      ModeSel_Render();
     } else if (menu_open) {
       /* Menu đang mở: re-render để đảm bảo không bị xóa */
       Menu_Render(&g_menu);
@@ -2155,6 +2275,7 @@ static void csdr_refresh_display(void)
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
       }
       if (dirty & DIRTY_VFO) {
+        SDR_UI_SetFooterFreq(g_sdr.freq_hz, (uint32_t)g_sdr.step);
         SDR_UI_DrawVFO(&ui);
       }
       if (dirty & DIRTY_SBR) {
@@ -2169,6 +2290,7 @@ static void csdr_refresh_display(void)
       }
       if (dirty & DIRTY_VFO) {
         RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_STATUS_BAR);
+        SDR_UI_SetFooterFreq(g_sdr.freq_hz, (uint32_t)g_sdr.step);
         SDR_UI_DrawVFO(&ui);
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
       }
@@ -2188,7 +2310,7 @@ static void csdr_refresh_display(void)
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
       }
     }
-  } else if (!menu_open && !BandSel_IsOpen()) {
+  } else if (!menu_open && !BandSel_IsOpen() && !ModeSel_IsOpen()) {
     if (g_sdr.tx_mode) {
       RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
       SDR_UI_UpdateTXMeters((int32_t)g_analog.alc_percent,
@@ -2229,13 +2351,14 @@ static void menu_apply_cb(void)
   uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr, vox_gain, tx_src_new; uint32_t step, bw;
   uint16_t tx_low, tx_high, vox_delay;
   uint16_t cw_pitch, cw_filter, cw_bk_delay; uint8_t cw_wpm, keyer_mode, sidetone, cw_bkin;
+  uint8_t nb_level;
   Menu_SaveToSDR(&g_menu, &agc_speed, &nb, &nr, &rit,
                   &vol, &mic, &digi, &sq, &step, &bw, &att, &band, &mode, &usb, &zoom,
                   &ext_alc, &rfpwr, &tx_low, &tx_high, &rxshift, &notch_en, &notch_f,
                   &vox_en, &vox_gain, &vox_delay, &cw_dec,
                   &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
                   &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream,
-                  &tx_src_new);
+                  &tx_src_new, &nb_level);
   if (tx_low != g_sdr.tx_audio_low_hz || tx_high != g_sdr.tx_audio_high_hz) {
     g_sdr.tx_audio_low_hz  = tx_low;
     g_sdr.tx_audio_high_hz = tx_high;
@@ -2264,7 +2387,9 @@ static void menu_apply_cb(void)
   if (agc_speed != g_sdr.agc_speed)
     AGC_SetMode(&g_dsp.agc, g_sdr.mode, agc_speed, CSDR_AUDIO_SAMPLE_RATE);
   g_sdr.agc_speed = agc_speed; g_sdr.nb_on = nb; g_sdr.nr_on = nr;
-  DSP_NB_Set(&g_dsp, nb, g_sdr.nb_level);
+  g_sdr.nb_level  = nb_level;
+  DSP_NB_Set(&g_dsp, nb, nb_level);
+  DSP_NR_Set(&g_dsp, nr, 50U);
   g_sdr.rit_hz = rit;
   g_sdr.cat_rit_dirty = true;  /* apply new RIT offset to nco_if via CSDR_Loop */
   if (vol != g_sdr.volume) csdr_apply_volume(vol);
@@ -2309,6 +2434,7 @@ static void menu_apply_cb(void)
     /* CW decode can only be enabled when in CW mode */
     bool effective = cw_dec && (g_sdr.mode == MODE_CW);
     g_sdr.cw_decode_on = effective;
+    SDR_UI_SetCWDecActive(effective);
     if (!effective) SDR_UI_ClearCWText();
   }
   /* CW settings apply */
@@ -2587,10 +2713,18 @@ static void csdr_apply_volume(uint8_t vol)
   HAL_SAI_DMAStop(&hsai_BlockB1);
   HAL_Delay(5U);
 
-  /* Write WM8731 LHPVOL — same formula as main branch */
+  /* Full WM8731_Init (not just SetVolume) — ensures BYPASS=0 / DACSEL=1 are
+   * restored after SAI restart in case WM8731 reset its ANALOG_PATH register
+   * when MCLK was re-applied.  Volume is embedded in the config struct. */
   uint8_t wm_vol = (vol == 0U) ? 0x2FU
                                 : (uint8_t)(90U + ((uint16_t)vol * 31U / 100U));
-  WM8731_SetVolume(&hi2c1, WM8731_I2C_ADDR, wm_vol, wm_vol);
+  { WM8731_Config_t wm_v = {
+      .hi2c = &hi2c1, .i2c_addr = WM8731_I2C_ADDR,
+      .sample_rate = CSDR_AUDIO_SAMPLE_RATE,
+      .input_volume = 23U, .output_volume = wm_vol, .line_in = true
+    };
+    WM8731_Init(&wm_v);
+  }
 
   /* Restart SAI — TX master first, RX slave after */
   RuntimeDiag_TxHalfFilled(0U);
@@ -2618,6 +2752,10 @@ static void csdr_apply_volume(uint8_t vol)
  * context (cat_tx_dirty path) or from the physical PTT key, never from an ISR. */
 static void csdr_apply_tx(void)
 {
+  /* pa_watts=0 means no PA fitted; BPF and T/R relay must not switch.
+   * All other features (VOX, CW keyer, TX UI, mic spectrum) run normally. */
+  bool pa_fitted = (g_sdr.pa_watts != 0U);
+
   /* PA protection gate removed: TRIP/COOLDOWN zeroes drive via
    * PA_Protect_GetDriveLimit()=0 in the gain block below.
    * tx_mode stays true so TX UI (spectrum/meters) keeps running. */
@@ -2625,8 +2763,7 @@ static void csdr_apply_tx(void)
   if (g_sdr.tx_mode) {
     PA_Protect_OnTxStart();
     /* Nạp ngưỡng INA226: base từ cài đặt, CW/DIGI thấp hơn 0.5/0.3A */
-    { static const float oc_lut[] = { 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
-      float base = oc_lut[g_sdr.pa_oc_limit_idx];
+    { float base = (float)g_sdr.pa_oc_limit_idx * 0.1f;
       float lim  = (g_sdr.mode == MODE_CW)                                ? base - 0.5f :
                    (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL ||
                     g_sdr.mode == MODE_FREEDV)                           ? base - 0.3f : base;
@@ -2640,37 +2777,57 @@ static void csdr_apply_tx(void)
       WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, true);
       HAL_GPIO_WritePin(AUDIO_SD_GPIO_Port, AUDIO_SD_Pin, GPIO_PIN_RESET); /* amp shutdown */
     }
-    BPF_SetMode(RF_MODE_TX);
-    /* Split: retune LO to TX VFO (inactive slot) before gating RF */
-    if (g_cat.split_on && g_sdr.si5351_ok)
-      SI5351_SetQSDFrequency(&g_si5351, g_sdr.vfo_b.freq_hz + g_sdr.lo_offset_hz);
-    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_SET);
+    if (pa_fitted) {
+      BPF_SetMode(RF_MODE_TX);
+      /* Split: retune LO to TX VFO (inactive slot) before gating RF */
+      if (g_cat.split_on && g_sdr.si5351_ok)
+        SI5351_SetQSDFrequency(&g_si5351, g_sdr.vfo_b.freq_hz + g_sdr.lo_offset_hz);
+      HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_SET);
+    }
   } else {
     PA_Protect_OnTxStop();
-    /* TX → RX: open T/R relay first, then switch BPF bank back, then unmute codec. */
-    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
-    BPF_SetMode(RF_MODE_RX);
-    /* Split: restore LO to RX VFO (active slot) */
-    if (g_cat.split_on && g_sdr.si5351_ok)
-      SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+    if (pa_fitted) {
+      /* TX → RX: open T/R relay first, then switch BPF bank back, then unmute codec. */
+      HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
+      BPF_SetMode(RF_MODE_RX);
+      /* Split: restore LO to RX VFO (active slot) */
+      if (g_cat.split_on && g_sdr.si5351_ok)
+        SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+    }
     g_dsp.mic_buf = NULL;  /* TX → RX: DSP_ProcessTX sẽ không được gọi, clear cho an toàn */
     HAL_GPIO_WritePin(AUDIO_SD_GPIO_Port, AUDIO_SD_Pin, GPIO_PIN_SET); /* amp enable */
     WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
     WM8731_SetInputSource(&hi2c1, WM8731_I2C_ADDR, false); /* TX → RX: quay về LINE IN (QSD) */
   }
   /* Select gain source: digi_gain for digital modes, mic_gain for voice.
-   * Scale by tx_power (0-100%), PA protection stepped foldback (100/75/50/25/0 %),
-   * and external ALC continuous multiplier (30-100% when ext_alc_on).
-   * Clamped to [0.01, 1.0]. */
+   * CW/TUNE use a fixed 100% base instead — carrier amplitude is governed by
+   * sidetone volume (cw_sidetone_amp), not mic_gain, so mic_gain must not
+   * couple into CW/TUNE drive.
+   * Scale by tx_power (0-100%, clamped to TUNE_POWER_PCT while tuning), PA
+   * protection stepped foldback (100/75/50/25/0 %), external ALC continuous
+   * multiplier (30-100% when ext_alc_on), and the Power ALC closed-loop
+   * corrector (50-150%, tandem-match forward power vs pa_watts × tx_power%
+   * target — see pa_protect.h).
+   * Clamped to [0.01, 1.0]. Zero when no PA fitted (pa_watts=0). */
   {
-    bool digi = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL ||
-                 g_sdr.mode == MODE_FREEDV);
+    bool digi    = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL ||
+                    g_sdr.mode == MODE_FREEDV);
+    bool cw_like = (g_sdr.mode == MODE_CW) || g_sdr.tune_mode;
+    uint8_t gain_src_pct = cw_like ? 100U : (digi ? g_sdr.digi_gain : g_sdr.mic_gain);
+    /* TUNE: fixed reduced drive (TUNE_POWER_PCT), independent of the normal
+     * tx_power setting — minimizes PA stress while the antenna is mismatched. */
+    uint8_t pwr_pct = g_sdr.tune_mode
+                       ? ((g_sdr.tx_power < TUNE_POWER_PCT) ? g_sdr.tx_power : TUNE_POWER_PCT)
+                       : g_sdr.tx_power;
     int16_t tx_trim = g_band_cal[g_sdr.band_idx].tx_drive_trim;
-    float g = (float)(digi ? g_sdr.digi_gain : g_sdr.mic_gain) * (1.0f / 100.0f)
-              * ((float)g_sdr.tx_power            * (1.0f / 100.0f))
-              * ((float)PA_Protect_GetDriveLimit() * (1.0f / 100.0f))
-              * ((float)PA_Protect_GetALCDrive()   * (1.0f / 100.0f))
-              * ((float)(100 + tx_trim)            * (1.0f / 100.0f));
+    float g = pa_fitted
+              ? ((float)gain_src_pct                  * (1.0f / 100.0f)
+                 * ((float)pwr_pct                      * (1.0f / 100.0f))
+                 * ((float)PA_Protect_GetDriveLimit()    * (1.0f / 100.0f))
+                 * ((float)PA_Protect_GetALCDrive()      * (1.0f / 100.0f))
+                 * ((float)PA_Protect_GetPowerALCDrive() * (1.0f / 100.0f))
+                 * ((float)(100 + tx_trim)               * (1.0f / 100.0f)))
+              : 0.0f;
     if (g < 0.0f) g = 0.0f;
     if (g > 1.0f) g = 1.0f;
     g_dsp.tx.audio_gain = g;
@@ -2685,6 +2842,34 @@ static void csdr_apply_tx(void)
   }
 }
 
+/* TUNE: dedicated low-power continuous-carrier mode for external ATU tuning.
+ * Forces a fixed reduced drive (TUNE_POWER_PCT, see csdr_apply_tx) and tells
+ * PA_Protect to ignore SWR warn/trip (see pa_protect.c) — a bad match is the
+ * expected condition while tuning. OC/thermal protection stays fully active.
+ * Bound to F4 hold-to-tune in csdr_handle_keys(); auto-stops after
+ * TUNE_MAX_MS in case the button sticks. */
+static void csdr_tune_start(void)
+{
+  if (g_sdr.tx_mode) return;   /* already transmitting (PTT/keyer) — ignore */
+  g_sdr.tune_mode      = true;
+  g_dsp.tx.tune_active = true;
+  g_dsp.cw_key_out     = true;
+  g_sdr.tx_mode        = true;
+  s_tune_start_ms      = HAL_GetTick();
+  g_sdr.display_dirty |= (uint8_t)(DIRTY_HDR | DIRTY_VFO | DIRTY_SBR);
+  csdr_apply_tx();
+}
+
+static void csdr_tune_stop(void)
+{
+  g_sdr.tune_mode      = false;
+  g_dsp.tx.tune_active = false;
+  g_dsp.cw_key_out     = false;
+  g_sdr.tx_mode        = false;
+  g_sdr.display_dirty |= DIRTY_ALL;
+  csdr_apply_tx();
+}
+
 /* CAT callback — deferred: sets dirty flag, WM8731 applied by CSDR_Loop. */
 static void cat_set_volume(uint8_t vol)
 {
@@ -2693,7 +2878,7 @@ static void cat_set_volume(uint8_t vol)
   g_sdr.cat_vol_dirty = true;
   g_sdr.display_dirty |= DIRTY_SBL;
 }
-static void     cat_set_nr(bool on)       { g_sdr.nr_on = on; g_sdr.display_dirty |= DIRTY_SBL; }
+static void     cat_set_nr(bool on)       { g_sdr.nr_on = on; DSP_NR_Set(&g_dsp, on, 50U); g_sdr.display_dirty |= DIRTY_SBL; }
 static void     cat_set_nb(bool on)       { g_sdr.nb_on = on; DSP_NB_Set(&g_dsp, on, g_sdr.nb_level); g_sdr.display_dirty |= DIRTY_SBL; }
 /* BW command diagnostics — watch in Live Expressions.
  *  dbg_last_bw_value:      raw Hz value received from CAT before mode-dependent clamping

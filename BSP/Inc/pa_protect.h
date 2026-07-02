@@ -22,6 +22,18 @@
   *        Threshold: 70% input  →  drive starts reducing
   *        Maximum reduction:    →  30% minimum drive
   *
+  *  Power ALC (tandem-match forward power — closed loop, always on):
+  *      target_mw = pa_watts × tx_power%   (same watt figure as RF Power menu)
+  *      peak-hold envelope (fast-attack/slow-release) of g_analog.fwd_power_mw
+  *      → slow proportional corrector (±1 %-pt / 20 ms tick, clamped 50..150%)
+  *      → PA_Protect_GetPowerALCDrive() multiplier (independent of stepped
+  *        foldback and external ALC)
+  *      Compensates band-to-band PA gain variation and supply-voltage sag so
+  *      the configured watt figure is what actually leaves the antenna jack.
+  *      Resets to 100% at the start of every transmission; holds (does not
+  *      drift) during SSB syllable gaps; no separate enable flag — runs
+  *      whenever pa_watts > 0 since it reuses the existing SWR sensor.
+  *
   *  This module owns the protection decision only.
   *  It does NOT touch hardware directly — it sets flags consumed by csdr_apply_tx().
   *
@@ -125,6 +137,25 @@ uint8_t PA_Protect_GetDriveLimit(void);
   *        Multiply independently into csdr_apply_tx() alongside GetDriveLimit().
   */
 uint8_t PA_Protect_GetALCDrive(void);
+
+/**
+  * @brief Continuous closed-loop drive corrector from tandem-match forward
+  *        power (g_analog.fwd_power_mw) vs target = pa_watts × tx_power%.
+  *        Returns 100 at rest; 50..150 while actively correcting under/over
+  *        drive so measured output tracks the configured watt figure.
+  *        Always active when g_sdr.pa_watts > 0 — no enable flag, reuses
+  *        the SWR sensor hardware. Multiply independently into
+  *        csdr_apply_tx() alongside the other drive multipliers.
+  */
+uint8_t PA_Protect_GetPowerALCDrive(void);
+
+/**
+  * @brief Smoothed (peak-hold envelope) forward power in milliwatts — the
+  *        same signal the Power ALC corrector uses internally. For UI
+  *        display of actual transmitted power (vs the configured target).
+  *        Returns 0 when g_sdr.pa_watts == 0 (no PA fitted) or not transmitting.
+  */
+uint32_t PA_Protect_GetFwdPowerEnvelope_mW(void);
 
 /** @brief Current protection state (for UI display). */
 PA_State_t PA_Protect_GetState(void);

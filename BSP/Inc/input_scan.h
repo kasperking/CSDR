@@ -52,7 +52,7 @@ extern "C" {
 #define PCA_BIT_F2      4U   /*!< F2 key   */
 #define PCA_BIT_F3      5U   /*!< F3 key   */
 #define PCA_BIT_F4      6U   /*!< F4 key   */
-/* bit 7 reserved */
+#define PCA_BIT_TUNE    7U   /*!< TUNE key (dedicated, momentary push-to-tune) */
 
 /* ── INT-driven scan ────────────────────────────────────────────────────── */
 

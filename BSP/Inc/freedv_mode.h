@@ -35,7 +35,8 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 #include "lpc_voc.h"    /* LPC_Voc_t, LPC_Frame_t  */
-#include "fdv_modem.h"  /* FdvModem_t               */
+#include "lpc_quant.h"  /* LPC_Q_FRAME_BYTES        */
+#include "fdv_modem.h"  /* FdvModem_t, FdvModemRx_t */
 
 /* ── Sample-rate constants ────────────────────────────────── */
 #define FDVR_FS_HIGH    48000U
@@ -125,6 +126,22 @@ typedef struct {
     /* Debug / diagnostic counters */
     uint32_t      dec_out_count;   /*!< 8 kHz samples produced by decimator */
     uint32_t      tx_frames;       /*!< LPC/OFDM super-frames since mode entry */
+
+    /* ── RX pipeline ────────────────────────────────────────────────────────
+     *  48 kHz IQ → USB demod → 48→8 kHz decimate (rx_dec) → OFDM demod
+     *  → LPC_Dequantize + LPC_Decode → rx_pcm8_buf → 8→48 kHz interpolate
+     *  (interp) → rx_out_buf → audio out.
+     * ───────────────────────────────────────────────────────────────────── */
+    Resampler6_t  rx_dec;                       /*!< 48→8 kHz decimator (RX)      */
+    FdvIIR_t      rx_dc8;                       /*!< DC block at 8 kHz (RX)       */
+    FdvModemRx_t  rx_demod;                     /*!< OFDM DQPSK demodulator       */
+    LPC_Voc_t     rx_voc;                       /*!< LPC synthesis vocoder        */
+    float         rx_pcm8_buf[LPC_FRAME_SAMPS]; /*!< Decoded 8 kHz PCM output     */
+    uint16_t      rx_pcm8_rd;                   /*!< Read index into rx_pcm8_buf  */
+    uint16_t      rx_pcm8_wr;                   /*!< Valid samples in buffer      */
+    float         rx_out_buf[FDVR_PHASES];      /*!< Polyphase-interpolated output */
+    uint8_t       rx_out_idx;                   /*!< Read index into rx_out_buf   */
+    uint32_t      rx_frames;                    /*!< Decoded LPC frames (RX)      */
 } FreeDV_State_t;
 
 /* ── API ─────────────────────────────────────────────────── */

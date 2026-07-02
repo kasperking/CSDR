@@ -15,12 +15,12 @@
   *  Cấu trúc menu (2 cấp):
   *
   *  Root
-  *   ├─ [RX]     → BW / AGC / ATT / Squelch / Span / NR / NB / Notch / Notch Hz / RIT / RX Shift
-  *   ├─ [Audio]  → Volume / Mic Gain / Digi Drive
+  *   ├─ [RX]     → BW / AGC / ATT / Squelch / Span / NR / NB / NB Level / Notch / Notch Hz / RIT / RX Shift
+  *   ├─ [Audio]  → Volume / Mic Gain / Digi Drive / Mic In
   *   ├─ [Tuning] → Step / Band / Mode
   *   ├─ [TX]     → RF Power / VOX / VOX Gain / VOX Delay / TX Low / TX High / Ext ALC
   *   ├─ [CW]     → CW Decode / Pitch / Speed / Keyer / Sidetone / BK-IN / BK Delay / CW Rev / Paddle Rev / Filter
-  *   ├─ [System] → Backlight / USB / USB Stream / Calibration / Factory Reset / About
+  *   ├─ [System] → Backlight / USB / USB Stream / Calibration / Factory Reset / Clock / About
   *   │                └─ [About] → Version / Build Date
   *   └─ SWR Scan  (root action)
   *
@@ -45,7 +45,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      50U   /* 7 groups (incl. About sub-group) + 43 leaf items */
+#define MENU_ITEM_COUNT      52U   /* 7 groups (incl. About sub-group) + 45 leaf items */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -62,11 +62,11 @@ extern "C" {
 #define MENU_BORDER_COLOR   0x10A2U   /* Dark subtle border   */
 
 /* Well-known item indices — keep in sync with Menu_Init slot assignments */
-#define MENU_IDX_RFPOWER    23U   /* TX → RF Power   */
-#define MENU_IDX_TXLOW      27U   /* TX → TX Low     */
-#define MENU_IDX_TXHIGH     28U   /* TX → TX High    */
+#define MENU_IDX_RFPOWER    24U   /* TX → RF Power   */
+#define MENU_IDX_TXLOW      28U   /* TX → TX Low     */
+#define MENU_IDX_TXHIGH     29U   /* TX → TX High    */
 #define MENU_IDX_CW_GROUP    4U   /* CW root group   */
-#define MENU_IDX_CWDEC      30U   /* CW → CW Decode  */
+#define MENU_IDX_CWDEC      31U   /* CW → CW Decode  */
 
 /* Exported types ------------------------------------------------------------*/
 
@@ -77,6 +77,7 @@ typedef enum {
   MENU_TYPE_ACTION,     /* Immediate action (no value editing) */
   MENU_TYPE_GROUP,      /* Sub-menu group header */
   MENU_TYPE_INFO,       /* Read-only info string (enum_strs[0]) */
+  MENU_TYPE_TIME,       /* HH:MM:SS; value_ptr stores total seconds; encoder cycles fields */
 } MenuItemType_t;
 
 typedef struct {
@@ -100,6 +101,7 @@ typedef struct {
   bool         editing;        /*!< Đang chỉnh sửa giá trị      */
   int8_t       current_group;  /*!< -1 = root; ≥0 = group index */
   int8_t       prev_group;     /*!< Parent of current_group for Back nav */
+  uint8_t      time_field;     /*!< Active field for TIME edit: 0=HH 1=MM 2=SS */
   uint8_t      view[MENU_ITEM_COUNT]; /*!< Filtered item indices */
   uint8_t      view_count;     /*!< Number of items in view[]   */
   uint8_t      item_count;     /*!< Always MENU_ITEM_COUNT       */
@@ -156,6 +158,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint16_t cw_filter_hz,
                        bool usb_iq_stream,
                        uint8_t tx_src,
+                       uint8_t nb_level,
                        MenuApplyFn apply_cb);
 
 /**
@@ -179,7 +182,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint16_t *cw_bk_delay_ms, bool *cw_reverse,
                      uint16_t *cw_filter_hz,
                      bool *usb_iq_stream,
-                     uint8_t *tx_src);
+                     uint8_t *tx_src,
+                     uint8_t *nb_level);
 
 #ifdef __cplusplus
 }

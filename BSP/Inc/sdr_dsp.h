@@ -96,7 +96,14 @@ typedef struct {
   volatile bool     done;
 } DSP_CalMeas_t;
 
-/** Noise Blanker – time-domain impulse suppressor for HF (PSU spikes, ignition) */
+/** Noise Blanker – time-domain impulse suppressor for HF (PSU spikes, ignition).
+ *  Blanked samples are replaced with a linear ramp between the last good
+ *  sample before the impulse and the first good sample after it (soft /
+ *  interpolating blanker), instead of hard-zeroing.  This needs the "after"
+ *  endpoint before the blanked window is read back out, so IQ runs through
+ *  a small fixed delay line (NB_RING_LEN samples, ~167 us at 48 kHz) while
+ *  NB is enabled; NB disabled adds zero latency. */
+#define NB_RING_LEN 8U  /* power-of-2, > max blank_width (6) so the "after" anchor is always captured before its ring slot is read out */
 typedef struct {
   bool     enabled;               /*!< Runtime on/off toggle (disabled by default) */
   uint8_t  level;                 /*!< Intensity 0-100; higher = lower threshold   */
@@ -104,11 +111,27 @@ typedef struct {
   uint8_t  blank_ctr;            /*!< Samples remaining in current blank window   */
   uint8_t  blank_width;          /*!< Precomputed blanking window width (samples)  */
   float    threshold_ratio_sq;   /*!< Precomputed ratio²; trigger when mag²>floor²×this */
+  /* Interpolating-blanker delay line */
+  float    ring_i[NB_RING_LEN];  /*!< IQ delay-line ring buffer                    */
+  float    ring_q[NB_RING_LEN];
+  uint8_t  widx;                 /*!< Ring write index                             */
+  uint8_t  blank_start_widx;     /*!< Ring index of the first blanked sample       */
+  float    anchor_i, anchor_q;   /*!< Last good IQ sample before the impulse       */
+  bool     awaiting_anchor;      /*!< True for one tick after blank_ctr hits 0, until the next live sample supplies the "after" anchor */
+  uint8_t  prime_ctr;            /*!< Ring fill countdown after enable; bypass (no delay) while priming so stale ring data is never output */
   /* Debug counters – read in debugger, no UI needed */
   uint32_t trig_count;           /*!< Total blanking events since last init/enable */
   float    peak_mag_sq;          /*!< Largest I²+Q² seen (max impulse power)      */
   float    current_threshold_sq; /*!< floor_sq × threshold_ratio_sq, last sample  */
 } NoiseBlanker_t;
+
+/** LMS Predictive Noise Reduction (audio domain) */
+#define NR_TAPS  32U
+typedef struct {
+  float   w[NR_TAPS];   /*!< LMS weight vector (adapts to signal) */
+  float   x[NR_TAPS];   /*!< Input delay line                     */
+  bool    enabled;
+} NR_t;
 
 /** FM Demodulator (phân biệt pha tức thời) */
 typedef struct {
@@ -139,6 +162,9 @@ typedef struct {
   float        cw_sidetone_amp;            /*!< Target sidetone amplitude (0..0.7)   */
   float        cw_env_amp;                 /*!< Smoothed keying envelope (click-free)*/
   float        audio_gain;                 /*!< TX audio gain (0..1) */
+  bool         tune_active;                /*!< TUNE button held: forces a continuous
+                                                  CW-style carrier regardless of mode,
+                                                  scaled by audio_gain (see csdr_app.c) */
   float        tx_lp_hz;                  /*!< TX High-cut (LPF) Hz */
   float        tx_hp_hz;                  /*!< TX Low-cut (HPF) Hz  */
   FIR_Filter_t fir_audio;                 /*!< TX-private audio LPF (separate from RX) */
@@ -169,6 +195,7 @@ typedef struct {
   FM_Demod_t   fm;
   AGC_t        agc;
   NoiseBlanker_t nb;  /*!< HF impulse noise blanker (disabled by default) */
+  NR_t           nr;  /*!< LMS predictive noise reduction (audio domain)  */
 
   /* Static ADC DC offset (from auto-cal, applied pre-IIR in DSP_Process) */
   float         dc_i_static;   /*!< ADC count units subtracted from raw I */
@@ -298,6 +325,7 @@ void  DSP_SetNotch(DSP_State_t *dsp, bool on, float hz);
 
 /* Noise Blanker */
 void  DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level);
+void  DSP_NR_Set(DSP_State_t *dsp, bool enabled, uint8_t level);
 
 /* IQ correction */
 void  DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad);

@@ -38,12 +38,12 @@ extern "C" {
 /* ─── PA-specific INA226 configuration ──────────────────────────────────────
  * Thay đổi INA226_ADDR_7BIT nếu chân A0/A1 được nối khác. */
 #define PA_OC_INA226_ADDR_7BIT  0x40U       /*!< A0=GND, A1=GND                */
-#define PA_OC_SHUNT_OHM         0.02f       /*!< Trở shunt 20mΩ, loại 2512 1%  */
+#define PA_OC_SHUNT_OHM         0.005f      /*!< Trở shunt 5mΩ, loại 2512 1% — dùng cho PA ≤ 100W */
 
 /* ─── Default và giới hạn ngưỡng bảo vệ ────────────────────────────────────
- * Giới hạn vật lý = 0x7FFF × 2.5µV / 0.02Ω ≈ 4.096 A */
-#define PA_OC_LIMIT_DEFAULT_A   3.5f
-#define PA_OC_LIMIT_MAX_A       4.09f
+ * Giới hạn vật lý = 0x7FFF × 2.5µV / 0.005Ω ≈ 16.38 A */
+#define PA_OC_LIMIT_DEFAULT_A   10.0f
+#define PA_OC_LIMIT_MAX_A       16.38f
 
 /* ─── ALERT GPIO ─────────────────────────────────────────────────────────────
  * PC6 → EXTI line 6 → nhóm EXTI9_5_IRQn (STM32 gộp lines 5-9 chung 1 vector).

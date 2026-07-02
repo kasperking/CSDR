@@ -41,6 +41,21 @@
 #define ALC_ALPHA_ATK      0.5f   /* fast attack                               */
 #define ALC_ALPHA_REL      0.04f  /* slow release                              */
 
+/* ─── Power ALC constants (tandem-match closed-loop leveling) ───────────── */
+/* Forward power (g_analog.fwd_power_mw) vs target derived from pa_watts ×
+ * tx_power% — the same watt figure shown in the RF Power menu.  Peak-hold
+ * envelope (same attack/release profile as external ALC) feeds a slow
+ * proportional corrector that trims drive to hit the target, compensating
+ * band-to-band PA gain variation and supply-voltage sag.  Always active
+ * when pa_watts>0 — unlike external ALC this uses hardware already
+ * required for SWR protection, so there is no separate enable flag. */
+#define PWR_ALC_DEADBAND      0.05f  /* ±5% of target before correcting    */
+#define PWR_ALC_GAIN          8.0f   /* %-point step = err × GAIN           */
+#define PWR_ALC_STEP_MAX_PCT  1.0f   /* max %-point change per 20 ms tick  */
+#define PWR_ALC_MIN_PCT       50U    /* corrector floor (can't silence TX) */
+#define PWR_ALC_MAX_PCT       150U   /* corrector ceiling (compensate sag) */
+#define PWR_ALC_CARRIER_MW    50U    /* below this = SSB silence, hold     */
+
 /* ─── Default threshold configuration ───────────────────────────────────── */
 
 PA_Protect_Config_t g_pa_cfg = {
@@ -49,8 +64,8 @@ PA_Protect_Config_t g_pa_cfg = {
     .temp_warn_c10    = 750,     /* 75.0°C */
     .temp_trip_c10    = 900,     /* 90.0°C */
     .temp_recover_c10 = 700,     /* 70.0°C */
-    .current_warn_a   = 3.0f,
-    .current_trip_a   = 4.0f,
+    .current_warn_a   = 7.5f,   /* 75% of default OC limit (10A, idx=3) */
+    .current_trip_a   = 9.0f,   /* 90% of default OC limit (10A, idx=3) */
     .cooldown_ms      = 30000U,  /* 30 s absolute timeout */
 };
 
@@ -76,6 +91,10 @@ static float s_filt_curr = 0.0f;     /* amperes                            */
 /* External ALC state */
 static float   s_alc_env       = 0.0f;   /* fast-attack / slow-release envelope (%) */
 static uint8_t s_alc_drive_pct = 100U;   /* computed continuous drive multiplier     */
+
+/* Power ALC state (tandem-match closed loop) */
+static float   s_pwr_env       = 0.0f;   /* peak-held fwd power envelope (mW)       */
+static float   s_pwr_corr_pct  = 100.0f; /* continuous drive corrector (%)          */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Internal helpers
@@ -147,6 +166,8 @@ void PA_Protect_Init(void)
     s_step_ms       = 0U;
     s_cooldown_ms   = 0U;
     s_tx_start_ms   = 0U;
+    s_pwr_env       = 0.0f;
+    s_pwr_corr_pct  = 100.0f;
 }
 
 void PA_Protect_OnTxStart(void)
@@ -167,6 +188,11 @@ void PA_Protect_OnTxStart(void)
     /* Seed ALC envelope from current PA feedback so there is no step-change
      * in drive at TX onset when ALC conditions are already non-zero. */
     s_alc_env = (float)g_analog.alc_percent;
+
+    /* Power ALC: fresh start each transmission — avoids carrying a stale
+     * correction from a different band/frequency into the new TX. */
+    s_pwr_env      = 0.0f;
+    s_pwr_corr_pct = 100.0f;
 }
 
 void PA_Protect_OnTxStop(void)
@@ -276,14 +302,53 @@ void PA_Protect_Update(void)
      * Filters still run above, so state is current when blanking expires. */
     if ((now - s_tx_start_ms) < 100U) return;
 
+    /* ── Power ALC: closed-loop drive correction from tandem-match fwd power ─
+     * Target = pa_watts × tx_power% (the same watt figure shown in the RF
+     * Power menu).  Peak-hold envelope (fast attack / slow release, same
+     * profile as external ALC) tracks SSB syllabic peaks; correction only
+     * adjusts while a carrier is actually present so it holds steady
+     * through speech pauses instead of drifting toward max. */
+    if (g_sdr.pa_watts > 0U) {
+        uint32_t target_mw = (uint32_t)g_sdr.pa_watts * 1000U
+                              * (uint32_t)g_sdr.tx_power / 100U;
+        if (target_mw > 0U) {
+            float meas  = (float)g_analog.fwd_power_mw;
+            float alpha = (meas > s_pwr_env) ? ALC_ALPHA_ATK : ALC_ALPHA_REL;
+            s_pwr_env   = s_pwr_env + alpha * (meas - s_pwr_env);
+
+            if (g_analog.fwd_power_mw > PWR_ALC_CARRIER_MW) {
+                float err = ((float)target_mw - s_pwr_env) / (float)target_mw;
+                if (err >  1.0f) err =  1.0f;
+                if (err < -1.0f) err = -1.0f;
+                float abs_err = (err < 0.0f) ? -err : err;
+                if (abs_err > PWR_ALC_DEADBAND) {
+                    float step = err * PWR_ALC_GAIN;
+                    if (step >  PWR_ALC_STEP_MAX_PCT) step =  PWR_ALC_STEP_MAX_PCT;
+                    if (step < -PWR_ALC_STEP_MAX_PCT) step = -PWR_ALC_STEP_MAX_PCT;
+                    float new_corr = s_pwr_corr_pct + step;
+                    if (new_corr < (float)PWR_ALC_MIN_PCT) new_corr = (float)PWR_ALC_MIN_PCT;
+                    if (new_corr > (float)PWR_ALC_MAX_PCT) new_corr = (float)PWR_ALC_MAX_PCT;
+                    if ((uint8_t)new_corr != (uint8_t)s_pwr_corr_pct) request_gain_reapply();
+                    s_pwr_corr_pct = new_corr;
+                }
+            }
+        }
+    }
+
     /* ── Evaluate threshold conditions (priority: OC > temp > SWR) ──────── */
 
     bool oc_warn  = (s_filt_curr >= g_pa_cfg.current_warn_a);
     bool oc_trip  = (s_filt_curr >= g_pa_cfg.current_trip_a);
     bool tmp_warn = (s_filt_temp >= (float)g_pa_cfg.temp_warn_c10);
     bool tmp_trip = (s_filt_temp >= (float)g_pa_cfg.temp_trip_c10);
-    bool swr_warn = (s_filt_swr  >= g_pa_cfg.swr_warn * 100.0f);
-    bool swr_trip = (s_filt_swr  >= g_pa_cfg.swr_trip * 100.0f);
+    /* SWR mismatch is the expected, intentional condition while TUNE is
+     * active (the whole point is adjusting the ATU into a bad match) — so
+     * SWR alone must not foldback/trip during TUNE.  OC and thermal limits
+     * stay fully active since those are real hardware limits regardless of
+     * match quality.  g_sdr.tune_mode is set by the dedicated TUNE button
+     * (csdr_tune_start/csdr_tune_stop in csdr_app.c). */
+    bool swr_warn = !g_sdr.tune_mode && (s_filt_swr >= g_pa_cfg.swr_warn * 100.0f);
+    bool swr_trip = !g_sdr.tune_mode && (s_filt_swr >= g_pa_cfg.swr_trip * 100.0f);
 
     bool any_trip = oc_trip || tmp_trip || swr_trip;
     bool any_warn = oc_warn || tmp_warn || swr_warn;
@@ -360,6 +425,8 @@ PA_State_t PA_Protect_GetState(void)      { return s_state;         }
 PA_Fault_t PA_Protect_GetFault(void)      { return s_fault;         }
 uint8_t    PA_Protect_GetDriveLimit(void) { return HW_Fault_PASensorMissing() ? 0U : s_drive_pct; }
 uint8_t    PA_Protect_GetALCDrive(void)   { return s_alc_drive_pct; }
+uint8_t    PA_Protect_GetPowerALCDrive(void) { return (uint8_t)s_pwr_corr_pct; }
+uint32_t   PA_Protect_GetFwdPowerEnvelope_mW(void) { return (g_sdr.pa_watts > 0U && g_sdr.tx_mode) ? (uint32_t)s_pwr_env : 0U; }
 
 bool PA_Protect_IsTxAllowed(void)
 {

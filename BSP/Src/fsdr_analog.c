@@ -21,6 +21,43 @@ static uint32_t s_btn_down_tick = 0U;
 
 /* USER CODE BEGIN 0 */
 
+/* ── SWR Tandem Match coupler constants ──────────────────────────────────
+ *  Core   : BN-61-202 binocular, N = 10 turns secondary, 1 turn primary
+ *  Diode  : BAT46JFILM Schottky — Vf ≈ 0.22V at ~2mA detection current
+ *  Load   : R36/R54 = 510Ω || C113/C117 = 100nF → peak detector
+ *  Ref    : STM32H7 16-bit ADC, Vref = 3.3V
+ *
+ *  Transfer function (N=10, Z0=50Ω):
+ *    V_secondary_peak = sqrt(P_fwd_watts)        [exact for Z0=50Ω, N=10]
+ *    V_ADC            = (V_secondary_peak − Vf) × k
+ *    V_secondary_peak = V_ADC/k + Vf
+ *    P_mW             = (V_ADC/k + Vf)² × 1000
+ *
+ *  ADC input divider k derived from PA hardware rating (g_sdr.pa_watts):
+ *    pa_watts =   0 → R49=0Ω   (k=1.000, P_max≈12W)
+ *    pa_watts =  20 → R49=150Ω (k≈0.776, P_max≈20W)
+ *    pa_watts =  45 → R49=510Ω (k≈0.509, P_max≈45W)
+ *    pa_watts = 100 → R49=1kΩ  (k≈0.338, P_max≈100W)
+ *  Formula: k = 3.3 / (sqrt(pa_watts) − Vf), clamped to 1.0
+ * ─────────────────────────────────────────────────────────────────────── */
+#define SWR_N           10U                /* Secondary turns (BN-61-202)  */
+#define SWR_Z0          50U                /* System impedance (Ω)         */
+#define SWR_DIODE_VF    0.22f              /* BAT46JFILM Vf at 2mA, 25°C  */
+#define SWR_ADC_SCALE   (3.3f / 65535.0f) /* 16-bit ADC, 3.3V Vref       */
+#define SWR_MIN_VADC    0.05f              /* Below this → noise floor, P=0 */
+/* P_mW = (V_ADC/k + Vf)^2 × N^2/(2×Z0) × 1000                           */
+#define SWR_PWR_COEFF   ((float)(SWR_N * SWR_N) * 1000.0f / (2.0f * (float)SWR_Z0))
+
+/* Divider ratio k derived from calibrated PA watts.
+ * Returns 1.0 when pa_watts=0 (no external PA / P_max≤12W). */
+static inline float swr_k(void)
+{
+    uint8_t w = g_sdr.pa_watts;
+    if (w <= 12U) return 1.0f;
+    float k = 3.3f / (sqrtf((float)w) - SWR_DIODE_VF);
+    return (k > 1.0f) ? 1.0f : k;
+}
+
 /* ── ADC single-shot ─────────────────────────────────────── */
 static uint16_t adc_read(ADC_HandleTypeDef *hadc)
 {
@@ -131,14 +168,12 @@ uint16_t Analog_ReadALC_Raw(void)
 
 uint16_t Analog_ReadSWR_For_Raw(void)
 {
-  /* ADC3_INP0 = PC2_C – first channel */
-  return adc_read(&hadc3);
+  return adc_read_ch(&hadc3, ADC_CHANNEL_0);   /* ADC3_INP0 = PC2_C */
 }
 
 uint16_t Analog_ReadSWR_Ref_Raw(void)
 {
-  /* ADC3_INP1 = PC3_C – cần reconfigure ADC3 channel */
-  return adc_read(&hadc3);
+  return adc_read_ch(&hadc3, ADC_CHANNEL_1);   /* ADC3_INP1 = PC3_C */
 }
 
 /**
@@ -188,9 +223,17 @@ uint16_t Analog_ADC_to_mV(uint16_t adc_raw, uint16_t gain_x1)
 uint16_t Analog_Calc_SWR_x100(uint16_t vfor, uint16_t vref)
 {
   /* USER CODE BEGIN Analog_Calc_SWR_x100_0 */
-  if (vfor == 0U) return 100U;   /* SWR = 1.00 (no TX) */
-  if (vref >= vfor) return 9999U; /* ∞ SWR */
-  float gamma = (float)vref / (float)vfor;
+  float vf_v = (float)vfor * SWR_ADC_SCALE;
+  if (vf_v < SWR_MIN_VADC) return 100U;   /* no TX signal */
+  /* Gamma = amplitude reflection coefficient = V_ref_wave / V_fwd_wave.
+   * Both voltages are peak-detected secondary voltages minus Vf; the Vf
+   * offset must be restored before taking the ratio so that the formula
+   * stays linear (Γ ≠ raw_vref / raw_vfor when Vf is significant). */
+  float k       = swr_k();
+  float vf_comp = vf_v / k + SWR_DIODE_VF;
+  float vr_comp = (float)vref * SWR_ADC_SCALE / k + SWR_DIODE_VF;
+  if (vr_comp >= vf_comp) return 9999U;    /* open/short antenna */
+  float gamma = vr_comp / vf_comp;
   float swr   = (1.0f + gamma) / (1.0f - gamma + 1e-6f);
   return (uint16_t)(swr * 100.0f);
   /* USER CODE END Analog_Calc_SWR_x100_0 */
@@ -224,12 +267,15 @@ void Analog_Update(void)
   g_analog.swr_x100     = Analog_Calc_SWR_x100(g_analog.adc_swr_for,
                                                   g_analog.adc_swr_ref);
 
-  /* Forward/reflected power estimate (mW) - hệ số cần hiệu chỉnh */
-  float vf_v = (float)g_analog.adc_swr_for * 3.3f / 65535.0f;
-  float vr_v = (float)g_analog.adc_swr_ref * 3.3f / 65535.0f;
-  /* Assume coupler: 1V ≈ 5W (cần hiệu chỉnh theo hardware) */
-  g_analog.fwd_power_mw = (uint16_t)(vf_v * vf_v * 1000.0f);
-  g_analog.ref_power_mw = (uint16_t)(vr_v * vr_v * 1000.0f);
+  /* Forward/reflected power (N=10, Z0=50Ω → P_mW = (V_ADC + Vf)² × 1000) */
+  float vf_v = (float)g_analog.adc_swr_for * SWR_ADC_SCALE;
+  float vr_v = (float)g_analog.adc_swr_ref * SWR_ADC_SCALE;
+  /* Undo voltage divider (k derived from pa_watts) then restore Vf */
+  float k       = swr_k();
+  float vf_comp = (vf_v >= SWR_MIN_VADC) ? (vf_v / k + SWR_DIODE_VF) : 0.0f;
+  float vr_comp = (vr_v >= SWR_MIN_VADC) ? (vr_v / k + SWR_DIODE_VF) : 0.0f;
+  g_analog.fwd_power_mw = (uint16_t)(vf_comp * vf_comp * SWR_PWR_COEFF);
+  g_analog.ref_power_mw = (uint16_t)(vr_comp * vr_comp * SWR_PWR_COEFF);
   g_analog.swr_alarm    = (g_analog.swr_x100 > SWR_WARN_THRESH) &&
                            (g_analog.fwd_power_mw > 100U);
 

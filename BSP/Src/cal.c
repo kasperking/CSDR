@@ -69,10 +69,11 @@ static void push_ln(uint16_t y)
 /* ── Data model ─────────────────────────────────────────────────────────── */
 
 typedef enum {
-  CAL_T_INT,      /* integer with min/max/step          */
-  CAL_T_ACTION,   /* immediate action                   */
-  CAL_T_BACK,     /* "Exit" within a section            */
-  CAL_T_ENUM,     /* cycles val in [0,max]; choices[val] displayed */
+  CAL_T_INT,       /* integer with min/max/step                           */
+  CAL_T_FLOAT10,   /* integer stored ×10, displayed as "X.YA" (no float) */
+  CAL_T_ACTION,    /* immediate action                                    */
+  CAL_T_BACK,      /* "Exit" within a section                             */
+  CAL_T_ENUM,      /* cycles val in [0,max]; choices[val] displayed       */
 } CalItemType_t;
 
 typedef struct {
@@ -160,11 +161,10 @@ static const CalItem_t items_rf[] = {
 };
 
 static const char *const pa_choices[] = { "None", "20W", "45W", "100W" };
-static const char *const oc_choices[] = { "2.0A", "2.5A", "3.0A", "3.5A", "4.0A" };
 static const CalItem_t items_hw[] = {
-  { "PA Power",   CAL_T_ENUM, 0, 3, 1, &v_pa_idx, pa_choices },
-  { "OC Limit",   CAL_T_ENUM, 0, 4, 1, &v_oc_idx, oc_choices },
-  { "Exit",       CAL_T_BACK, 0, 0, 0, NULL,       NULL       },
+  { "PA Power",  CAL_T_ENUM,     0,   3, 1, &v_pa_idx, pa_choices },
+  { "OC Limit",  CAL_T_FLOAT10, 10, 200, 1, &v_oc_idx, NULL       },
+  { "Exit",      CAL_T_BACK,    0,   0, 0, NULL,       NULL       },
 };
 
 static const CalItem_t items_band[] = {
@@ -271,7 +271,8 @@ static void render_sub_item(const CalItem_t *it, uint8_t idx,
                              uint8_t cursor, bool editing, uint16_t abs_y)
 {
   bool sel  = (idx == cursor);
-  bool edit = sel && editing && (it->type == CAL_T_INT || it->type == CAL_T_ENUM);
+  bool edit = sel && editing && (it->type == CAL_T_INT || it->type == CAL_T_FLOAT10 ||
+                                 it->type == CAL_T_ENUM);
   uint16_t bg  = sel ? CAL_SEL_BG : CAL_BG;
   if (it->type == CAL_T_BACK)   { bg = sel ? 0x8000U : CAL_BG; }
   if (it->type == CAL_T_ACTION) { bg = sel ? 0x0010U : CAL_BG; }
@@ -279,7 +280,10 @@ static void render_sub_item(const CalItem_t *it, uint8_t idx,
   char val_s[16] = "";
   if (it->type == CAL_T_INT && it->val)
     snprintf(val_s, sizeof(val_s), "%ld", (long)*it->val);
-  else if (it->type == CAL_T_ENUM && it->val && it->choices)
+  else if (it->type == CAL_T_FLOAT10 && it->val) {
+    int32_t v = *it->val;
+    snprintf(val_s, sizeof(val_s), "%ld.%ldA", (long)(v / 10), (long)(v % 10));
+  } else if (it->type == CAL_T_ENUM && it->val && it->choices)
     snprintf(val_s, sizeof(val_s), "%s", it->choices[*it->val]);
   else if (it->type == CAL_T_ACTION)
     snprintf(val_s, sizeof(val_s), ">> RUN");
@@ -297,7 +301,7 @@ static void render_sub_item(const CalItem_t *it, uint8_t idx,
     }
     if (!top && !bot && fr >= 4U && fr < 4U + (uint16_t)Font6x8.height) {
       uint16_t row = fr - 4U;
-      if (it->type == CAL_T_INT || it->type == CAL_T_ENUM) {
+      if (it->type == CAL_T_INT || it->type == CAL_T_FLOAT10 || it->type == CAL_T_ENUM) {
         LCD_LineStr(ln, (uint16_t)(CAL_X + 4U), row,
                     it->label, &Font6x8, CAL_LBL, bg);
         uint16_t vc = edit ? CAL_EDIT_VAL : CAL_VAL;
@@ -624,7 +628,8 @@ static void run_section(uint8_t sect_idx)
     /* Encoder rotation */
     int32_t d = enc_read_delta();
     if (d != 0) {
-      if (editing && sec->items[cursor].type == CAL_T_INT) {
+      if (editing && (sec->items[cursor].type == CAL_T_INT ||
+                      sec->items[cursor].type == CAL_T_FLOAT10)) {
         int32_t *v = sec->items[cursor].val;
         const CalItem_t *it = &sec->items[cursor];
         *v += d * it->step;
@@ -648,7 +653,7 @@ static void run_section(uint8_t sect_idx)
     /* ENC press: toggle edit / confirm action / back */
     if (Key_Press(&k_enc)) {
       const CalItem_t *it = &sec->items[cursor];
-      if (it->type == CAL_T_INT || it->type == CAL_T_ENUM) {
+      if (it->type == CAL_T_INT || it->type == CAL_T_FLOAT10 || it->type == CAL_T_ENUM) {
         editing = !editing;
       } else if (it->type == CAL_T_BACK) {
         return;
@@ -666,7 +671,8 @@ static void run_section(uint8_t sect_idx)
 
     /* F1 = value up (hold-repeat while editing) */
     if (Key_PressOrRepeat(&k_f1)) {
-      if (editing && sec->items[cursor].type == CAL_T_INT) {
+      if (editing && (sec->items[cursor].type == CAL_T_INT ||
+                      sec->items[cursor].type == CAL_T_FLOAT10)) {
         int32_t *v = sec->items[cursor].val;
         const CalItem_t *it = &sec->items[cursor];
         *v += it->step; if (*v > it->max) *v = it->max;
@@ -681,7 +687,8 @@ static void run_section(uint8_t sect_idx)
 
     /* F2 = value down (hold-repeat while editing) */
     if (Key_PressOrRepeat(&k_f2)) {
-      if (editing && sec->items[cursor].type == CAL_T_INT) {
+      if (editing && (sec->items[cursor].type == CAL_T_INT ||
+                      sec->items[cursor].type == CAL_T_FLOAT10)) {
         int32_t *v = sec->items[cursor].val;
         const CalItem_t *it = &sec->items[cursor];
         *v -= it->step; if (*v < it->min) *v = it->min;
@@ -731,7 +738,8 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
   v_smeter_off = (int32_t)params->smeter_offset_db;
   v_lo_offset  = (int32_t)params->lo_offset_hz;
   v_pa_idx     = pa_watts_to_idx(params->pa_watts);
-  v_oc_idx     = (params->pa_oc_limit_idx <= 4U) ? (int32_t)params->pa_oc_limit_idx : 3;
+  v_oc_idx     = (params->pa_oc_limit_idx >= 10U && params->pa_oc_limit_idx <= 200U)
+                 ? (int32_t)params->pa_oc_limit_idx : 100;
 
   uint8_t cursor = 0U;
   uint8_t scroll = 0U;
@@ -797,7 +805,8 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
         v_smeter_off = (int32_t)params->smeter_offset_db;
         v_lo_offset  = (int32_t)params->lo_offset_hz;
         v_pa_idx     = pa_watts_to_idx(params->pa_watts);
-        v_oc_idx     = (params->pa_oc_limit_idx <= 4U) ? (int32_t)params->pa_oc_limit_idx : 3;
+        v_oc_idx     = (params->pa_oc_limit_idx >= 10U && params->pa_oc_limit_idx <= 200U)
+                 ? (int32_t)params->pa_oc_limit_idx : 100;
         render_toplevel(cursor, scroll);
 
       } else if (it->kind == TOP_RESET) {

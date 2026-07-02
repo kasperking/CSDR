@@ -276,7 +276,7 @@ Scale → int16, stereo L=R → SAI TX DMA (headphone output)
 
 **Signal power for S-meter:** pre-AGC (post-FIR) RMS, α=0.9/0.1 smoothing.
 
-**Noise blanker (NB):** Optional time-domain impulse zeroing step-3d on IQ; `DSP_NB_Set()` / `NoiseBlanker_t`; disabled by default.
+**Noise blanker (NB):** Optional time-domain impulse suppression, step-3d on IQ; `DSP_NB_Set()` / `NoiseBlanker_t`; disabled by default. Interpolating (soft) blanker — blanked samples are linearly ramped between the pre/post-impulse anchors via a small `NB_RING_LEN`(8)-sample delay line, not hard-zeroed; zero added latency while disabled.
 
 **Noise reduction (NR):** stub only — not implemented.
 

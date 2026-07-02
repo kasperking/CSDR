@@ -64,7 +64,9 @@ void Encoder_Init(Encoder_t *enc, TIM_HandleTypeDef *htim)
   enc->btn_pressed    = false;
   enc->btn_long       = false;
   enc->btn_down_tick  = 0U;
-  enc->btn_prev_state = true;   /* PULLUP → released = HIGH = true */
+  enc->btn_prev_state = false;  /* PULLUP → released = not pressed = false */
+  enc->btn_edge_tick  = 0U;
+  enc->btn_in_press   = false;
   enc->debounce_ms    = 20U;
   enc->long_press_ms  = 800U;
   /* USER CODE END Encoder_Init_0 */
@@ -144,26 +146,30 @@ void Encoder_Poll(Encoder_t *enc)
     if (enc->accel_count > 0U) { enc->accel_count--; }
   }
 
-  /* ── 3. Nút nhấn ENC_SW (PB3) – polling ─────────────────── */
-  bool btn_now = (HAL_GPIO_ReadPin(ENC_SW_GPIO_Port, ENC_SW_Pin) == GPIO_PIN_SET);
+  /* ── 3. Nút nhấn ENC_SW (PB3) – stability-window debounce ──────────
+   * btn_now=true = pressed (active-low, GPIO_PIN_RESET).
+   * Any edge resets the stability timer and un-confirms the press state.
+   * Events fire only after the pin holds stable for debounce_ms, preventing
+   * both mid-hold bounce double-fires and bouncy-release false triggers. */
+  bool btn_now = (HAL_GPIO_ReadPin(ENC_SW_GPIO_Port, ENC_SW_Pin) == GPIO_PIN_RESET);
   uint32_t tick = HAL_GetTick();
 
-  if (enc->btn_prev_state && !btn_now)
-  {
-    /* Cạnh xuống: bắt đầu nhấn */
-    enc->btn_down_tick = tick;
-  }
-  else if (!enc->btn_prev_state && btn_now)
-  {
-    /* Cạnh lên: nhả nút */
-    uint32_t held = tick - enc->btn_down_tick;
-    if (held > enc->debounce_ms)
-    {
+  if (btn_now != enc->btn_prev_state) {
+    enc->btn_prev_state = btn_now;
+    enc->btn_edge_tick  = tick;
+    /* btn_in_press intentionally NOT cleared here: the stability check below
+     * handles all transitions, ensuring release events are never lost. */
+  } else if ((tick - enc->btn_edge_tick) >= enc->debounce_ms) {
+    if (btn_now && !enc->btn_in_press) {
+      enc->btn_in_press  = true;
+      enc->btn_down_tick = tick;   /* start of confirmed press */
+    } else if (!btn_now && enc->btn_in_press) {
+      enc->btn_in_press = false;
+      uint32_t held = tick - enc->btn_down_tick;
       if (held >= enc->long_press_ms) { enc->btn_long    = true; }
       else                            { enc->btn_pressed = true; }
     }
   }
-  enc->btn_prev_state = btn_now;
 
   /* USER CODE END Encoder_Poll_0 */
 }
