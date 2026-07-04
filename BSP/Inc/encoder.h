@@ -67,7 +67,7 @@ static inline void Encoder_Btn_IRQ_Handler(Encoder_t *enc) { (void)enc; }
 #define KEY_HOLD_MS         600U   /*!< press duration before hold event  */
 #define KEY_REPEAT_RATE_MS  200U   /*!< repeat fire period while held     */
 
-typedef enum { KS_IDLE = 0, KS_PRESSED, KS_HELD } KeyState_t;
+typedef enum { KS_IDLE = 0, KS_PRESSED, KS_HELD, KS_WAIT_RELEASE } KeyState_t;
 
 /** Input source for a Key_t instance. */
 typedef enum { KEY_SRC_GPIO = 0, KEY_SRC_PCA9555 } KeySrc_t;
@@ -94,6 +94,10 @@ typedef struct {
 
 void Key_Init        (Key_t *k, GPIO_TypeDef *port, uint16_t pin);
 void Key_InitPCA     (Key_t *k, const uint16_t *pca_cache, uint8_t pca_bit);
+void Key_Sync        (Key_t *k);  /*!< resync to current pin: a key already
+                                       held fires NO press, only waits for
+                                       release. Call on (re)entering a UI
+                                       context whose press opened it.       */
 void Key_Poll        (Key_t *k);
 bool Key_Press       (Key_t *k);  /*!< true once on stable falling edge  */
 bool Key_Hold        (Key_t *k);  /*!< true once after KEY_HOLD_MS       */

@@ -116,9 +116,14 @@ typedef struct {
 } W25Q_Handle_t;
 
 /* Settings structure stored in flash sector 0.
- * Layout: 4-byte fields first, 2-byte next, 1-byte/bool last → zero implicit
- * padding.  crc32 covers all bytes except itself (last 4).  Struct size = 132 B.
- * Changing any field breaks backward compat (CRC mismatch → defaults loaded). */
+ * Layout: 4-byte fields first, 2-byte next, 1-byte/bool last.  crc32 covers
+ * all bytes except itself (last 4) — including any implicit padding, which is
+ * always zero because csdr_save_settings() memsets the struct before filling.
+ * Struct size = 152 B (1-byte group ends at offset 146 → pad to crc32 @ 148).
+ * Changing field order/offsets breaks backward compat (CRC mismatch →
+ * defaults loaded); new 1-byte fields may consume the padding before crc32
+ * without breaking old blobs (they read back 0 → loader must map 0 to the
+ * field's default). */
 typedef struct {
   /* ── always first ───────────────────────────────────────────── */
   uint32_t   magic;              /* 0xFADEFADE → valid           */
@@ -206,6 +211,8 @@ typedef struct {
   uint8_t    tx_src;             /* TX audio source: 0=USB 1=MIC         */
   uint8_t    nr_level;           /* NR strength 0-100, def 50            */
   uint8_t    bc_mode;            /* Beat canceller: 0=off 1/2=on         */
+  uint8_t    pwr_scale;          /* Tandem-match FWD power cal 50..200 %;
+                                    0 = pre-pwr_scale blob → default 100 */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;

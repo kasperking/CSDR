@@ -44,10 +44,11 @@ typedef struct {
   /* PA hardware */
   uint8_t  pa_watts;           /* PA power rating: 0=None, 20, 45, 100 W */
   uint8_t  pa_oc_limit_idx;    /* OC limit ×10 A — range 10..200 = 1.0A..20.0A, step 0.1A */
+  uint8_t  pwr_scale;          /* Tandem-match FWD power cal 50..200 % (100 = ×1.0) */
 } Cal_Params_t;
 
 #define CAL_PARAMS_DEFAULT \
-  { 0, 0, 0, 0, 0, 0, 50, 0, 0U, 0, 100 }
+  { 0, 0, 0, 0, 0, 0, 50, 0, 0U, 0, 100, 100 }
 
 /* Run the calibration overlay.  Blocks until the user exits.
  * Returns true  → user chose Save; caller should apply + persist params.

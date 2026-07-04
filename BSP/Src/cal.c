@@ -124,6 +124,7 @@ static int32_t v_smeter_off;
 static int32_t v_lo_offset;
 static int32_t v_pa_idx;
 static int32_t v_oc_idx;    /* 0=2.0A  1=2.5A  2=3.0A  3=3.5A  4=4.0A */
+static int32_t v_pwr_scale; /* tandem-match FWD power cal 50..200 %   */
 
 /* ── Section item tables ────────────────────────────────────────────────── */
 static const CalItem_t items_freq[] = {
@@ -163,9 +164,10 @@ static const CalItem_t items_rf[] = {
 
 static const char *const pa_choices[] = { "None", "20W", "45W", "100W" };
 static const CalItem_t items_hw[] = {
-  { "PA Power",  CAL_T_ENUM,     0,   3, 1, &v_pa_idx, pa_choices },
-  { "OC Limit",  CAL_T_FLOAT10, 10, 200, 1, &v_oc_idx, NULL       },
-  { "Exit",      CAL_T_BACK,    0,   0, 0, NULL,       NULL       },
+  { "PA Power",  CAL_T_ENUM,     0,   3, 1, &v_pa_idx,     pa_choices },
+  { "OC Limit",  CAL_T_FLOAT10, 10, 200, 1, &v_oc_idx,     NULL       },
+  { "PWR Scale %",CAL_T_INT,    50, 200, 1, &v_pwr_scale,  NULL       },
+  { "Exit",      CAL_T_BACK,    0,   0, 0, NULL,           NULL       },
 };
 
 static const CalItem_t items_band[] = {
@@ -185,7 +187,7 @@ static CalSection_t s_sections[] = {
   { "DC Offset",       items_dc,    4U },
   { "Audio Cal",       items_audio, 3U },
   { "RF / Display Cal",items_rf,    6U },
-  { "PA Hardware",     items_hw,    3U },
+  { "PA Hardware",     items_hw,    4U },
   { s_band_cal_title,  items_band,  7U },
 };
 #define SECTION_COUNT  7U
@@ -587,14 +589,22 @@ static void save_band_cal(void)
 }
 
 /* ── Encoder delta helper ────────────────────────────────────────────────── */
+static uint32_t s_enc_last = 0U;
+
 static int32_t enc_read_delta(void)
 {
-  static uint32_t s_last = 0U;
   uint32_t cnt = __HAL_TIM_GET_COUNTER(&htim3);
-  int32_t  d   = (int32_t)(cnt - s_last);
-  if (d >  2) { s_last = cnt; return  1; }
-  if (d < -2) { s_last = cnt; return -1; }
+  int32_t  d   = (int32_t)(cnt - s_enc_last);
+  if (d >  2) { s_enc_last = cnt; return  1; }
+  if (d < -2) { s_enc_last = cnt; return -1; }
   return 0;
+}
+
+/* Discard accumulated counts: TIM3 keeps counting outside these loops (main
+ * tuning), and pressing the ENC shaft button jiggles it by 1-2 counts. */
+static void enc_flush(void)
+{
+  s_enc_last = __HAL_TIM_GET_COUNTER(&htim3);
 }
 
 /* ── Sub-level loop ─────────────────────────────────────────────────────── */
@@ -624,11 +634,19 @@ static void run_section(uint8_t sect_idx)
   Key_InitPCA(&k_f1,  &g_pca9555_raw,   PCA_BIT_F1);
   Key_InitPCA(&k_f2,  &g_pca9555_raw,   PCA_BIT_F2);
   Key_InitPCA(&k_f4,  &g_pca9555_raw,   PCA_BIT_F4);
+  /* The ENC press that opened this section is likely still held — swallow it
+   * so it does not re-fire here and silently toggle edit mode on item 0. */
+  Key_Sync(&k_enc); Key_Sync(&k_f1); Key_Sync(&k_f2); Key_Sync(&k_f4);
+  enc_flush();
 
   render_sublevel(sect_idx, cursor, editing, scroll);
 
   for (;;) {
     Key_Poll(&k_enc); Key_Poll(&k_f1); Key_Poll(&k_f2); Key_Poll(&k_f4);
+
+    /* While the ENC shaft button is physically down (press or release in
+     * progress) the shaft jiggles the counter — discard those counts. */
+    if (k_enc.state != KS_IDLE) { enc_flush(); }
 
     /* Encoder rotation */
     int32_t d = enc_read_delta();
@@ -670,6 +688,10 @@ static void run_section(uint8_t sect_idx)
         if (sect_idx == 4U && cursor == 4U) auto_agc_ref();
         if (sect_idx == 6U && cursor == 4U) auto_band_noise_floor();
         if (sect_idx == 6U && cursor == 5U) save_band_cal();
+        /* Actions block for seconds (measure + toast): drop any key press
+         * or knob turn made during that time. */
+        Key_Sync(&k_enc); Key_Sync(&k_f1); Key_Sync(&k_f2); Key_Sync(&k_f4);
+        enc_flush();
       }
       render_sublevel(sect_idx, cursor, editing, scroll);
     }
@@ -745,17 +767,25 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
   v_pa_idx     = pa_watts_to_idx(params->pa_watts);
   v_oc_idx     = (params->pa_oc_limit_idx >= 10U && params->pa_oc_limit_idx <= 200U)
                  ? (int32_t)params->pa_oc_limit_idx : 100;
+  v_pwr_scale  = (params->pwr_scale >= 50U && params->pwr_scale <= 200U)
+                 ? (int32_t)params->pwr_scale : 100;
 
   uint8_t cursor = 0U;
   uint8_t scroll = 0U;
   Key_t k_enc = {0}, k_f4 = {0};
   Key_Init   (&k_enc, ENC_SW_GPIO_Port, ENC_SW_Pin);
   Key_InitPCA(&k_f4,  &g_pca9555_raw,  PCA_BIT_F4);
+  /* The key press that opened the Cal menu may still be held — swallow it,
+   * and drop TIM3 counts accumulated while the main app was tuning. */
+  Key_Sync(&k_enc); Key_Sync(&k_f4);
+  enc_flush();
 
   render_toplevel(cursor, scroll);
 
   for (;;) {
     Key_Poll(&k_enc); Key_Poll(&k_f4);
+
+    if (k_enc.state != KS_IDLE) { enc_flush(); }
 
     int32_t d = enc_read_delta();
     if (d != 0) {
@@ -782,6 +812,10 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
           s_sections[6U].title = s_band_cal_title;
         }
         run_section((uint8_t)cursor);
+        /* F4/BACK that closed the section is likely still held — swallow it
+         * so it does not re-fire here and exit the whole Cal menu. */
+        Key_Sync(&k_enc); Key_Sync(&k_f4);
+        enc_flush();
         render_toplevel(cursor, scroll);
 
       } else if (it->kind == TOP_SAVE) {
@@ -796,6 +830,7 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
         params->lo_offset_hz    = (uint32_t)v_lo_offset;
         params->pa_watts        = pa_idx_to_watts(v_pa_idx);
         params->pa_oc_limit_idx = (uint8_t)v_oc_idx;
+        params->pwr_scale       = (uint8_t)v_pwr_scale;
         return true;
 
       } else if (it->kind == TOP_LOAD) {
@@ -812,6 +847,8 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
         v_pa_idx     = pa_watts_to_idx(params->pa_watts);
         v_oc_idx     = (params->pa_oc_limit_idx >= 10U && params->pa_oc_limit_idx <= 200U)
                  ? (int32_t)params->pa_oc_limit_idx : 100;
+        v_pwr_scale  = (params->pwr_scale >= 50U && params->pwr_scale <= 200U)
+                 ? (int32_t)params->pwr_scale : 100;
         render_toplevel(cursor, scroll);
 
       } else if (it->kind == TOP_RESET) {
@@ -827,6 +864,7 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
         params->lo_offset_hz     = def.lo_offset_hz;
         params->pa_watts         = def.pa_watts;
         params->pa_oc_limit_idx  = def.pa_oc_limit_idx;
+        params->pwr_scale        = def.pwr_scale;
         /* Sync working vars so UI reflects reset values on any re-entry */
         v_xtal_ppm   = def.xtal_ppm;
         v_iq_gain    = (int32_t)def.iq_gain;
@@ -839,6 +877,7 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
         v_lo_offset  = (int32_t)def.lo_offset_hz;
         v_pa_idx     = pa_watts_to_idx(def.pa_watts);
         v_oc_idx     = (int32_t)def.pa_oc_limit_idx;
+        v_pwr_scale  = (int32_t)def.pwr_scale;
         /* Reset all per-band cal to defaults and save immediately */
         for (uint8_t bi = 0U; bi < BAND_COUNT; bi++) {
           g_band_cal[bi].rx_gain_trim    = 0;

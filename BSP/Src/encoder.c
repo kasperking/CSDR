@@ -249,16 +249,31 @@ void Key_InitPCA(Key_t *k, const uint16_t *pca_cache, uint8_t pca_bit)
   k->evt_release = false;
 }
 
+static bool key_read_raw(const Key_t *k)
+{
+  if (k->src == KEY_SRC_PCA9555) {
+    /* Active-low: bit = 0 means pressed */
+    return !((uint8_t)((*k->pca_cache >> k->pca_bit) & 1U));
+  }
+  return (HAL_GPIO_ReadPin(k->port, k->pin) == GPIO_PIN_RESET);
+}
+
+void Key_Sync(Key_t *k)
+{
+  bool raw = key_read_raw(k);
+  k->raw_prev    = raw;
+  k->t_stable    = HAL_GetTick();
+  k->state       = raw ? KS_WAIT_RELEASE : KS_IDLE;
+  k->evt_press   = false;
+  k->evt_hold    = false;
+  k->evt_repeat  = false;
+  k->evt_release = false;
+}
+
 void Key_Poll(Key_t *k)
 {
   uint32_t now = HAL_GetTick();
-  bool raw;
-  if (k->src == KEY_SRC_PCA9555) {
-    /* Active-low: bit = 0 means pressed */
-    raw = !((uint8_t)((*k->pca_cache >> k->pca_bit) & 1U));
-  } else {
-    raw = (HAL_GPIO_ReadPin(k->port, k->pin) == GPIO_PIN_RESET);
-  }
+  bool raw = key_read_raw(k);
 
   if (raw != k->raw_prev) {
     k->raw_prev = raw;
@@ -296,6 +311,10 @@ void Key_Poll(Key_t *k)
         k->t_repeat   += KEY_REPEAT_RATE_MS;
         k->evt_repeat  = true;
       }
+      break;
+
+    case KS_WAIT_RELEASE:      /* key was already down at Key_Sync: swallow it */
+      if (!raw) { k->state = KS_IDLE; }
       break;
 
     default:

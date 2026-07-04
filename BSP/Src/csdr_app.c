@@ -88,6 +88,7 @@ SDR_State_t g_sdr = {
   .tx_power      = 100,
   .pa_watts      = 0,
   .pa_oc_limit_idx = 100U,     /* 10.0A default (stored ×10) */
+  .pwr_scale     = 100U,       /* FWD power cal ×1.00 (no scaling) */
   .tx_audio_low_hz  = 200U,
   .tx_audio_high_hz = 2800U,
   .notch_on  = false,
@@ -343,6 +344,7 @@ static void csdr_save_settings(void)
   fs.vox_gain           = g_sdr.vox_gain;
   fs.vox_delay_ms       = g_sdr.vox_delay;
   fs.pa_oc_limit_idx = g_sdr.pa_oc_limit_idx;
+  fs.pwr_scale       = g_sdr.pwr_scale;
   /* CW settings */
   fs.cw_pitch_hz    = g_sdr.cw_pitch_hz;
   fs.cw_wpm         = g_sdr.cw_wpm;
@@ -448,6 +450,9 @@ void CSDR_Init(void)
       g_sdr.pa_watts        = fs.pa_watts;
       g_sdr.pa_oc_limit_idx = (fs.pa_oc_limit_idx >= 10U && fs.pa_oc_limit_idx <= 200U)
                                ? fs.pa_oc_limit_idx : 100U;
+      /* 0 = blob saved by pre-pwr_scale firmware (field was zeroed padding) */
+      g_sdr.pwr_scale       = (fs.pwr_scale >= 50U && fs.pwr_scale <= 200U)
+                               ? fs.pwr_scale : 100U;
       g_sdr.tx_audio_low_hz  = (fs.tx_audio_low_hz  >= 100U && fs.tx_audio_low_hz  <= 500U)
                                ? fs.tx_audio_low_hz  : 200U;
       g_sdr.tx_audio_high_hz = (fs.tx_audio_high_hz >= 2200U && fs.tx_audio_high_hz <= 3500U)
@@ -1741,6 +1746,7 @@ static void csdr_factory_reset(void)
   int16_t  sv_audio_gain_db   = g_sdr.audio_gain_db;
   uint8_t  sv_pa_watts        = g_sdr.pa_watts;
   uint8_t  sv_pa_oc_limit_idx = g_sdr.pa_oc_limit_idx;
+  uint8_t  sv_pwr_scale       = g_sdr.pwr_scale;
 
   /* Reset operating state to factory defaults */
   g_sdr.freq_hz          = CSDR_FREQ_DEFAULT_HZ;
@@ -1806,6 +1812,7 @@ static void csdr_factory_reset(void)
   g_sdr.audio_gain_db    = sv_audio_gain_db;
   g_sdr.pa_watts         = sv_pa_watts;
   g_sdr.pa_oc_limit_idx  = sv_pa_oc_limit_idx;
+  g_sdr.pwr_scale        = sv_pwr_scale;
 
   /* Apply to hardware and DSP */
   csdr_apply_band(3U);
@@ -1896,6 +1903,8 @@ static void csdr_handle_encoder(void)
             .smeter_offset_db= g_sdr.smeter_offset_db,
             .lo_offset_hz    = g_sdr.lo_offset_hz,
             .pa_watts        = g_sdr.pa_watts,
+            .pa_oc_limit_idx = g_sdr.pa_oc_limit_idx,
+            .pwr_scale       = g_sdr.pwr_scale,
           };
           if (Cal_Run(&cp, &g_dsp)) {
             g_sdr.xtal_ppm        = cp.xtal_ppm;
@@ -1909,6 +1918,7 @@ static void csdr_handle_encoder(void)
             g_sdr.lo_offset_hz    = cp.lo_offset_hz;
             g_sdr.pa_watts        = cp.pa_watts;
             g_sdr.pa_oc_limit_idx = cp.pa_oc_limit_idx;
+            g_sdr.pwr_scale       = cp.pwr_scale;
             { float _lim = (float)cp.pa_oc_limit_idx * 0.1f;
               PA_OC_SetCurrentLimit(_lim);
               g_pa_cfg.current_warn_a = _lim * 0.75f;
@@ -2067,6 +2077,8 @@ static void csdr_handle_keys(void)
               .smeter_offset_db= g_sdr.smeter_offset_db,
               .lo_offset_hz    = g_sdr.lo_offset_hz,
               .pa_watts        = g_sdr.pa_watts,
+              .pa_oc_limit_idx = g_sdr.pa_oc_limit_idx,
+              .pwr_scale       = g_sdr.pwr_scale,
             };
             if (Cal_Run(&cp, &g_dsp)) {
               g_sdr.xtal_ppm        = cp.xtal_ppm;
@@ -2080,6 +2092,7 @@ static void csdr_handle_keys(void)
               g_sdr.lo_offset_hz    = cp.lo_offset_hz;
               g_sdr.pa_watts        = cp.pa_watts;
               g_sdr.pa_oc_limit_idx = cp.pa_oc_limit_idx;
+              g_sdr.pwr_scale       = cp.pwr_scale;
               { float _lim = (float)cp.pa_oc_limit_idx * 0.1f;
                 PA_OC_SetCurrentLimit(_lim);
                 g_pa_cfg.current_warn_a = _lim * 0.75f;

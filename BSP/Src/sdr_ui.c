@@ -437,6 +437,23 @@ void SDR_UI_Init(void)
   wf_lut_init();
 }
 
+/* ── Partial-redraw cache invalidation ───────────────────────────────────────
+ * Call after a full-screen overlay (e.g. SWR scan) has painted over the normal
+ * UI zones.  Every partial-redraw cache (VFO glyph, sidebar values, meter
+ * statics, spectrum delta-skip, RSSI) believes the LCD still shows its last
+ * push; without invalidation the next DIRTY_ALL refresh skips those zones and
+ * the overlay's pixels stay on screen. */
+void SDR_UI_InvalidateCaches(void)
+{
+  s_vfo_cache.valid    = false;
+  s_sbl_cache.valid    = false;
+  s_sbr_cache.valid    = false;
+  s_spec_py_valid      = false;
+  s_mtr_static_valid   = false;
+  s_rx_meter_bars      = -1;     /* force full meter redraw on next tick   */
+  s_rssi_db            = -200;   /* force INFO-strip RSSI redraw           */
+}
+
 /* ── Waterfall suppression API ───────────────────────────────────────────── */
 void SDR_UI_SetWaterfallSuppressed(bool suppressed)
 {

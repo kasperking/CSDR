@@ -112,6 +112,7 @@ typedef struct {
   uint8_t     tx_power;         /*!< TX output power 0-100% (default 100); PC cmd */
   uint8_t     pa_watts;         /*!< PA hardware rating: 0=None, 20, 45, 100 W    */
   uint8_t     pa_oc_limit_idx;  /*!< OC limit ×10 A — 10..200 = 1.0..20.0 A, step 0.1 A */
+  uint8_t     pwr_scale;        /*!< Tandem-match FWD power cal 50..200 % (default 100) */
   int16_t     smeter_offset_db;
   uint32_t    lo_offset_hz;
   /* Dual VFO */

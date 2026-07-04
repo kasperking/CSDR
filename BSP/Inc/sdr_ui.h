@@ -450,6 +450,12 @@ typedef struct {
 
 void SDR_UI_Init(void);
 
+/* Invalidate all partial-redraw caches (VFO glyph, sidebars, meter statics,
+ * spectrum delta-skip, RSSI).  Call after a full-screen overlay (SWR scan)
+ * painted over the UI zones so the next DIRTY_ALL refresh repaints them all
+ * instead of cache-skipping. */
+void SDR_UI_InvalidateCaches(void);
+
 /* One-time skeleton + footer; call before any zone draws */
 void SDR_UI_DrawFrame(uint32_t sample_rate, uint16_t fft_bins);
 

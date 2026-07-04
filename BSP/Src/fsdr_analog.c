@@ -274,8 +274,15 @@ void Analog_Update(void)
   float k       = swr_k();
   float vf_comp = (vf_v >= SWR_MIN_VADC) ? (vf_v / k + SWR_DIODE_VF) : 0.0f;
   float vr_comp = (vr_v >= SWR_MIN_VADC) ? (vr_v / k + SWR_DIODE_VF) : 0.0f;
-  g_analog.fwd_power_mw = (uint16_t)(vf_comp * vf_comp * SWR_PWR_COEFF);
-  g_analog.ref_power_mw = (uint16_t)(vr_comp * vr_comp * SWR_PWR_COEFF);
+  /* User power cal (PWR Scale %, 50-200): corrects detector-vs-theory error
+   * (diode Vf spread, divider tolerance).  Applied to both fwd and ref so
+   * their ratio is preserved; SWR uses its own per-band scale. */
+  float pscale  = (g_sdr.pwr_scale >= 50U && g_sdr.pwr_scale <= 200U)
+                  ? (float)g_sdr.pwr_scale * 0.01f : 1.0f;
+  float fwd_mw  = vf_comp * vf_comp * SWR_PWR_COEFF * pscale;
+  float ref_mw  = vr_comp * vr_comp * SWR_PWR_COEFF * pscale;
+  g_analog.fwd_power_mw = (fwd_mw < 65535.0f) ? (uint16_t)fwd_mw : 65535U;
+  g_analog.ref_power_mw = (ref_mw < 65535.0f) ? (uint16_t)ref_mw : 65535U;
   g_analog.swr_alarm    = (g_analog.swr_x100 > SWR_WARN_THRESH) &&
                            (g_analog.fwd_power_mw > 100U);
 

@@ -410,6 +410,13 @@ void SWR_Scan_Run(void)
       while (!Input_F4_IsPressed() && (HAL_GetTick() - _t0 < 5000U)) HAL_Delay(10U); }
     while (Input_F4_IsPressed())  HAL_Delay(5U);
 
+    /* The scan painted over VFO/sidebar/INFO/spectrum zones whose redraw
+     * paths are cache-gated: without invalidation the DIRTY_ALL refresh
+     * skips them and scan pixels stay on screen.  INFO strip has no
+     * DIRTY_ALL redraw path at all — clear it explicitly here. */
+    SDR_UI_InvalidateCaches();
+    SDR_UI_ClearCWText();
+
     /* Signal main loop to redraw everything */
-    g_sdr.display_dirty = true;
+    g_sdr.display_dirty = DIRTY_ALL;
 }
