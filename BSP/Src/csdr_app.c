@@ -1956,6 +1956,7 @@ static void csdr_handle_encoder(void)
     for (uint8_t i = 0U; i < 6U; i++) { if (step_cycle[i] == g_sdr.step) { si = i; break; } }
     g_sdr.step = step_cycle[(si + 1U) % 6U];
     g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
+    s_freq_save_tick = HAL_GetTick();  /* arm debounced save */
   }
   if (Encoder_GetLongPress(&g_encoder)) {
     /* Long press: cycle spectrum zoom ±24k → ±12k → ±6k → ±3k → ±24k */
@@ -2877,17 +2878,22 @@ static void csdr_apply_tx(void)
                        ? ((g_sdr.tx_power < TUNE_POWER_PCT) ? g_sdr.tx_power : TUNE_POWER_PCT)
                        : g_sdr.tx_power;
     int16_t tx_trim = g_band_cal[g_sdr.band_idx].tx_drive_trim;
-    float g = pa_fitted
-              ? ((float)gain_src_pct                  * (1.0f / 100.0f)
-                 * ((float)pwr_pct                      * (1.0f / 100.0f))
+    /* drive = everything except the mic/digi gain source — constant-envelope
+     * modes (FM) use it directly as carrier amplitude so PA foldback and
+     * tx_power act on real RF power while mic gain only sets deviation. */
+    float drive = pa_fitted
+              ? (((float)pwr_pct                        * (1.0f / 100.0f))
                  * ((float)PA_Protect_GetDriveLimit()    * (1.0f / 100.0f))
                  * ((float)PA_Protect_GetALCDrive()      * (1.0f / 100.0f))
                  * ((float)PA_Protect_GetPowerALCDrive() * (1.0f / 100.0f))
                  * ((float)(100 + tx_trim)               * (1.0f / 100.0f)))
               : 0.0f;
-    if (g < 0.0f) g = 0.0f;
+    if (drive < 0.0f) drive = 0.0f;
+    if (drive > 1.0f) drive = 1.0f;
+    float g = drive * ((float)gain_src_pct * (1.0f / 100.0f));
     if (g > 1.0f) g = 1.0f;
     g_dsp.tx.audio_gain = g;
+    g_dsp.tx.drive_gain = drive;
   }
   SDR_UI_UpdateSMeter_SetTX(g_sdr.tx_mode);
   SDR_UI_SetTXMode(g_sdr.tx_mode);
@@ -3069,6 +3075,7 @@ static void cat_set_step(uint32_t hz)
   else                    st = STEP_1;
   g_sdr.step = st;
   g_sdr.display_dirty |= DIRTY_VFO;
+  s_freq_save_tick = HAL_GetTick();  /* arm debounced save */
 }
 
 static void cat_set_if_shift(int32_t hz)

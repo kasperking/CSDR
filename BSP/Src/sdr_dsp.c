@@ -75,6 +75,19 @@ static arm_cfft_instance_f32        s_cfft_ram_inst; /* filled from SPI flash ta
 #define NCO_LUT_BITS    10U
 #define NCO_LUT_SIZE    (1U << NCO_LUT_BITS)
 #define NCO_LUT_MASK    (NCO_LUT_SIZE - 1U)
+
+/* FM constants.
+ * TX: ±5 kHz peak deviation at full-scale audio — NBFM wide (25 kHz spacing),
+ *     matches TS-2000 FM wide; fits the default 15 kHz RX passband (Carson:
+ *     2×(5000+2800) = 15.6 kHz).
+ * RX: makeup gain reference — ±6 kHz deviation demodulates to ±1.0 audio.
+ *     AGC is bypassed in FM; without makeup, NBFM (±2.5–5 kHz dev) sits
+ *     14–20 dB below the AGC-normalised SSB/AM audio level.
+ * TX carrier amplitude 0.7 = the "100%" envelope convention of this codebase
+ * (see cw_sidetone_amp: "0.35 of 0.7 max"). */
+#define FM_TX_DEV_HZ     5000.0f
+#define FM_RX_DEV_FS_HZ  6000.0f
+#define FM_TX_AMP        0.7f
 /* USER CODE END PD */
 
 /* USER CODE BEGIN PV */
@@ -652,7 +665,12 @@ float Demod_FM(FM_Demod_t *fm, float i, float q)
   float im = q * fm->prev_re - i * fm->prev_im;
   fm->prev_re = i;
   fm->prev_im = q;
-  float d = atan2f(im, re) * (1.0f / 3.14159265f);
+  /* scale (set in DSP_Init) = -fs/(2π·FM_RX_DEV_FS_HZ):
+   *   sign  — hardware QSD gives Q=-sin (baseband exp(-jωt)), so atan2 yields
+   *           -Δφ; negation restores true frequency polarity (FSK data safe).
+   *   magnitude — ±FM_RX_DEV_FS_HZ deviation → ±1.0 audio makeup gain,
+   *           since AGC is bypassed in FM. */
+  float d = atan2f(im, re) * fm->scale;
   float y = fm->de_emph.b0 * d - fm->de_emph.a1 * fm->de_emph.y1;
   fm->de_emph.y1 = y;
   return y;
@@ -765,6 +783,12 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
     dsp->fm.de_emph.y1   = 0.0f;
     dsp->fm.prev_re      = 0.0f;
     dsp->fm.prev_im      = 0.0f;
+    /* Polarity fix + makeup gain — see Demod_FM */
+    dsp->fm.scale        = -(float)sample_rate / (DSP_TWO_PI * FM_RX_DEV_FS_HZ);
+    /* TX pre-emphasis = exact inverse of the RX de-emphasis one-pole:
+     * H⁻¹(z) = (1 - (1-b0)·z⁻¹)/b0 — TX→RX audio round trip is flat. */
+    dsp->tx.fm_pre_k     = 1.0f - dsp->fm.de_emph.b0;
+    dsp->tx.fm_pre_gain  = 1.0f / dsp->fm.de_emph.b0;
   }
 
   Hilbert_Init(&dsp->rx_hilbert);
@@ -774,7 +798,11 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   Hilbert_Init(&dsp->tx.hilbert);
   memset(dsp->tx.audio_delay, 0, sizeof(dsp->tx.audio_delay));
   dsp->tx.delay_idx    = 0;
-  dsp->tx.fm_phase     = 0.0f;
+  dsp->tx.fm_phase_acc = 0U;
+  dsp->tx.fm_pre_x1    = 0.0f;
+  /* Full-scale audio (±1.0) → NCO increment for ±FM_TX_DEV_HZ deviation */
+  dsp->tx.fm_dev_scale = FM_TX_DEV_HZ * 4294967296.0f / (float)sample_rate;
+  dsp->tx.drive_gain   = 0.0f;
   dsp->tx.cw_phase_acc    = 0;
   dsp->tx.cw_bfo_inc      = (uint32_t)((int64_t)700 * (int64_t)4294967296LL / (int64_t)sample_rate);
   dsp->tx.cw_sidetone_amp = 0.35f;  /* 50% vol default → 0.35 of 0.7 max */
@@ -880,6 +908,11 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   dsp->fm.prev_re    = 0.0f;
   dsp->fm.prev_im    = 0.0f;
   dsp->fm.de_emph.y1 = 0.0f;
+
+  /* Reset TX FM modulator: pre-emphasis state and NCO phase (phase itself is
+   * arbitrary, but a defined start keeps loopback tests deterministic) */
+  dsp->tx.fm_phase_acc = 0U;
+  dsp->tx.fm_pre_x1    = 0.0f;
 
   /* Flush audio FIR buffer to prevent cross-mode transient (up to 64/4kHz ~16ms) */
   memset(dsp->fir_audio.buf, 0, sizeof(dsp->fir_audio.buf));
@@ -1629,7 +1662,34 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         tx_q = cw_sin * dsp->tx.cw_env_amp;
         break;
       }
-      case MODE_FM:
+      case MODE_FM: {
+        /* Constant-envelope FM: NCO phase accumulator, same LUT as the CW branch.
+         *
+         * Pre-emphasis (inverse of the RX 75 µs de-emphasis, coeffs from
+         * DSP_Init) is applied to audio_lp, then hard-clamped to ±1.0 so the
+         * high-frequency boost cannot push deviation past FM_TX_DEV_HZ.
+         *
+         * Gain split — audio_gain would be wrong for both roles here:
+         *   deviation ← audio_lp (mic_gain baked in at stage 3: mic gain
+         *               controls deviation, as on any FM rig);
+         *   carrier   ← drive_gain (tx_power × PA foldback × ALC × trim,
+         *               WITHOUT mic gain) so PA protection and tx_power act on
+         *               real RF power — audio_gain alone would let mic gain
+         *               couple into carrier amplitude. */
+        float x = (audio_lp - dsp->tx.fm_pre_k * dsp->tx.fm_pre_x1)
+                  * dsp->tx.fm_pre_gain;
+        dsp->tx.fm_pre_x1 = audio_lp;
+        if (x >  1.0f) x =  1.0f;
+        if (x < -1.0f) x = -1.0f;
+        dsp->tx.fm_phase_acc += (uint32_t)(int32_t)(x * dsp->tx.fm_dev_scale);
+        uint32_t fm_idx = dsp->tx.fm_phase_acc >> (32U - NCO_LUT_BITS);
+        float fm_amp = FM_TX_AMP * dsp->tx.drive_gain;
+        /* Q=+sin convention (positive audio → +f), consistent with the SSB
+         * branch above; FFT feed negates Q for correct display. */
+        tx_i = s_nco_sin_lut[(fm_idx + (NCO_LUT_SIZE / 4U)) & NCO_LUT_MASK] * fm_amp;
+        tx_q = s_nco_sin_lut[fm_idx & NCO_LUT_MASK] * fm_amp;
+        break;
+      }
       default:
         tx_i = audio_lp * 0.7f;
         tx_q = 0.0f;

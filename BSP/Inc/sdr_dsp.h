@@ -150,6 +150,8 @@ typedef struct {
 typedef struct {
   float        prev_re;
   float        prev_im;
+  float        scale;    /*!< rad/sample → audio: polarity fix + makeup gain
+                              (AGC bypassed in FM; ±FM_RX_DEV_FS_HZ dev → ±1.0) */
   IIR_Biquad_t de_emph;  /*!< De-emphasis 75µs */
 } FM_Demod_t;
 
@@ -169,12 +171,19 @@ typedef struct {
   Hilbert_t    hilbert;                    /*!< 90° phase shift for Q channel */
   float        audio_delay[HILBERT_TAPS];  /*!< Match delay cho I channel */
   uint16_t     delay_idx;
-  float        fm_phase;                   /*!< FM modulator phase accumulator */
+  uint32_t     fm_phase_acc;               /*!< FM modulator NCO phase accumulator   */
+  float        fm_dev_scale;               /*!< audio(±1.0) → NCO inc for ±FM_TX_DEV_HZ */
+  float        fm_pre_k;                   /*!< TX pre-emphasis: 1-b0 (inverse of RX de-emph) */
+  float        fm_pre_gain;                /*!< TX pre-emphasis: 1/b0                */
+  float        fm_pre_x1;                  /*!< TX pre-emphasis x[n-1] state         */
   uint32_t     cw_phase_acc;               /*!< CW tone NCO phase accumulator       */
   uint32_t     cw_bfo_inc;                 /*!< CW sidetone NCO increment            */
   float        cw_sidetone_amp;            /*!< Target sidetone amplitude (0..0.7)   */
   float        cw_env_amp;                 /*!< Smoothed keying envelope (click-free)*/
   float        audio_gain;                 /*!< TX audio gain (0..1) */
+  float        drive_gain;                 /*!< PA drive multiplier without mic/digi gain
+                                                (tx_power × foldback × ALC × trim) — carrier
+                                                amplitude for constant-envelope modes (FM) */
   bool         tune_active;                /*!< TUNE button held: forces a continuous
                                                   CW-style carrier regardless of mode,
                                                   scaled by audio_gain (see csdr_app.c) */
