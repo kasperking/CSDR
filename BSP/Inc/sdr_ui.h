@@ -510,6 +510,10 @@ void SDR_UI_RedrawFooter(void);
  * Grid marks are placed at multiples of step_hz; redraws only when changed. */
 void SDR_UI_SetFooterFreq(uint32_t freq_hz, uint32_t step_hz);
 
+/* Track-mode spectrum marker: demod offset (Hz) from the spectrum center.
+ * 0 = centered (Fix mode). Passband shading + carrier marker follow it. */
+void SDR_UI_SetSpecMarker(int32_t offset_hz);
+
 /* Spectrum delta-skip counters */
 void SDR_UI_GetSpecSkipStats(uint32_t *skip_hits, uint32_t *draw_hits);
 

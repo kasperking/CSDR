@@ -205,9 +205,27 @@ static volatile uint8_t dbg_disable_lcd_dma = 0;
 /* Forward declarations for functions used before their definition */
 static void csdr_apply_volume(uint8_t vol);
 static void csdr_apply_tx(void);
+static void csdr_finish_rx_hw(void);
 static void csdr_factory_reset(void);
 static void csdr_tune_start(void);
 static void csdr_tune_stop(void);
+
+/* ── T/R sequencing state (see csdr_apply_tx / CSDR_Loop) ─────────────────
+ * Keying gate: after T_R_SW asserts, RF is held at zero for ext_pa_delay_ms
+ *   so the external amp relay (keyed from T_R_SW via optocoupler) settles
+ *   before drive appears.  CSDR_Loop releases it via the gain-reapply path.
+ * Release drain: on TX→RX the relays stay in the TX position for
+ *   TX_RF_DRAIN_MS while the queued SAI halves (2 × 256 samples ≈ 11 ms)
+ *   flush, so the RF tail never hot-switches an opening relay; RX audio
+ *   written into s_tx_buf meanwhile is muted via rx_volume_scale.
+ *   csdr_finish_rx_hw() then performs the actual hardware release.
+ * Both phases are non-blocking — audio DSP runs in this same main loop, so
+ * a HAL_Delay here would starve the SAI ping-pong (halves are 5.3 ms). */
+#define TX_RF_DRAIN_MS 12U
+static bool     s_rf_gate_pending  = false;
+static uint32_t s_rf_gate_tick     = 0U;
+static bool     s_rx_drain_pending = false;
+static uint32_t s_rx_drain_tick    = 0U;
 
 
 #define CSDR_UI_SPEC_RX_PERIOD_MS    75U    /* ~13 fps spectrum in RX — decoupled from waterfall */
@@ -271,6 +289,9 @@ static void menu_apply_cb(void);
 static void csdr_vox_poll(void);
 static uint32_t default_bw_for_mode(SDR_Mode_t m);
 static void csdr_apply_nco_if(void);
+static int32_t csdr_marker_limit_hz(void);
+static void csdr_marker_recenter(void);
+static void csdr_marker_clamp_span(void);
 static void csdr_vfo_swap(void);
 static void csdr_on_mode_changed(SDR_Mode_t old_mode);
 /* CAT VFO-B callbacks */
@@ -330,6 +351,9 @@ static void csdr_save_settings(void)
   fs.usb_mode        = g_sdr.usb_mode;
   fs.usb_iq_stream   = g_sdr.usb_iq_stream;
   fs.ext_alc_on      = g_sdr.ext_alc_on;
+  fs.ext_pa_on       = g_sdr.ext_pa_on ? 1U : 0U;
+  fs.ext_pa_delay_p1 = (uint8_t)(g_sdr.ext_pa_delay_ms + 1U); /* ms+1: 0 = old blob */
+  fs.ext_pa_drv      = g_sdr.ext_pa_max_drive;
 
   /* TX / audio */
   fs.mic_gain        = g_sdr.mic_gain;
@@ -345,6 +369,7 @@ static void csdr_save_settings(void)
   fs.vox_delay_ms       = g_sdr.vox_delay;
   fs.pa_oc_limit_idx = g_sdr.pa_oc_limit_idx;
   fs.pwr_scale       = g_sdr.pwr_scale;
+  fs.marker_track    = g_sdr.marker_track ? 1U : 0U;
   /* CW settings */
   fs.cw_pitch_hz    = g_sdr.cw_pitch_hz;
   fs.cw_wpm         = g_sdr.cw_wpm;
@@ -443,6 +468,12 @@ void CSDR_Init(void)
       g_sdr.usb_mode      = (fs.usb_mode <= 1U) ? fs.usb_mode : 1U;
       g_sdr.usb_iq_stream = fs.usb_iq_stream;
       g_sdr.ext_alc_on    = fs.ext_alc_on;
+      /* Ext PA: fields carved from si5351_cal tail — 0 = pre-ext-pa blob */
+      g_sdr.ext_pa_on       = (fs.ext_pa_on == 1U);
+      g_sdr.ext_pa_delay_ms = (fs.ext_pa_delay_p1 >= 1U && fs.ext_pa_delay_p1 <= 51U)
+                               ? (uint8_t)(fs.ext_pa_delay_p1 - 1U) : 25U;
+      g_sdr.ext_pa_max_drive = (fs.ext_pa_drv >= 5U && fs.ext_pa_drv <= 100U)
+                               ? fs.ext_pa_drv : 50U;
       /* TX / audio */
       g_sdr.mic_gain      = fs.mic_gain;
       g_sdr.digi_gain     = fs.digi_gain;
@@ -453,6 +484,8 @@ void CSDR_Init(void)
       /* 0 = blob saved by pre-pwr_scale firmware (field was zeroed padding) */
       g_sdr.pwr_scale       = (fs.pwr_scale >= 50U && fs.pwr_scale <= 200U)
                                ? fs.pwr_scale : 100U;
+      /* 0 = pre-marker blob → Fix mode default; offset never persisted */
+      g_sdr.marker_track    = (fs.marker_track == 1U);
       g_sdr.tx_audio_low_hz  = (fs.tx_audio_low_hz  >= 100U && fs.tx_audio_low_hz  <= 500U)
                                ? fs.tx_audio_low_hz  : 200U;
       g_sdr.tx_audio_high_hz = (fs.tx_audio_high_hz >= 2200U && fs.tx_audio_high_hz <= 3500U)
@@ -517,7 +550,8 @@ void CSDR_Init(void)
   }
 
   SDR_UI_DrawFrame(CSDR_AUDIO_SAMPLE_RATE, DSP_FFT_SIZE);
-  SDR_UI_SetFooterFreq(g_sdr.freq_hz, (uint32_t)g_sdr.step);
+  SDR_UI_SetFooterFreq((uint32_t)((int32_t)g_sdr.freq_hz - g_sdr.marker_offset_hz),
+                         (uint32_t)g_sdr.step);  /* footer ruler follows the LO center */
 
   /* Delay nhỏ trước I2C để bus settle sau power-on */
   HAL_Delay(10);
@@ -1501,13 +1535,36 @@ void CSDR_Loop(void)
   if (now - t_cat    >= 10U) {
     t_cat = now;
     if (g_sdr.usb_mode != 0U) CAT_Process(&g_cat);
+    /* T/R sequencing (see state block near the forward declarations):
+     * open RF once the ext-PA keying gate expires; release the relays once
+     * the TX→RX drain has flushed the RF tail.  Both checked before the
+     * dirty-flag consumers so a re-key queued in the same tick lands on
+     * up-to-date hardware state. */
+    if (s_rf_gate_pending) {
+      if (!g_sdr.tx_mode) {
+        s_rf_gate_pending = false;   /* TX aborted before the gate expired */
+      } else if ((now - s_rf_gate_tick) >= (uint32_t)g_sdr.ext_pa_delay_ms) {
+        s_rf_gate_pending = false;
+        g_sdr.cat_tx_dirty = true;   /* gain-only reapply opens RF */
+      }
+    }
+    if (s_rx_drain_pending && (now - s_rx_drain_tick) >= TX_RF_DRAIN_MS) {
+      s_rx_drain_pending = false;
+      csdr_finish_rx_hw();
+    }
     /* Apply hardware changes deferred by CAT handlers — all blocking I2C/SPI/GPIO
      * happens here in main-loop context, never inside the CAT parser. */
     if (g_sdr.cat_freq_dirty) {
       g_sdr.cat_freq_dirty = false;
       DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
       if (g_sdr.si5351_ok)
-        SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+        /* RX: LO center = listening freq - marker offset.
+         * TX: the carrier must sit exactly at freq_hz (marker offset only
+         * shapes the RX view; csdr_apply_tx restores it on TX→RX). */
+        SI5351_SetQSDFrequency(&g_si5351,
+          (uint32_t)((int32_t)g_sdr.freq_hz
+                     - (g_sdr.tx_mode ? 0 : g_sdr.marker_offset_hz))
+          + g_sdr.lo_offset_hz);
       uint8_t _b = BPF_FreqToBand(g_sdr.freq_hz);
       if (_b != 0xFFU && _b != g_sdr.band_idx) {
         BPF_SetBand(_b); LPF_SetBand(_b); g_sdr.band_idx = _b;
@@ -1545,21 +1602,12 @@ void CSDR_Loop(void)
     }
     if (g_sdr.cat_rit_dirty) {
       g_sdr.cat_rit_dirty = false;
-      /* nco_if = IF shift + RIT + SL contribution.
+      /* nco_if = marker offset + IF shift + RIT + SL contribution.
        * SL (low-cut) shifts the passband centre away from DC:
        *   USB/CW/DIGU: +sl_hz (passband starts above carrier)
        *   LSB/DIGL:    -sl_hz (passband starts below carrier)
        *   AM/FM:        0     (symmetric / fixed filter, no low cut) */
-      int32_t sl_sign = 0;
-      if (g_sdr.mode == MODE_USB || g_sdr.mode == MODE_CW ||
-          g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_FREEDV)
-          sl_sign = +1;
-      else if (g_sdr.mode == MODE_LSB || g_sdr.mode == MODE_DIGL)
-          sl_sign = -1;
-      int32_t eff_if = (int32_t)g_sdr.if_shift_hz
-                     + (g_cat.rit_on ? (int32_t)g_sdr.rit_hz : 0)
-                     + sl_sign * (int32_t)g_sdr.sl_hz;
-      DSP_SetIFShift(&g_dsp, eff_if, CSDR_AUDIO_SAMPLE_RATE);
+      csdr_apply_nco_if();
     }
     /* Debounced freq save: write flash 3 s after the last freq change,
      * or immediately if flrig disconnected with a pending unsaved change. */
@@ -1728,6 +1776,12 @@ static void csdr_apply_band(uint8_t band)
   BPF_SetBand(band); LPF_SetBand(band);
   uint32_t f = BPF_BandToFreq(band);
   g_sdr.freq_hz = f; g_sdr.band_idx = band;
+  /* Band jump always re-centers the marker (LO retuned to f below) */
+  if (g_sdr.marker_offset_hz != 0) {
+    g_sdr.marker_offset_hz = 0;
+    SDR_UI_SetSpecMarker(0);
+    csdr_apply_nco_if();
+  }
   DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, f + g_sdr.lo_offset_hz);
   g_sdr.display_dirty |= (DIRTY_HDR | DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
@@ -1767,6 +1821,9 @@ static void csdr_factory_reset(void)
   g_sdr.bc_mode          = 0U;
   g_sdr.rf_agc_on        = false;
   g_sdr.ext_alc_on       = false;
+  g_sdr.ext_pa_on        = false;
+  g_sdr.ext_pa_delay_ms  = 25U;
+  g_sdr.ext_pa_max_drive = 50U;
   g_sdr.mic_gain         = 50;
   g_sdr.digi_gain        = 70;
   g_sdr.tx_power         = 100U;
@@ -1778,6 +1835,8 @@ static void csdr_factory_reset(void)
   g_sdr.vox_gain         = 50U;
   g_sdr.vox_delay        = 500U;
   g_sdr.rit_hz           = 0;
+  g_sdr.marker_track     = false;
+  g_sdr.marker_offset_hz = 0;
   g_sdr.active_vfo       = 0U;
   g_sdr.vfo_b.freq_hz    = 14200000UL;
   g_sdr.vfo_b.mode       = MODE_USB;
@@ -1832,6 +1891,7 @@ static void csdr_factory_reset(void)
   DSP_SetCWPitch(&g_dsp, 700U, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetCWReverse(&g_dsp, false);
   DSP_SetSidetoneVol(&g_dsp, 50U);
+  SDR_UI_SetSpecMarker(0);
   g_cw_keyer.mode           = (CWKeyerMode_t)0U;
   g_cw_keyer.paddle_reverse = false;
   g_cw_keyer.wpm            = 20U;
@@ -1861,11 +1921,37 @@ static void csdr_handle_encoder(void)
     int64_t f = (int64_t)g_sdr.freq_hz + (int64_t)delta*(int64_t)g_sdr.step;
     if (f < CSDR_FREQ_MIN_HZ) f = CSDR_FREQ_MIN_HZ;
     if (f > CSDR_FREQ_MAX_HZ) f = CSDR_FREQ_MAX_HZ;
-    g_sdr.freq_hz = (uint32_t)f;
-    DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
-    if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
-    uint8_t b = BPF_FreqToBand(g_sdr.freq_hz);
-    if (b != 0xFFU && b != g_sdr.band_idx) { BPF_SetBand(b); g_sdr.band_idx = b; }
+    if (g_sdr.marker_track && !g_sdr.tx_mode) {
+      /* Track mode: the spectrum (LO) stays put; tuning moves the demod
+       * marker via nco_if only.  Past the span edge the marker pins there
+       * and the LO scrolls step-by-step under it (edge-pinned scrolling —
+       * no center jump; same one-I2C-write-per-detent cost as Fix mode). */
+      uint32_t lo_old = (uint32_t)((int32_t)g_sdr.freq_hz - g_sdr.marker_offset_hz);
+      int32_t new_off = g_sdr.marker_offset_hz
+                      + (int32_t)(f - (int64_t)g_sdr.freq_hz);
+      g_sdr.freq_hz = (uint32_t)f;
+      int32_t lim = csdr_marker_limit_hz();
+      if (new_off >  lim) new_off =  lim;
+      if (new_off < -lim) new_off = -lim;
+      g_sdr.marker_offset_hz = new_off;
+      uint32_t lo_new = (uint32_t)((int32_t)g_sdr.freq_hz - new_off);
+      if (lo_new != lo_old && g_sdr.si5351_ok)
+        SI5351_SetQSDFrequency(&g_si5351, lo_new + g_sdr.lo_offset_hz);
+      csdr_apply_nco_if();
+      SDR_UI_SetSpecMarker(g_sdr.marker_offset_hz);
+      uint8_t b = BPF_FreqToBand(g_sdr.freq_hz);
+      if (b != 0xFFU && b != g_sdr.band_idx) {
+        /* Band edge crossed: re-center so BPF bank and LO stay consistent */
+        csdr_marker_recenter();
+        BPF_SetBand(b); g_sdr.band_idx = b;
+      }
+    } else {
+      g_sdr.freq_hz = (uint32_t)f;
+      DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+      if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+      uint8_t b = BPF_FreqToBand(g_sdr.freq_hz);
+      if (b != 0xFFU && b != g_sdr.band_idx) { BPF_SetBand(b); g_sdr.band_idx = b; }
+    }
     g_sdr.display_dirty |= DIRTY_VFO;
     s_freq_save_tick = HAL_GetTick();  /* arm debounced save */
   }
@@ -1906,6 +1992,7 @@ static void csdr_handle_encoder(void)
             .pa_oc_limit_idx = g_sdr.pa_oc_limit_idx,
             .pwr_scale       = g_sdr.pwr_scale,
           };
+          csdr_marker_recenter();  /* full-screen overlay: LO must sit at freq_hz */
           if (Cal_Run(&cp, &g_dsp)) {
             g_sdr.xtal_ppm        = cp.xtal_ppm;
             g_sdr.iq_gain         = cp.iq_gain;
@@ -1938,6 +2025,7 @@ static void csdr_handle_encoder(void)
             DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
           }
         } else if (strcmp(name, "SWR Scan") == 0) {
+          csdr_marker_recenter();  /* scan retunes + restores LO to freq_hz */
           SWR_Scan_Run();
         } else if (strcmp(name, "Factory Reset") == 0) {
           csdr_factory_reset();
@@ -1964,6 +2052,7 @@ static void csdr_handle_encoder(void)
     uint8_t z = (uint8_t)((SDR_UI_GetSpecZoom() + 1U) % SPEC_ZOOM_COUNT);
     SDR_UI_SetSpecZoom(z);
     DSP_SetSpecDecim(&g_dsp, c_zoom_decim[z]);
+    csdr_marker_clamp_span();
   }
 }
 
@@ -1983,6 +2072,7 @@ static void csdr_handle_keys(void)
         g_sdr.att_db, g_sdr.band_idx, (uint8_t)g_sdr.mode,
         g_sdr.usb_mode, SDR_UI_GetSpecZoom(),
         g_sdr.ext_alc_on, g_sdr.tx_power, g_sdr.pa_watts,
+        g_sdr.ext_pa_on, g_sdr.ext_pa_delay_ms, g_sdr.ext_pa_max_drive,
         g_sdr.tx_audio_low_hz, g_sdr.tx_audio_high_hz,
         g_sdr.if_shift_hz, g_sdr.notch_on, g_sdr.notch_hz,
         g_sdr.vox_on, g_sdr.vox_gain, g_sdr.vox_delay,
@@ -1997,6 +2087,7 @@ static void csdr_handle_keys(void)
         g_sdr.nb_level,
         g_sdr.nr_level,
         g_sdr.bc_mode,
+        g_sdr.marker_track ? 1U : 0U,
         menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
@@ -2081,6 +2172,7 @@ static void csdr_handle_keys(void)
               .pa_oc_limit_idx = g_sdr.pa_oc_limit_idx,
               .pwr_scale       = g_sdr.pwr_scale,
             };
+            csdr_marker_recenter();  /* full-screen overlay: LO must sit at freq_hz */
             if (Cal_Run(&cp, &g_dsp)) {
               g_sdr.xtal_ppm        = cp.xtal_ppm;
               g_sdr.iq_gain         = cp.iq_gain;
@@ -2112,6 +2204,7 @@ static void csdr_handle_keys(void)
               DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
             }
           } else if (strcmp(name, "SWR Scan") == 0) {
+            csdr_marker_recenter();  /* scan retunes + restores LO to freq_hz */
             SWR_Scan_Run();
           } else if (strcmp(name, "Factory Reset") == 0) {
             csdr_factory_reset();
@@ -2146,6 +2239,7 @@ static void csdr_handle_keys(void)
       Menu_Back(&g_menu);
       if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
     } else {
+      csdr_marker_recenter();  /* scan retunes + restores LO to freq_hz */
       SWR_Scan_Run();
       g_sdr.display_dirty |= DIRTY_ALL;
     }
@@ -2320,7 +2414,8 @@ static void csdr_refresh_display(void)
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
       }
       if (dirty & DIRTY_VFO) {
-        SDR_UI_SetFooterFreq(g_sdr.freq_hz, (uint32_t)g_sdr.step);
+        SDR_UI_SetFooterFreq((uint32_t)((int32_t)g_sdr.freq_hz - g_sdr.marker_offset_hz),
+                         (uint32_t)g_sdr.step);  /* footer ruler follows the LO center */
         SDR_UI_DrawVFO(&ui);
       }
       if (dirty & DIRTY_SBR) {
@@ -2335,7 +2430,8 @@ static void csdr_refresh_display(void)
       }
       if (dirty & DIRTY_VFO) {
         RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_STATUS_BAR);
-        SDR_UI_SetFooterFreq(g_sdr.freq_hz, (uint32_t)g_sdr.step);
+        SDR_UI_SetFooterFreq((uint32_t)((int32_t)g_sdr.freq_hz - g_sdr.marker_offset_hz),
+                         (uint32_t)g_sdr.step);  /* footer ruler follows the LO center */
         SDR_UI_DrawVFO(&ui);
         RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_STATUS_BAR);
       }
@@ -2398,14 +2494,22 @@ static void menu_apply_cb(void)
   uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr, vox_gain, tx_src_new; uint32_t step, bw;
   uint16_t tx_low, tx_high, vox_delay;
   uint16_t cw_pitch, cw_filter, cw_bk_delay; uint8_t cw_wpm, keyer_mode, sidetone, cw_bkin;
-  uint8_t nb_level, nr_level, nr, bc;
+  uint8_t nb_level, nr_level, nr, bc, marker_trk;
+  bool ext_pa; uint8_t ext_pa_dly, ext_pa_drv;
   Menu_SaveToSDR(&g_menu, &agc_speed, &nb, &nr, &rit,
                   &vol, &mic, &digi, &sq, &step, &bw, &att, &band, &mode, &usb, &zoom,
-                  &ext_alc, &rfpwr, &tx_low, &tx_high, &rxshift, &notch_en, &notch_f,
+                  &ext_alc, &rfpwr, &ext_pa, &ext_pa_dly, &ext_pa_drv,
+                  &tx_low, &tx_high, &rxshift, &notch_en, &notch_f,
                   &vox_en, &vox_gain, &vox_delay, &cw_dec,
                   &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
                   &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream,
-                  &tx_src_new, &nb_level, &nr_level, &bc);
+                  &tx_src_new, &nb_level, &nr_level, &bc, &marker_trk);
+  if ((marker_trk != 0U) != g_sdr.marker_track) {
+    g_sdr.marker_track = (marker_trk != 0U);
+    /* Leaving Track mode: park the marker back at center (retunes LO to
+     * the listening frequency, so what you hear does not change). */
+    if (!g_sdr.marker_track) csdr_marker_recenter();
+  }
   if (tx_low != g_sdr.tx_audio_low_hz || tx_high != g_sdr.tx_audio_high_hz) {
     g_sdr.tx_audio_low_hz  = tx_low;
     g_sdr.tx_audio_high_hz = tx_high;
@@ -2424,6 +2528,13 @@ static void menu_apply_cb(void)
   g_sdr.vox_gain  = vox_gain;
   g_sdr.vox_delay = vox_delay;
   g_sdr.ext_alc_on = ext_alc;
+  /* Ext PA: drive-cap changes must reach a live TX via the gain-reapply path */
+  if (ext_pa != g_sdr.ext_pa_on || ext_pa_drv != g_sdr.ext_pa_max_drive) {
+    if (g_sdr.tx_mode) g_sdr.cat_tx_dirty = true;
+  }
+  g_sdr.ext_pa_on        = ext_pa;
+  g_sdr.ext_pa_delay_ms  = ext_pa_dly;
+  g_sdr.ext_pa_max_drive = ext_pa_drv;
   if (rfpwr != g_sdr.tx_power) {
     g_sdr.tx_power = rfpwr;
     g_sdr.display_dirty |= DIRTY_SBR;
@@ -2479,6 +2590,7 @@ static void menu_apply_cb(void)
     static const uint8_t c_zoom_decim[SPEC_ZOOM_COUNT] = {1U, 2U, 4U, 8U};
     SDR_UI_SetSpecZoom(zoom);
     DSP_SetSpecDecim(&g_dsp, c_zoom_decim[zoom]);
+    csdr_marker_clamp_span();
   }
   if (cw_dec != g_sdr.cw_decode_on) {
     /* CW decode can only be enabled when in CW mode */
@@ -2576,8 +2688,9 @@ static void csdr_vox_poll(void)
  * ══════════════════════════════════════════════════════════ */
 
 /* Recompute and apply DSP nco_if from current g_sdr state.
- * Call whenever mode, sl_hz, if_shift_hz, or rit changes via a direct (non-deferred)
- * path — e.g. physical key presses, VFO swap. CAT-deferred path uses cat_rit_dirty. */
+ * Call whenever mode, sl_hz, if_shift_hz, rit, or marker_offset changes via a
+ * direct (non-deferred) path — e.g. physical key presses, VFO swap.
+ * CAT-deferred path uses cat_rit_dirty. */
 static void csdr_apply_nco_if(void)
 {
   int32_t sl_sign = 0;
@@ -2586,15 +2699,71 @@ static void csdr_apply_nco_if(void)
       sl_sign = +1;
   else if (g_sdr.mode == MODE_LSB || g_sdr.mode == MODE_DIGL)
       sl_sign = -1;
-  int32_t eff_if = (int32_t)g_sdr.if_shift_hz
+  /* Marker sign: NCO_Step applies exp(−j·ω·t) (see DSP_SetFrequency), so
+   * listening at +offset ABOVE the LO (right of spectrum center) requires
+   * programming −offset into nco_if. */
+  int32_t eff_if = -g_sdr.marker_offset_hz
+                 + (int32_t)g_sdr.if_shift_hz
                  + (g_cat.rit_on ? (int32_t)g_sdr.rit_hz : 0)
                  + sl_sign * (int32_t)g_sdr.sl_hz;
   DSP_SetIFShift(&g_dsp, eff_if, CSDR_AUDIO_SAMPLE_RATE);
 }
 
+/* ── Spectrum marker (Track mode) helpers ─────────────────────
+ * freq_hz stays the listening frequency; LO center = freq_hz - marker_offset.
+ * Moving the marker inside the visible span only changes nco_if (no I2C);
+ * the SI5351 retunes only on re-center. */
+
+/* Max |marker_offset| for the current zoom: 7/8 of the visible half-span
+ * (21000/10500/5250/2625 Hz) keeps the passband clear of the display edge
+ * and the codec anti-alias roll-off near Nyquist. */
+static int32_t csdr_marker_limit_hz(void)
+{
+  static const uint8_t c_zoom_decim[SPEC_ZOOM_COUNT] = {1U, 2U, 4U, 8U};
+  uint8_t z = SDR_UI_GetSpecZoom() % SPEC_ZOOM_COUNT;
+  int32_t half = (int32_t)(CSDR_AUDIO_SAMPLE_RATE / 2U) / (int32_t)c_zoom_decim[z];
+  return half - half / 8;
+}
+
+/* Retune the LO to the listening frequency and zero the marker.
+ * Main-loop context only (blocking I2C). */
+static void csdr_marker_recenter(void)
+{
+  if (g_sdr.marker_offset_hz == 0) return;
+  g_sdr.marker_offset_hz = 0;
+  if (g_sdr.si5351_ok)
+    SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+  csdr_apply_nco_if();
+  SDR_UI_SetSpecMarker(0);
+  g_sdr.display_dirty |= DIRTY_VFO;
+}
+
+/* After a zoom change: if the marker fell outside the new span, pin it to
+ * the span edge and shift the LO instead — the listening frequency (and
+ * audio) stays put, no center jump.  Main-loop context only (I2C). */
+static void csdr_marker_clamp_span(void)
+{
+  int32_t lim = csdr_marker_limit_hz();
+  int32_t off = g_sdr.marker_offset_hz;
+  if (off >  lim) off =  lim;
+  if (off < -lim) off = -lim;
+  if (off == g_sdr.marker_offset_hz) return;
+  g_sdr.marker_offset_hz = off;
+  if (g_sdr.si5351_ok)
+    SI5351_SetQSDFrequency(&g_si5351,
+      (uint32_t)((int32_t)g_sdr.freq_hz - off) + g_sdr.lo_offset_hz);
+  csdr_apply_nco_if();
+  SDR_UI_SetSpecMarker(off);
+  g_sdr.display_dirty |= DIRTY_VFO;
+}
+
 /* Swap active ↔ inactive VFO and apply new active state to hardware */
 static void csdr_vfo_swap(void)
 {
+  /* Marker is a live tuning aid, not per-VFO state: reset on swap.
+   * nco_if + SI5351 are reapplied below with offset = 0. */
+  g_sdr.marker_offset_hz = 0;
+  SDR_UI_SetSpecMarker(0);
   VFO_State_t tmp = {
     .freq_hz      = g_sdr.freq_hz,
     .mode         = g_sdr.mode,
@@ -2687,6 +2856,8 @@ static void cat_set_active_vfo(uint8_t vfo)
   g_sdr.active_vfo ^= 1U;
   g_cat.active_vfo   = g_sdr.active_vfo;
 
+  g_sdr.marker_offset_hz = 0;    /* marker resets on VFO swap (live aid, not per-VFO) */
+  SDR_UI_SetSpecMarker(0);
   g_sdr.cat_freq_dirty = true;   /* retune SI5351 to new freq_hz */
   g_sdr.cat_mode_dirty = true;   /* reapply DSP mode + BW */
   g_sdr.display_dirty  |= (DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
@@ -2697,6 +2868,24 @@ static uint8_t cat_get_active_vfo(void) { return g_sdr.active_vfo; }
 static void     cat_set_freq(uint32_t f)
 {
   if (g_sdr.cat_freq_dirty) dbg_cat_blocked_updates++;
+  if (g_sdr.marker_track && !g_sdr.tx_mode) {
+    /* Track mode: a QSY inside the visible span only moves the marker —
+     * no SI5351 retune.  Out-of-span jumps fall through to a re-center. */
+    int32_t off = (int32_t)((int64_t)f
+                - ((int64_t)g_sdr.freq_hz - g_sdr.marker_offset_hz));
+    int32_t lim = csdr_marker_limit_hz();
+    if (off >= -lim && off <= lim) {
+      g_sdr.freq_hz = f;
+      g_sdr.marker_offset_hz = off;
+      g_sdr.cat_rit_dirty = true; /* nco_if recomputed with marker term by CSDR_Loop */
+      SDR_UI_SetSpecMarker(off);
+      g_sdr.display_dirty |= DIRTY_VFO;
+      s_freq_save_tick = HAL_GetTick();  /* arm debounced save */
+      return;
+    }
+    g_sdr.marker_offset_hz = 0;
+    SDR_UI_SetSpecMarker(0);
+  }
   g_sdr.freq_hz = f;
   g_sdr.cat_freq_dirty = true; /* SI5351 + DSP NCO applied by CSDR_Loop */
   g_sdr.display_dirty |= DIRTY_VFO;
@@ -2799,13 +2988,51 @@ static void csdr_apply_volume(uint8_t vol)
   g_sdr.display_dirty |= DIRTY_SBL;
 }
 
-/* Immediate TX/RX apply — hardware switched synchronously.
+/* Deferred TX→RX hardware release — runs from CSDR_Loop once the RF tail
+ * has drained (TX_RF_DRAIN_MS after csdr_apply_tx saw the TX→RX transition).
+ * Order preserved from the original inline block: open T/R relay first, then
+ * BPF bank back to RX, then LO restore, then codec unmute. */
+static void csdr_finish_rx_hw(void)
+{
+  bool pa_fitted = (g_sdr.pa_watts != 0U);
+  PA_Protect_OnTxStop();
+  if (pa_fitted) {
+    HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
+    BPF_SetMode(RF_MODE_RX);
+    /* Restore RX LO = freq_hz − marker_offset (covers split return and
+     * the marker-track TX hop; offset is 0 when neither is active). */
+    if ((g_cat.split_on || g_sdr.marker_offset_hz != 0) && g_sdr.si5351_ok)
+      SI5351_SetQSDFrequency(&g_si5351,
+        (uint32_t)((int32_t)g_sdr.freq_hz - g_sdr.marker_offset_hz)
+        + g_sdr.lo_offset_hz);
+  }
+  g_dsp.mic_buf = NULL;  /* TX → RX: DSP_ProcessTX sẽ không được gọi, clear cho an toàn */
+  HAL_GPIO_WritePin(AUDIO_SD_GPIO_Port, AUDIO_SD_Pin, GPIO_PIN_SET); /* amp enable */
+  WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
+  WM8731_SetInputSource(&hi2c1, WM8731_I2C_ADDR, false); /* TX → RX: quay về LINE IN (QSD) */
+  /* Lift the drain mute (mirrors csdr_apply_volume's mute convention) */
+  g_dsp.rx_volume_scale = (g_sdr.volume == 0U) ? 0.0f : 1.0f;
+}
+
+/* TX/RX apply — RX→TX hardware switches synchronously here; TX→RX arms the
+ * release drain and the hardware release runs in csdr_finish_rx_hw() from
+ * CSDR_Loop TX_RF_DRAIN_MS later (see the sequencing-state comment block).
  * Called from physical PTT key handler and from the cat_tx_dirty path in CSDR_Loop.
  * Caller must have already set g_sdr.tx_mode to the desired state.
  *
- * Split operation: inactive VFO (vfo_b.freq_hz) is always the TX VFO.
- * On TX: SI5351 switches to vfo_b.freq_hz so the QSD mixer is on the TX frequency.
- * On RX: SI5351 returns to freq_hz (active/RX VFO).
+ * The hardware block (relay/BPF/WM8731/INA226/SI5351 + PA_Protect_OnTxStart/
+ * Stop) runs only on a real RX↔TX transition.  Mid-TX calls — gain reapplies
+ * from request_gain_reapply() (fired every 20 ms tick while the ALC/foldback
+ * multipliers move) and redundant CAT TX;/RX; — recompute only the gain block:
+ * re-entering PA_Protect_OnTxStart would restart the 100 ms protection
+ * blanking window (blinding the SWR/OC/temp state machine), reset the
+ * Power-ALC corrector before it can converge, and spam I2C mid-TX.
+ *
+ * LO switching (split takes precedence over marker-track):
+ *   Split:        TX on vfo_b.freq_hz (inactive slot is always the TX VFO).
+ *   Marker-track: RX parks the LO at freq_hz − marker_offset; TX must carry
+ *                 at freq_hz, so the LO hops there for the over and back.
+ *   On RX both restore to freq_hz − marker_offset (offset 0 without marker).
  * The SI5351 call here is synchronous and safe — this function runs in main-loop
  * context (cat_tx_dirty path) or from the physical PTT key, never from an ISR. */
 static void csdr_apply_tx(void)
@@ -2818,7 +3045,22 @@ static void csdr_apply_tx(void)
    * PA_Protect_GetDriveLimit()=0 in the gain block below.
    * tx_mode stays true so TX UI (spectrum/meters) keeps running. */
 
-  if (g_sdr.tx_mode) {
+  /* Last hardware-applied TX state — boot default RX matches bpf_lpf/GPIO
+   * init.  SWR scan (sdr_scan.c) drives the relays directly but never touches
+   * g_sdr.tx_mode and restores RX itself, so it cannot desync this. */
+  static bool s_tx_applied = false;
+  bool tx_transition = (g_sdr.tx_mode != s_tx_applied);
+  s_tx_applied = g_sdr.tx_mode;
+
+  if (tx_transition && g_sdr.tx_mode && s_rx_drain_pending) {
+    /* Re-key while the TX→RX release drain still holds the relays in TX:
+     * hardware never left TX — just cancel the pending release.  Skip
+     * OnTxStart (one continuous transmission as far as protection goes)
+     * and skip the ext-PA keying gate (the amp relay never dropped).
+     * rx_volume_scale stays muted; csdr_finish_rx_hw restores it on the
+     * eventual real release. */
+    s_rx_drain_pending = false;
+  } else if (tx_transition && g_sdr.tx_mode) {
     PA_Protect_OnTxStart();
     /* Nạp ngưỡng INA226: base từ cài đặt, CW/DIGI thấp hơn 0.5/0.3A */
     { float base = (float)g_sdr.pa_oc_limit_idx * 0.1f;
@@ -2837,25 +3079,32 @@ static void csdr_apply_tx(void)
     }
     if (pa_fitted) {
       BPF_SetMode(RF_MODE_TX);
-      /* Split: retune LO to TX VFO (inactive slot) before gating RF */
-      if (g_cat.split_on && g_sdr.si5351_ok)
-        SI5351_SetQSDFrequency(&g_si5351, g_sdr.vfo_b.freq_hz + g_sdr.lo_offset_hz);
+      /* Retune LO to the TX frequency before gating RF:
+       * split → TX VFO (inactive slot); marker-track → freq_hz (RX had the
+       * LO parked at freq_hz − marker_offset; marker/view stay untouched). */
+      if (g_sdr.si5351_ok) {
+        if (g_cat.split_on)
+          SI5351_SetQSDFrequency(&g_si5351, g_sdr.vfo_b.freq_hz + g_sdr.lo_offset_hz);
+        else if (g_sdr.marker_offset_hz != 0)
+          SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+      }
       HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_SET);
     }
-  } else {
-    PA_Protect_OnTxStop();
-    if (pa_fitted) {
-      /* TX → RX: open T/R relay first, then switch BPF bank back, then unmute codec. */
-      HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
-      BPF_SetMode(RF_MODE_RX);
-      /* Split: restore LO to RX VFO (active slot) */
-      if (g_cat.split_on && g_sdr.si5351_ok)
-        SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+    /* Ext-PA keying gate: relay contacts (internal + amp via optocoupler)
+     * are still flying — hold RF at zero until CSDR_Loop re-opens it. */
+    if (g_sdr.ext_pa_on && g_sdr.ext_pa_delay_ms > 0U) {
+      s_rf_gate_pending = true;
+      s_rf_gate_tick    = HAL_GetTick();
     }
-    g_dsp.mic_buf = NULL;  /* TX → RX: DSP_ProcessTX sẽ không được gọi, clear cho an toàn */
-    HAL_GPIO_WritePin(AUDIO_SD_GPIO_Port, AUDIO_SD_Pin, GPIO_PIN_SET); /* amp enable */
-    WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
-    WM8731_SetInputSource(&hi2c1, WM8731_I2C_ADDR, false); /* TX → RX: quay về LINE IN (QSD) */
+  } else if (tx_transition) {  /* TX → RX: begin release drain, defer hardware */
+    /* Queued SAI halves may still carry TX audio (≈11 ms worst case) and the
+     * codec line-out keeps feeding the QSE while the relay sits in TX — mute
+     * the RX audio now being written into s_tx_buf and let CSDR_Loop run
+     * csdr_finish_rx_hw() after TX_RF_DRAIN_MS, so no relay opens under RF. */
+    s_rf_gate_pending     = false;   /* abort an unexpired keying gate */
+    g_dsp.rx_volume_scale = 0.0f;
+    s_rx_drain_pending    = true;
+    s_rx_drain_tick       = HAL_GetTick();
   }
   /* Select gain source: digi_gain for digital modes, mic_gain for voice.
    * CW/TUNE use a fixed 100% base instead — carrier amplitude is governed by
@@ -2877,6 +3126,10 @@ static void csdr_apply_tx(void)
     uint8_t pwr_pct = g_sdr.tune_mode
                        ? ((g_sdr.tx_power < TUNE_POWER_PCT) ? g_sdr.tx_power : TUNE_POWER_PCT)
                        : g_sdr.tx_power;
+    /* Ext-PA drive cap: hard ceiling protecting the amp input stage —
+     * applies over tx_power and TUNE alike. */
+    if (g_sdr.ext_pa_on && pwr_pct > g_sdr.ext_pa_max_drive)
+      pwr_pct = g_sdr.ext_pa_max_drive;
     int16_t tx_trim = g_band_cal[g_sdr.band_idx].tx_drive_trim;
     /* drive = everything except the mic/digi gain source — constant-envelope
      * modes (FM) use it directly as carrier amplitude so PA foldback and
@@ -2892,6 +3145,9 @@ static void csdr_apply_tx(void)
     if (drive > 1.0f) drive = 1.0f;
     float g = drive * ((float)gain_src_pct * (1.0f / 100.0f));
     if (g > 1.0f) g = 1.0f;
+    /* Ext-PA keying gate active: relays still settling — hold RF at zero.
+     * CSDR_Loop re-enters this block via cat_tx_dirty when the gate expires. */
+    if (s_rf_gate_pending && g_sdr.tx_mode) { g = 0.0f; drive = 0.0f; }
     g_dsp.tx.audio_gain = g;
     g_dsp.tx.drive_gain = drive;
   }
@@ -2899,8 +3155,9 @@ static void csdr_apply_tx(void)
   SDR_UI_SetTXMode(g_sdr.tx_mode);
   /* Replace the S-meter immediately on TX start — don't wait for the 1 Hz
    * refresh tick.  UpdateTXMeters is idempotent and uses LCD_PushWindow
-   * (synchronous), safe to call here in main-loop context. */
-  if (g_sdr.tx_mode) {
+   * (synchronous), safe to call here in main-loop context.  Transition-gated:
+   * mid-TX gain reapplies must not zero the ALC bar under the 5 Hz updater. */
+  if (tx_transition && g_sdr.tx_mode) {
     SDR_UI_UpdateTXMeters(0, (int32_t)(g_analog.swr_x100 / 10));
   }
 }

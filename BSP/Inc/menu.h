@@ -17,8 +17,8 @@
   *  Root
   *   ├─ [RX]     → BW / AGC / ATT / Squelch / Span / NR / NB / NB Level / Notch / Notch Hz / RIT / RX Shift
   *   ├─ [Audio]  → Volume / Mic Gain / Digi Drive / Mic In
-  *   ├─ [Tuning] → Step / Band / Mode
-  *   ├─ [TX]     → RF Power / VOX / VOX Gain / VOX Delay / TX Low / TX High / Ext ALC
+  *   ├─ [Tuning] → Step / Band / Mode / Marker
+  *   ├─ [TX]     → RF Power / VOX / VOX Gain / VOX Delay / TX Low / TX High / Ext PA / PA Key Dly / PA Drv Max / Ext ALC
   *   ├─ [CW]     → CW Decode / Pitch / Speed / Keyer / Sidetone / BK-IN / BK Delay / CW Rev / Paddle Rev / Filter
   *   ├─ [System] → Backlight / USB / USB Stream / Calibration / Factory Reset / Clock / About
   *   │                └─ [About] → Version / Build Date
@@ -45,7 +45,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      54U   /* 7 groups (incl. About sub-group) + 47 leaf items */
+#define MENU_ITEM_COUNT      58U   /* 7 groups (incl. About sub-group) + 51 leaf items */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -62,11 +62,11 @@ extern "C" {
 #define MENU_BORDER_COLOR   0x10A2U   /* Dark subtle border   */
 
 /* Well-known item indices — keep in sync with Menu_Init slot assignments */
-#define MENU_IDX_RFPOWER    24U   /* TX → RF Power   */
-#define MENU_IDX_TXLOW      28U   /* TX → TX Low     */
-#define MENU_IDX_TXHIGH     29U   /* TX → TX High    */
+#define MENU_IDX_RFPOWER    26U   /* TX → RF Power   */
+#define MENU_IDX_TXLOW      30U   /* TX → TX Low     */
+#define MENU_IDX_TXHIGH     31U   /* TX → TX High    */
 #define MENU_IDX_CW_GROUP    4U   /* CW root group   */
-#define MENU_IDX_CWDEC      31U   /* CW → CW Decode  */
+#define MENU_IDX_CWDEC      33U   /* CW → CW Decode  */
 
 /* Exported types ------------------------------------------------------------*/
 
@@ -146,6 +146,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t att, uint8_t band, uint8_t mode,
                        uint8_t usb_mode, uint8_t zoom,
                        bool ext_alc, uint8_t rf_power_pct, uint8_t pa_watts,
+                       bool ext_pa, uint8_t ext_pa_delay_ms, uint8_t ext_pa_max_drive,
                        uint16_t tx_audio_low_hz, uint16_t tx_audio_high_hz,
                        int16_t rx_shift_hz,
                        bool notch_on, int16_t notch_hz,
@@ -161,6 +162,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t nb_level,
                        uint8_t nr_level,
                        uint8_t bc_mode,
+                       uint8_t marker_track,
                        MenuApplyFn apply_cb);
 
 /**
@@ -173,6 +175,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *att, uint8_t *band, uint8_t *mode,
                      uint8_t *usb_mode, uint8_t *zoom,
                      bool *ext_alc, uint8_t *rf_power,
+                     bool *ext_pa, uint8_t *ext_pa_delay_ms, uint8_t *ext_pa_max_drive,
                      uint16_t *tx_audio_low_hz, uint16_t *tx_audio_high_hz,
                      int16_t *rx_shift_hz,
                      bool *notch_on, int16_t *notch_hz,
@@ -187,7 +190,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *tx_src,
                      uint8_t *nb_level,
                      uint8_t *nr_level,
-                     uint8_t *bc_mode);
+                     uint8_t *bc_mode,
+                     uint8_t *marker_track);
 
 #ifdef __cplusplus
 }

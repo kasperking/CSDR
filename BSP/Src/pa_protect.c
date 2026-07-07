@@ -206,9 +206,9 @@ void PA_Protect_OnTxStop(void)
         s_drive_pct     = 100U;
         s_state         = PA_STATE_NORMAL;
     }
-    /* TRIP / COOLDOWN: OnTxStop is called by the guard path in csdr_apply_tx()
-     * when a TX attempt is rejected.  No state change here — cooldown timer
-     * and sensor values govern recovery. */
+    /* TRIP / COOLDOWN: no state change here — cooldown timer and sensor
+     * values govern recovery.  (Called only on a real TX→RX transition;
+     * mid-TX gain reapplies no longer reach OnTxStart/Stop.) */
 }
 
 void PA_Protect_ManualReset(void)
@@ -323,6 +323,14 @@ void PA_Protect_Update(void)
                 float abs_err = (err < 0.0f) ? -err : err;
                 if (abs_err > PWR_ALC_DEADBAND) {
                     float step = err * PWR_ALC_GAIN;
+                    /* External-ALC precedence: while the external amp commands
+                     * a drive cut (s_alc_drive_pct < 100), low forward power is
+                     * intentional — boosting to "correct" it would fight the
+                     * amp's ALC (raising the effective drive floor from 30 % to
+                     * 30 %×150 % = 45 %).  Upward steps are blocked, the
+                     * corrector holds; downward steps stay allowed since both
+                     * loops then agree on reducing drive. */
+                    if (s_alc_drive_pct < 100U && step > 0.0f) step = 0.0f;
                     if (step >  PWR_ALC_STEP_MAX_PCT) step =  PWR_ALC_STEP_MAX_PCT;
                     if (step < -PWR_ALC_STEP_MAX_PCT) step = -PWR_ALC_STEP_MAX_PCT;
                     float new_corr = s_pwr_corr_pct + step;

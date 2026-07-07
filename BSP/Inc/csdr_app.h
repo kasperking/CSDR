@@ -97,6 +97,10 @@ typedef struct {
   uint32_t    bw_hz;       /*!< SH high-cut edge in Hz (= DSP LPF cutoff)        */
   uint32_t    sl_hz;       /*!< SL low-cut edge in Hz (= DSP IF shift magnitude)  */
   int16_t     if_shift_hz;
+  /* Spectrum marker (Track mode): freq_hz stays the listening frequency;
+   * LO center = freq_hz - marker_offset_hz.  Fix mode keeps offset at 0. */
+  bool        marker_track;      /*!< false = Fix (marker at center), true = Track  */
+  int32_t     marker_offset_hz;  /*!< demod offset from LO center; not persisted    */
   uint8_t     display_dirty;
   uint8_t     usb_mode;
   bool        usb_iq_stream;  /*!< true = raw IQ to USB audio; false = demodulated audio */
@@ -129,6 +133,10 @@ typedef struct {
   bool        rf_agc_on;     /*!< Automatic PE4302 RF attenuator control (overload prevention) */
   /* External PA ALC feedback (PC1 / ADC2_INP11) */
   bool        ext_alc_on;   /*!< Enable external ALC drive reduction from PA feedback voltage  */
+  /* External PA (keyed from T_R_SW via optocoupler) */
+  bool        ext_pa_on;        /*!< Ext PA fitted: arms TX keying gate + drive cap            */
+  uint8_t     ext_pa_delay_ms;  /*!< RF hold-off after T/R asserts, 0-50 ms (amp relay settle) */
+  uint8_t     ext_pa_max_drive; /*!< tx_power cap % while ext_pa_on (amp input protection), 5-100 */
   /* TX audio passband */
   uint16_t    tx_audio_low_hz;   /*!< TX Low-cut (HPF) Hz: 100-500  */
   uint16_t    tx_audio_high_hz;  /*!< TX High-cut (LPF) Hz: 2200-3500 */

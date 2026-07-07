@@ -119,7 +119,7 @@ typedef struct {
  * Layout: 4-byte fields first, 2-byte next, 1-byte/bool last.  crc32 covers
  * all bytes except itself (last 4) — including any implicit padding, which is
  * always zero because csdr_save_settings() memsets the struct before filling.
- * Struct size = 152 B (1-byte group ends at offset 146 → pad to crc32 @ 148).
+ * Struct size = 152 B (1-byte group ends at offset 147 → pad to crc32 @ 148).
  * Changing field order/offsets breaks backward compat (CRC mismatch →
  * defaults loaded); new 1-byte fields may consume the padding before crc32
  * without breaking old blobs (they read back 0 → loader must map 0 to the
@@ -184,8 +184,16 @@ typedef struct {
   uint8_t    usb_mode;     /*!< 0=Off 1=CAT 2=Audio                 */
   bool       usb_iq_stream;/*!< true=raw IQ false=demodulated audio  */
 
-  /* ── SI5351 per-band calibration (future) ───────────────────── */
-  uint8_t    si5351_cal[32];
+  /* ── SI5351 per-band calibration (future) — tail carved for Ext PA
+   *    (array was [32], never written → old blobs read 0 in the new
+   *    fields; offsets of everything after are unchanged) ─────────── */
+  uint8_t    si5351_cal[29];
+  uint8_t    ext_pa_on;          /* External PA fitted: 0=off 1=on;
+                                    0 also = pre-ext-pa blob padding      */
+  uint8_t    ext_pa_delay_p1;    /* TX keying delay, stored ms+1: 1..51 =
+                                    0..50 ms; 0 = old blob → default 25   */
+  uint8_t    ext_pa_drv;         /* Drive cap % while ext_pa_on: 5..100;
+                                    0 = old blob → default 50             */
 
   /* ── TX audio passband + notch + extended flags (carved from reserved) ── */
   uint16_t   tx_audio_low_hz;    /* TX Low-cut HPF Hz: 100-500; 0=default(200)   */
@@ -213,6 +221,8 @@ typedef struct {
   uint8_t    bc_mode;            /* Beat canceller: 0=off 1/2=on         */
   uint8_t    pwr_scale;          /* Tandem-match FWD power cal 50..200 %;
                                     0 = pre-pwr_scale blob → default 100 */
+  uint8_t    marker_track;       /* Spectrum marker: 0=Fix (default), 1=Track;
+                                    0 also = pre-marker blob padding      */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;

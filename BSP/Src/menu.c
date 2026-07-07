@@ -38,11 +38,12 @@ static int32_t _sidetone_val, _bkin_val, _bkdelay_val, _cwrev_val, _cwfilter_val
 static int32_t _vol_val, _mic_val, _digi_val;
 
 /* Tuning group */
-static int32_t _step_val, _band_val, _mode_val;
+static int32_t _step_val, _band_val, _mode_val, _marker_val;
 
 /* TX group */
 static int32_t _rfpwr_val, _alc_val, _tx_low_val, _tx_high_val;
 static int32_t _vox_val, _voxgain_val, _voxdelay_val;
+static int32_t _extpa_val, _extpadly_val, _extpadrv_val;
 
 /* System group */
 static int32_t _bl_val, _usb_val, _iq_stream_val, _tx_src_val;
@@ -65,6 +66,7 @@ static const char *usb_strs[]       = { "Off","On" };
 static const char *iq_stream_strs[] = { "IQ","Demod" };
 static const char *tx_src_strs[]    = { "USB","MIC" };
 static const char *zoom_strs[] = { "+/-24k","+/-12k","+/-6k","+/-3k" };
+static const char *marker_strs[] = { "FIX", "TRACK" };
 
 static MenuApplyFn s_apply_cb = NULL;
 
@@ -259,6 +261,7 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[23] = (MenuItem_t){ "Step",MENU_TYPE_ENUM,0,0,0,&_step_val,step_strs,6U, NULL,NULL,2 };
   m->items[24] = (MenuItem_t){ "Band",MENU_TYPE_ENUM,0,0,0,&_band_val,band_strs,11U,NULL,NULL,2 };
   m->items[25] = (MenuItem_t){ "Mode",MENU_TYPE_ENUM,0,0,0,&_mode_val,mode_strs,8U, NULL,NULL,2 };
+  m->items[54] = (MenuItem_t){ "Marker",MENU_TYPE_ENUM,0,0,0,&_marker_val,marker_strs,2U,NULL,NULL,2 };
 
   /* ── TX group (parent = 3) ──────────────────────────────── */
   m->items[26] = (MenuItem_t){ "RF Power", MENU_TYPE_INT,  5,100,5,    &_rfpwr_val,   NULL,      0U,NULL,"%", 3 };
@@ -267,7 +270,13 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[29] = (MenuItem_t){ "VOX Delay",MENU_TYPE_INT,100,2000,100, &_voxdelay_val,NULL,      0U,NULL,"ms",3 };
   m->items[30] = (MenuItem_t){ "TX Low",   MENU_TYPE_INT, 100,500,50,  &_tx_low_val,  NULL,      0U,NULL,"Hz",3 };
   m->items[31] = (MenuItem_t){ "TX High",  MENU_TYPE_INT,2200,3500,100,&_tx_high_val, NULL,      0U,NULL,"Hz",3 };
-  m->items[32] = (MenuItem_t){ "Ext ALC",  MENU_TYPE_ENUM, 0,0,0,      &_alc_val,     onoff_strs,2U,NULL,NULL,3 };
+  /* Ext-PA block: toggle + its two sub-settings + the amp's ALC input.
+   * Slots 55-57 keep old indices stable; view order within the TX group is
+   * ascending slot, so these render right after TX High. */
+  m->items[32] = (MenuItem_t){ "Ext PA",    MENU_TYPE_ENUM, 0,0,0,     &_extpa_val,   onoff_strs,2U,NULL,NULL,3 };
+  m->items[55] = (MenuItem_t){ "PA Key Dly",MENU_TYPE_INT,  0,50,5,    &_extpadly_val,NULL,      0U,NULL,"ms",3 };
+  m->items[56] = (MenuItem_t){ "PA Drv Max",MENU_TYPE_INT,  5,100,5,   &_extpadrv_val,NULL,      0U,NULL,"%", 3 };
+  m->items[57] = (MenuItem_t){ "Ext ALC",   MENU_TYPE_ENUM, 0,0,0,     &_alc_val,     onoff_strs,2U,NULL,NULL,3 };
 
   /* ── CW group (parent = 4) ──────────────────────────────── */
   m->items[33] = (MenuItem_t){ "CW Decode",MENU_TYPE_ENUM, 0,0,0,    &_cwdec_val,    onoff_strs,2U, NULL,NULL,4 };
@@ -525,6 +534,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t att, uint8_t band, uint8_t mode,
                        uint8_t usb_mode, uint8_t zoom,
                        bool ext_alc, uint8_t rf_power_pct, uint8_t pa_watts,
+                       bool ext_pa, uint8_t ext_pa_delay_ms, uint8_t ext_pa_max_drive,
                        uint16_t tx_audio_low_hz, uint16_t tx_audio_high_hz,
                        int16_t rx_shift_hz,
                        bool notch_on, int16_t notch_hz,
@@ -540,6 +550,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t nb_level,
                        uint8_t nr_level,
                        uint8_t bc_mode,
+                       uint8_t marker_track,
                        MenuApplyFn apply_cb)
 {
   /* USER CODE BEGIN Menu_LoadFromSDR_0 */
@@ -568,7 +579,12 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _iq_stream_val = usb_iq_stream ? 0 : 1;
   _tx_src_val    = (int32_t)(tx_src & 1U);
   _zoom_val      = (int32_t)zoom;
+  _marker_val    = (marker_track != 0U) ? 1 : 0;
   _alc_val  = ext_alc ? 1 : 0;
+  _extpa_val    = ext_pa ? 1 : 0;
+  _extpadly_val = (ext_pa_delay_ms <= 50U) ? (int32_t)ext_pa_delay_ms : 25;
+  _extpadrv_val = (ext_pa_max_drive >= 5U && ext_pa_max_drive <= 100U)
+                  ? (int32_t)ext_pa_max_drive : 50;
 
   _tx_low_val  = (tx_audio_low_hz  >= 100U && tx_audio_low_hz  <= 500U)  ? (int32_t)tx_audio_low_hz  : 200;
   _tx_high_val = (tx_audio_high_hz >= 2200U && tx_audio_high_hz <= 3500U) ? (int32_t)tx_audio_high_hz : 2800;
@@ -620,6 +636,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *att, uint8_t *band, uint8_t *mode,
                      uint8_t *usb_mode, uint8_t *zoom,
                      bool *ext_alc, uint8_t *rf_power,
+                     bool *ext_pa, uint8_t *ext_pa_delay_ms, uint8_t *ext_pa_max_drive,
                      uint16_t *tx_audio_low_hz, uint16_t *tx_audio_high_hz,
                      int16_t *rx_shift_hz,
                      bool *notch_on, int16_t *notch_hz,
@@ -634,7 +651,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *tx_src,
                      uint8_t *nb_level,
                      uint8_t *nr_level,
-                     uint8_t *bc_mode)
+                     uint8_t *bc_mode,
+                     uint8_t *marker_track)
 {
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
@@ -664,6 +682,9 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *usb_mode  = (uint8_t)_usb_val;
   *zoom      = (uint8_t)(_zoom_val >= 0 && _zoom_val < 4 ? _zoom_val : 0);
   *ext_alc   = (_alc_val != 0);
+  *ext_pa           = (_extpa_val != 0);
+  *ext_pa_delay_ms  = (uint8_t)(_extpadly_val >= 0 && _extpadly_val <= 50 ? _extpadly_val : 25);
+  *ext_pa_max_drive = (uint8_t)(_extpadrv_val >= 5 && _extpadrv_val <= 100 ? _extpadrv_val : 50);
   if (s_pa_watts > 0U) {
     int32_t w = (_rfpwr_val >= 1) ? _rfpwr_val : 1;
     uint32_t pct = (uint32_t)w * 100U / s_pa_watts;
@@ -687,6 +708,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *cw_filter_hz     = (uint16_t)(_cwfilter_val  >= 50  && _cwfilter_val <= 500  ? _cwfilter_val : 500);
   *usb_iq_stream    = (_iq_stream_val == 0);
   *tx_src           = (uint8_t)(_tx_src_val != 0 ? 1U : 0U);
+  *marker_track     = (uint8_t)(_marker_val != 0 ? 1U : 0U);
   /* USER CODE END Menu_SaveToSDR_0 */
 }
 

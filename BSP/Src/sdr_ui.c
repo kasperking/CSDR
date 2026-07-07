@@ -164,6 +164,7 @@ static int16_t  s_rssi_db            = -200;
 /* Spectrum delta-skip: previous column pixel rows */
 static uint16_t s_spec_py_prev[SPEC_W];
 static bool     s_spec_py_valid = false;
+static int32_t  s_spec_marker_hz = 0;   /* Track-mode demod offset from center, Hz */
 
 static uint32_t s_spec_skip_hits    = 0U;
 static uint32_t s_spec_draw_hits    = 0U;
@@ -2519,6 +2520,18 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
    * when zooming in even though the displayed span narrows. */
   float zoom_corr = (s_spec_sr > 0U) ? ((float)s_spec_orig_sr / (float)s_spec_sr) : 1.0f;
 
+  /* Track-mode marker: shift the carrier column off center.  Same Hz→px
+   * mapping as the bw ratios below (vs ADC rate, zoom-corrected). */
+  if (s_spec_marker_hz != 0 && s_spec_orig_sr > 0U) {
+    float mpx_f = (float)s_spec_marker_hz / (float)s_spec_orig_sr
+                * (float)SPEC_W * cscale * zoom_corr;
+    int32_t mpx = (int32_t)(SPEC_W / 2U)
+                + (int32_t)(mpx_f >= 0.0f ? mpx_f + 0.5f : mpx_f - 0.5f);
+    if (mpx < 1) mpx = 1;
+    if (mpx > (int32_t)(SPEC_W - 2U)) mpx = (int32_t)(SPEC_W - 2U);
+    cx = (uint16_t)mpx;
+  }
+
   bool bw_lo_ok = (bw_lo_ratio > 0.0001f), bw_hi_ok = (bw_hi_ratio > 0.0001f);
   uint16_t bw_lo = 0U, bw_hi = 0U;
   if (bw_lo_ok) {
@@ -2746,6 +2759,15 @@ void SDR_UI_SetFooterFreq(uint32_t freq_hz, uint32_t step_hz)
   s_footer_freq_hz = freq_hz;
   s_footer_step_hz = step_hz;
   draw_footer_rows(spec_half_span_hz());
+}
+
+void SDR_UI_SetSpecMarker(int32_t offset_hz)
+{
+  if (offset_hz == s_spec_marker_hz) return;
+  s_spec_marker_hz = offset_hz;
+  /* Force a full spectrum redraw so the marker column moves even when the
+   * spectrum content itself is below the delta-skip threshold. */
+  s_spec_py_valid = false;
 }
 
 /* ── Spectrum skip statistics ─────────────────────────────────────────────── */

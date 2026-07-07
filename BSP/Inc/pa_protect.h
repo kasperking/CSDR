@@ -26,13 +26,17 @@
   *      target_mw = pa_watts × tx_power%   (same watt figure as RF Power menu)
   *      peak-hold envelope (fast-attack/slow-release) of g_analog.fwd_power_mw
   *      → slow proportional corrector (±1 %-pt / 20 ms tick, clamped 50..150%)
-  *      → PA_Protect_GetPowerALCDrive() multiplier (independent of stepped
-  *        foldback and external ALC)
+  *      → PA_Protect_GetPowerALCDrive() multiplier (multiplied independently
+  *        of stepped foldback and external ALC in csdr_apply_tx)
   *      Compensates band-to-band PA gain variation and supply-voltage sag so
   *      the configured watt figure is what actually leaves the antenna jack.
   *      Resets to 100% at the start of every transmission; holds (does not
   *      drift) during SSB syllable gaps; no separate enable flag — runs
   *      whenever pa_watts > 0 since it reuses the existing SWR sensor.
+  *      External-ALC precedence: while the external ALC is cutting drive
+  *      (GetALCDrive() < 100) the corrector may hold or step down but never
+  *      boost — low forward power is then intentional, and compensating it
+  *      would fight the external amplifier's ALC loop.
   *
   *  This module owns the protection decision only.
   *  It does NOT touch hardware directly — it sets flags consumed by csdr_apply_tx().
