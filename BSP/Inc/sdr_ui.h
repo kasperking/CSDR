@@ -474,7 +474,10 @@ void SDR_UI_DrawMeter(const SDR_UI_State_t *ui);
 void SDR_UI_DrawTopBar(const SDR_UI_State_t *ui);
 void SDR_UI_DrawStatusPanel(const SDR_UI_State_t *ui);
 
-/* Spectrum: full redraw, single FMC burst */
+/* Spectrum: full redraw, single FMC burst.
+ * bw_lo_ratio / bw_hi_ratio: signed passband extents (fraction of ADC rate)
+ * left/right of the carrier column; negative = edge on the opposite side
+ * (CW passes an offset span at pitch ± bw/2). */
 void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
                          float bw_lo_ratio, float bw_hi_ratio,
                          SDR_UI_State_t *ui);

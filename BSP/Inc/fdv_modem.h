@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    fdv_modem.h
-  * @brief   FreeDV narrowband OFDM modem — Phase 3 TX
+  * @brief   FreeDV narrowband OFDM modem — TX + RX with frame acquisition
   *
   *  16-carrier DQPSK OFDM at 8 kHz sample rate.
   *
@@ -124,6 +124,49 @@ void FdvModem_RxInit(FdvModemRx_t *rx);
  *  Caller must clear frame_ready after consuming the bits.
  */
 void FdvModem_RxPush(FdvModemRx_t *rx, float s);
+
+/* ── Frame acquisition ──────────────────────────────────────────────────
+ *
+ *  A lone FdvModemRx_t only decodes correctly if its internal super-frame
+ *  boundary (samp_cnt == 0) already coincides with the incoming signal's —
+ *  true only by coincidence, since TX and RX are independent radios keyed
+ *  at arbitrary times with no shared time reference. There is no pilot
+ *  search: a misaligned single instance will integrate across two
+ *  different symbols and its sync word will (almost) never verify.
+ *
+ *  FdvModemBank_t runs FDV_SYNC_HYPS demodulator instances in parallel,
+ *  each started at a different phase within one super-frame period
+ *  (FDV_HYP_SPACING samples apart), so their frame boundaries are
+ *  staggered across the full ambiguity window. Whichever hypothesis's
+ *  boundary lands close enough to the true one will decode a valid sync
+ *  word every super-frame; the caller (freedv_mode.c) picks that one and
+ *  ignores the rest. No state reset is needed to "re-acquire" — every
+ *  hypothesis keeps free-running, so if the signal reappears at a new
+ *  offset (e.g. a fresh PTT), whichever hypothesis is now closest simply
+ *  starts verifying again on its own.
+ *
+ *  RAM cost: FDV_SYNC_HYPS × sizeof(FdvModemRx_t) ≈ FDV_SYNC_HYPS × 530 B.
+ * ────────────────────────────────────────────────────────────────────── */
+#define FDV_SYNC_HYPS    8U
+#define FDV_HYP_SPACING  (FDV_FRAME_SAMPS / FDV_SYNC_HYPS)  /*!< 40 samples */
+
+typedef struct {
+    FdvModemRx_t hyp[FDV_SYNC_HYPS];
+} FdvModemBank_t;
+
+/**
+ * @brief  Initialise all hypotheses, staggering their starting phase.
+ */
+void FdvModemBank_Init(FdvModemBank_t *bank);
+
+/**
+ * @brief  Push one 8 kHz sample into every hypothesis in the bank.
+ * @return Bitmask (bit h set for hypothesis h) of hypotheses whose
+ *         rx_bits[] holds a freshly decoded 64-bit frame this call.
+ *         0 if none completed a super-frame this sample. Each set
+ *         hypothesis's frame_ready is cleared automatically.
+ */
+uint16_t FdvModemBank_Push(FdvModemBank_t *bank, float s);
 
 #ifdef __cplusplus
 }

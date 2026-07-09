@@ -5,18 +5,26 @@
   *
   *  Architecture:
   *   TX: USB audio 48 kHz  →  6:1 polyphase downsample  →  8 kHz PCM
-  *       →  LPC-10 encode (LPC_Encode)                          [Phase 2]
-  *       →  quantize LPC params to 64 bits (LPC_Quantize)       [Phase 3]
-  *       →  OFDM DQPSK modulate (FdvModem_EncodeSuperFrame)     [Phase 3]
+  *       →  LPC-10 encode (LPC_Encode)
+  *       →  quantize LPC params to 64 bits (LPC_Quantize)
+  *       →  OFDM DQPSK modulate (FdvModem_EncodeSuperFrame)
   *       →  NBUSB SSB modulate at 8 kHz BW  →  48 kHz IQ for RF
   *
   *   RX: 48 kHz IQ  →  SSB demod  →  8 kHz audio
+  *       →  1:6 polyphase downsample
+  *       →  parallel-hypothesis OFDM demod bank, FdvModemBank_Push
+  *          (frame/timing acquisition — see fdv_modem.h; TX and RX are
+  *          independent radios with no shared time reference, so a single
+  *          free-running demodulator cannot assume its symbol boundary
+  *          matches the incoming signal's)
+  *       →  sync-verified hypothesis → LPC_Dequantize + LPC_Decode
   *       →  1:6 polyphase upsample  →  48 kHz audio out
-  *       (OFDM demodulate + LPC_Dequantize planned for Phase 4)
   *
-  *  Phase 1: resampler + NBUSB SSB — PCM pass-through vocoder stub.
-  *  Phase 2: LPC-10 vocoder encode/decode loopback on TX path.
-  *  Phase 3: LPC → quantize → OFDM DQPSK TX; RX stub (USB SSB demod).
+  *  NOTE: this is a self-contained, homebrew narrowband digital voice
+  *  protocol (custom LPC-10 vocoder + custom 16-carrier DQPSK OFDM), not
+  *  the standard Codec2-based FreeDV protocol — it only interoperates
+  *  between two radios running this firmware, not with FreeDV desktop
+  *  software or other radios.
   *
   *  Sample rates used in this module:
   *    FDVR_FS_HIGH  48000   (system rate, SAI DMA, USB audio)
@@ -128,20 +136,23 @@ typedef struct {
     uint32_t      tx_frames;       /*!< LPC/OFDM super-frames since mode entry */
 
     /* ── RX pipeline ────────────────────────────────────────────────────────
-     *  48 kHz IQ → USB demod → 48→8 kHz decimate (rx_dec) → OFDM demod
-     *  → LPC_Dequantize + LPC_Decode → rx_pcm8_buf → 8→48 kHz interpolate
+     *  48 kHz IQ → USB demod → 48→8 kHz decimate (rx_dec) → parallel-
+     *  hypothesis OFDM demod bank (frame acquisition, see fdv_modem.h) →
+     *  LPC_Dequantize + LPC_Decode → rx_pcm8_buf → 8→48 kHz interpolate
      *  (interp) → rx_out_buf → audio out.
      * ───────────────────────────────────────────────────────────────────── */
-    Resampler6_t  rx_dec;                       /*!< 48→8 kHz decimator (RX)      */
-    FdvIIR_t      rx_dc8;                       /*!< DC block at 8 kHz (RX)       */
-    FdvModemRx_t  rx_demod;                     /*!< OFDM DQPSK demodulator       */
-    LPC_Voc_t     rx_voc;                       /*!< LPC synthesis vocoder        */
-    float         rx_pcm8_buf[LPC_FRAME_SAMPS]; /*!< Decoded 8 kHz PCM output     */
-    uint16_t      rx_pcm8_rd;                   /*!< Read index into rx_pcm8_buf  */
-    uint16_t      rx_pcm8_wr;                   /*!< Valid samples in buffer      */
-    float         rx_out_buf[FDVR_PHASES];      /*!< Polyphase-interpolated output */
-    uint8_t       rx_out_idx;                   /*!< Read index into rx_out_buf   */
-    uint32_t      rx_frames;                    /*!< Decoded LPC frames (RX)      */
+    Resampler6_t    rx_dec;                       /*!< 48→8 kHz decimator (RX)      */
+    FdvIIR_t        rx_dc8;                       /*!< DC block at 8 kHz (RX)       */
+    FdvModemBank_t  rx_bank;                      /*!< Staggered-phase OFDM demod bank (acquisition) */
+    LPC_Voc_t       rx_voc;                       /*!< LPC synthesis vocoder        */
+    float           rx_pcm8_buf[LPC_FRAME_SAMPS]; /*!< Decoded 8 kHz PCM output     */
+    uint16_t        rx_pcm8_rd;                   /*!< Read index into rx_pcm8_buf  */
+    uint16_t        rx_pcm8_wr;                   /*!< Valid samples in buffer      */
+    float           rx_out_buf[FDVR_PHASES];      /*!< Polyphase-interpolated output */
+    uint8_t         rx_out_idx;                   /*!< Read index into rx_out_buf   */
+    uint32_t        rx_frames;                    /*!< Decoded LPC frames (RX)      */
+    bool            rx_locked;                    /*!< True once a hypothesis has verified sync at least once */
+    uint8_t         rx_lock_hyp;                  /*!< Index of the hypothesis that produced the last valid frame */
 } FreeDV_State_t;
 
 /* ── API ─────────────────────────────────────────────────── */

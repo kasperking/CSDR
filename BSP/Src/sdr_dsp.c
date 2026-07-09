@@ -10,7 +10,7 @@
   *   - IIR   : DC blocker  H(z)=(1-z^-1)/(1-0.995*z^-1)
   *   - AGC   : Peak-hold + hang AGC, 1ms attack, 0.2ms env smoother; SLOW/FAST/AUTO (adaptive); mode presets: SSB 300ms–1s, CW 150ms–400ms, AM 800ms–2s; FM/DIGI bypass
   *   - FFT   : Radix-2 DIT, N=512, Hann window
-  *   - DEMOD : AM, FM (atan2 differentiator), USB, LSB, CW (BFO 700Hz)
+  *   - DEMOD : AM, FM (atan2 differentiator), USB, LSB, CW (pitch-centred passband, product detector)
   *
   *  RX pipeline per sample:
   *   pre-DC → NCO mix (LO offset) → post-DC → FFT feed → NCO mix (IF shift) → FIR LPF → [S-meter] → Demod → audio LPF → AGC → out
@@ -295,6 +295,55 @@ void Notch_Init(IIR_Biquad_t *f, float fc_hz, uint32_t sample_rate)
   f->b0 = 1.0f;  f->b1 = -2.0f * c;  f->b2 = 1.0f;
   f->a1 = -2.0f * r * c;              f->a2 = r * r;
   f->x1 = f->x2 = f->y1 = f->y2 = 0.0f;
+}
+
+/* RBJ audio-EQ-cookbook low/high shelf, shelf slope S=1 (max slope, no
+ * passband ripple). gain_db=0 collapses to an exact unity pass-through. */
+static void Shelf_Init(IIR_Biquad_t *f, float fc_hz, float gain_db,
+                        uint32_t sample_rate, bool high_shelf)
+{
+  float A      = powf(10.0f, gain_db / 40.0f);
+  float w0     = 2.0f * 3.14159265f * fc_hz / (float)sample_rate;
+  float cosw0  = cosf(w0);
+  float alpha  = sinf(w0) * 0.70710678f;   /* sin(w0)/2 * sqrt(2), S=1 */
+  float twoSqrtAalpha = 2.0f * sqrtf(A) * alpha;
+  float b0, b1, b2, a0, a1, a2;
+
+  if (high_shelf) {
+    b0 =      A * ((A + 1.0f) + (A - 1.0f) * cosw0 + twoSqrtAalpha);
+    b1 = -2.0f * A * ((A - 1.0f) + (A + 1.0f) * cosw0);
+    b2 =      A * ((A + 1.0f) + (A - 1.0f) * cosw0 - twoSqrtAalpha);
+    a0 =           (A + 1.0f) - (A - 1.0f) * cosw0 + twoSqrtAalpha;
+    a1 =    2.0f * ((A - 1.0f) - (A + 1.0f) * cosw0);
+    a2 =           (A + 1.0f) - (A - 1.0f) * cosw0 - twoSqrtAalpha;
+  } else {
+    b0 =      A * ((A + 1.0f) - (A - 1.0f) * cosw0 + twoSqrtAalpha);
+    b1 =  2.0f * A * ((A - 1.0f) - (A + 1.0f) * cosw0);
+    b2 =      A * ((A + 1.0f) - (A - 1.0f) * cosw0 - twoSqrtAalpha);
+    a0 =           (A + 1.0f) + (A - 1.0f) * cosw0 + twoSqrtAalpha;
+    a1 =   -2.0f * ((A - 1.0f) + (A + 1.0f) * cosw0);
+    a2 =           (A + 1.0f) + (A - 1.0f) * cosw0 - twoSqrtAalpha;
+  }
+
+  f->b0 = b0 / a0; f->b1 = b1 / a0; f->b2 = b2 / a0;
+  f->a1 = a1 / a0; f->a2 = a2 / a0;
+  f->x1 = f->x2 = f->y1 = f->y2 = 0.0f;
+}
+
+/* Bass corner ~300 Hz (below voice fundamentals), treble corner ~2.5 kHz
+ * (presence/consonant range) — typical comms-radio tone-control points. */
+#define DSP_BASS_SHELF_HZ    300.0f
+#define DSP_TREBLE_SHELF_HZ 2500.0f
+
+void DSP_SetTone(DSP_State_t *dsp, int8_t bass_db, int8_t treble_db)
+{
+  if (bass_db   < -10) bass_db   = -10;
+  if (bass_db   >  10) bass_db   =  10;
+  if (treble_db < -10) treble_db = -10;
+  if (treble_db >  10) treble_db =  10;
+  uint32_t sr = dsp->sample_rate ? dsp->sample_rate : 48000U;
+  Shelf_Init(&dsp->bass_shelf,   DSP_BASS_SHELF_HZ,   (float)bass_db,   sr, false);
+  Shelf_Init(&dsp->treble_shelf, DSP_TREBLE_SHELF_HZ, (float)treble_db, sr, true);
 }
 
 /* ============================================================
@@ -684,19 +733,6 @@ float Demod_FM(FM_Demod_t *fm, float i, float q)
 float Demod_USB(float i, float hq) { return (i - hq) * 0.5f; }
 float Demod_LSB(float i, float hq) { return (i + hq) * 0.5f; }
 
-float Demod_CW(float i, float q, uint32_t *phase_acc, uint32_t phase_inc, bool reverse)
-{
-  /* USER CODE BEGIN Demod_CW_0 */
-  /* reverse: negate Q to mirror spectrum (sideband selection hook) */
-  if (reverse) q = -q;
-  float amp = Demod_AM(i, q);
-  *phase_acc += phase_inc;
-  uint32_t idx = *phase_acc >> (32U - NCO_LUT_BITS);
-  float bfo = s_nco_sin_lut[(idx + (NCO_LUT_SIZE / 4U)) & NCO_LUT_MASK];
-  return amp * bfo;
-  /* USER CODE END Demod_CW_0 */
-}
-
 /* ============================================================
  *  DSP Engine – init / config
  * ============================================================ */
@@ -745,6 +781,10 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
 
   NCO_SetFrequency(&dsp->nco,    0, sample_rate);
   NCO_SetFrequency(&dsp->nco_if, 0, sample_rate);
+  /* CW post-FIR re-centre shift: +pitch (CW-N).  Kept in sync by
+   * DSP_SetCWPitch / DSP_SetCWReverse; memset above cleared cw_reverse. */
+  dsp->cw_pitch_hz = 700U;
+  NCO_SetFrequency(&dsp->nco_cw_shift, 700, sample_rate);
 
   float bw = 6000.0f / (float)sample_rate;
   FIR_Init_LPF(&dsp->fir_i,     bw, FIR_MAX_TAPS);
@@ -817,10 +857,6 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->tx.comp_attack = expf(-1.0f / (0.001f * (float)sample_rate)); /* 1 ms  */
   dsp->tx.comp_decay  = expf(-1.0f / (0.050f * (float)sample_rate)); /* 50 ms */
 
-  /* CW BFO phase increment: 700 Hz, sample-rate-derived */
-  dsp->cw_bfo_inc  = (uint32_t)((int64_t)700 * (int64_t)4294967296LL / (int64_t)sample_rate);
-  dsp->cw_phase_acc = 0U;
-
   CWEnv_Init(&dsp->cw_env, sample_rate);
 
   dsp->signal_power_db      = -120.0f;
@@ -829,6 +865,7 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->notch_on = false;
   dsp->notch_hz = 1000.0f;
   Notch_Init(&dsp->notch, 1000.0f, sample_rate);
+  DSP_SetTone(dsp, 0, 0);   /* flat by default */
   dsp->rx_volume_scale = 1.0f;
   /* USER CODE END DSP_Init_0 */
 }
@@ -895,7 +932,9 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
    * this function; that is the sole place that updates dsp->bw_hz. */
   if (dsp->bw_hz <= 0.0f) dsp->bw_hz = mode_bw_hz;
 
-  float bw_norm = dsp->bw_hz / (float)sample_rate;
+  /* Same CW half-width rule as DSP_SetBW (bw_hz = full width around pitch) */
+  float cutoff  = (mode == MODE_CW) ? (dsp->bw_hz * 0.5f) : dsp->bw_hz;
+  float bw_norm = cutoff / (float)sample_rate;
   FIR_Init_LPF(&dsp->fir_i, bw_norm, FIR_MAX_TAPS);
   FIR_Init_LPF(&dsp->fir_q, bw_norm, FIR_MAX_TAPS);
 
@@ -918,10 +957,13 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   memset(dsp->fir_audio.buf, 0, sizeof(dsp->fir_audio.buf));
   dsp->fir_audio.idx = 0U;
 
-  /* Per-mode audio LPF cutoff: CW uses narrow 1 kHz to reject harmonics and
-   * interference above the 700 Hz BFO tone; all other modes use 4 kHz. */
+  /* Per-mode audio LPF cutoff: CW audio now sits at pitch ± bw/2 (up to
+   * 900 + 250 = 1150 Hz), so use 1.5 kHz — selectivity is provided by the
+   * pitch-centred IF LPF, this only trims wideband noise.  Fixed (not
+   * pitch-coupled) so pitch changes never re-init/flush this FIR mid-RX.
+   * All other modes use 4 kHz. */
   {
-    float audio_lp_hz = (mode == MODE_CW) ? 1000.0f : 4000.0f;
+    float audio_lp_hz = (mode == MODE_CW) ? 1500.0f : 4000.0f;
     FIR_Init_LPF(&dsp->fir_audio, audio_lp_hz / (float)sample_rate, 32U);
   }
 
@@ -943,14 +985,14 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
   dsp->agc.prev_level = 0.0f;
   dsp->agc.drate      = 0.0f;
 
-  /* CW BFO increment: recompute from stored TX bfo_inc (same pitch, keyed to sample rate).
-   * Caller must call DSP_SetCWPitch after DSP_SetMode if pitch differs from 700 Hz. */
-  dsp->cw_bfo_inc    = dsp->tx.cw_bfo_inc;  /* inherit TX pitch → RX BFO matches sidetone */
-
-  /* Reset CW keying envelope so the decoder starts fresh after a mode change */
+  /* Reset CW keying envelope so the decoder starts fresh after a mode change.
+   * floor_sq restarts HIGH and settles down (20 ms fall) so keyed stays 0
+   * while it converges — silent entry instead of a garbage burst. */
   dsp->cw_env.env_sq   = 0.0f;
-  dsp->cw_env.floor_sq = 1e-8f;
+  dsp->cw_env.floor_sq = 1.0f;
   dsp->cw_env.keyed    = 0U;
+  dsp->cw_env.dbn_ctr  = 0U;
+  dsp->cw_env.edge_rd  = dsp->cw_env.edge_wr;  /* drop queued edges */
   /* USER CODE END DSP_SetMode_0 */
 }
 
@@ -960,7 +1002,12 @@ void DSP_SetBW(DSP_State_t *dsp, float bw_hz)
   if (bw_hz > 24000.0f) bw_hz = 24000.0f;
   uint32_t sr = dsp->sample_rate ? dsp->sample_rate : 48000U;
   dsp->bw_hz = bw_hz;
-  float bw_norm = bw_hz / (float)sr;
+  /* CW: bw_hz is the full passband width centred on the tuned signal (the
+   * −pitch pre-shift in eff_if puts it at 0 Hz here), so the one-sided LPF
+   * cutoff is half of it.  Other modes: sideband selection happens in the
+   * phasing demod, so the cutoff equals the full audio bandwidth. */
+  float cutoff  = (dsp->mode == MODE_CW) ? (bw_hz * 0.5f) : bw_hz;
+  float bw_norm = cutoff / (float)sr;
   FIR_Init_LPF(&dsp->fir_i, bw_norm, FIR_MAX_TAPS);
   FIR_Init_LPF(&dsp->fir_q, bw_norm, FIR_MAX_TAPS);
 }
@@ -988,20 +1035,33 @@ void DSP_SetTxPassband(DSP_State_t *dsp, float hp_hz, float lp_hz)
   FIR_Init_LPF(&dsp->tx.fir_audio, lp_hz / (float)sr, 32U);
 }
 
-/* ── CW pitch / reverse / sidetone ─────────────────────────────────────────*/
+/* ── CW pitch / reverse / sidetone ─────────────────────────────────────────
+ * Pitch drives (a) the TX carrier/sidetone NCO and (b) the RX post-FIR
+ * re-centre shift (nco_cw_shift, step 5d in DSP_Process).  The matching
+ * −pitch pre-shift lives in eff_if (csdr_apply_nco_if), so both must be
+ * updated together when pitch or reverse changes. */
+
+static void cw_program_shift_nco(DSP_State_t *dsp, uint32_t sample_rate)
+{
+  int32_t f = dsp->cw_reverse ? -(int32_t)dsp->cw_pitch_hz
+                              :  (int32_t)dsp->cw_pitch_hz;
+  NCO_SetFrequency(&dsp->nco_cw_shift, f, sample_rate);
+}
 
 void DSP_SetCWPitch(DSP_State_t *dsp, uint16_t pitch_hz, uint32_t sample_rate)
 {
   if (pitch_hz < 300U) pitch_hz = 300U;
   if (pitch_hz > 900U) pitch_hz = 900U;
   uint32_t inc = (uint32_t)((int64_t)pitch_hz * (int64_t)4294967296LL / (int64_t)sample_rate);
-  dsp->cw_bfo_inc    = inc;
   dsp->tx.cw_bfo_inc = inc;
+  dsp->cw_pitch_hz   = pitch_hz;
+  cw_program_shift_nco(dsp, sample_rate);
 }
 
 void DSP_SetCWReverse(DSP_State_t *dsp, bool reverse)
 {
   dsp->cw_reverse = reverse;
+  cw_program_shift_nco(dsp, dsp->sample_rate ? dsp->sample_rate : 48000U);
 }
 
 void DSP_SetSidetoneVol(DSP_State_t *dsp, uint8_t vol_pct)
@@ -1319,7 +1379,14 @@ void DSP_Process(DSP_State_t *dsp,
 
     /* ── 5c. CW keying envelope tap – pre-AGC, no BFO ripple, no sqrt.
      *        Asymmetric IIR on mag² + adaptive floor tracker.
-     *        Threshold: signal must be 9 dB (8×) above noise floor power.
+     *        Keying uses a hysteresis comparator (ON above 10 dB over the
+     *        floor, OFF below 6 dB) plus a 3 ms debounce so envelope ripple
+     *        near the threshold cannot spray edges.  The floor rises only
+     *        slowly (~2 s) while keyed — it must track the band noise, not
+     *        learn the signal and erode the detection margin mid-dah.
+     *        Accepted transitions are back-dated by the debounce length and
+     *        queued in cw_env's edge ring, so CWDec_Update gets exact
+     *        durations regardless of main-loop jitter.
      *        Only updated in CW mode to save cycles in other modes. */
     if (dsp->mode == MODE_CW) {
       float alpha = (mag_sq > dsp->cw_env.env_sq)
@@ -1327,28 +1394,70 @@ void DSP_Process(DSP_State_t *dsp,
       dsp->cw_env.env_sq = alpha * dsp->cw_env.env_sq
                            + (1.0f - alpha) * mag_sq;
       float fa = (dsp->cw_env.env_sq < dsp->cw_env.floor_sq)
-                 ? dsp->cw_env.alpha_nd : dsp->cw_env.alpha_nu;
+                 ? dsp->cw_env.alpha_nd
+                 : (dsp->cw_env.keyed ? dsp->cw_env.alpha_nk
+                                      : dsp->cw_env.alpha_nu);
       dsp->cw_env.floor_sq = fa * dsp->cw_env.floor_sq
                              + (1.0f - fa) * dsp->cw_env.env_sq;
-      dsp->cw_env.keyed = (dsp->cw_env.env_sq > dsp->cw_env.floor_sq * 8.0f)
-                          ? 1U : 0U;
+      dsp->cw_env.sample_clock++;
+      float thr = dsp->cw_env.keyed ? 4.0f : 10.0f;   /* 6 dB / 10 dB */
+      uint8_t raw = (dsp->cw_env.env_sq > dsp->cw_env.floor_sq * thr)
+                    ? 1U : 0U;
+      if (raw != dsp->cw_env.keyed) {
+        if (++dsp->cw_env.dbn_ctr >= dsp->cw_env.dbn_len) {
+          uint32_t t = (dsp->cw_env.sample_clock >= dsp->cw_env.dbn_len)
+                       ? dsp->cw_env.sample_clock - dsp->cw_env.dbn_len : 0U;
+          CWEnv_PushEdge(&dsp->cw_env, raw, t);
+          dsp->cw_env.dbn_ctr = 0U;
+        }
+      } else {
+        dsp->cw_env.dbn_ctr = 0U;
+      }
     }
 
-    /* ── 5c. Hilbert FIR on Q + matched I delay for USB/LSB phasing demod.
+    /* ── 5d. CW passband re-centre — eff_if carries an extra −pitch (CW-N,
+     *        +pitch for CW-R, see csdr_apply_nco_if) so the IF LPF above is
+     *        centred on the correctly-tuned signal.  Shift the filtered
+     *        baseband back by ±pitch so the product detector below yields
+     *        the sidetone pitch again: the net audio mapping (tone = offset
+     *        from dial) is identical to the unshifted chain, only the filter
+     *        window moved from [0, bw] to pitch ± bw/2.
+     *        Residual LO/DC leakage sits at −pitch here — outside the LPF
+     *        passband — and lands on 0 Hz audio after this shift, where the
+     *        post-demod DC blocker (7b) removes it: it can never appear as
+     *        a tone at the pitch frequency (the old envelope+BFO CW demod
+     *        failure mode).  Taps 5b/5c above use |·|², which is invariant
+     *        under this rotation, so they stay pre-shift. */
+    if (dsp->mode == MODE_CW) {
+      NCO_Step(&dsp->nco_cw_shift);
+      float cwr_i = filt_i * dsp->nco_cw_shift.cos_val - filt_q * dsp->nco_cw_shift.sin_val;
+      float cwr_q = filt_i * dsp->nco_cw_shift.sin_val + filt_q * dsp->nco_cw_shift.cos_val;
+      filt_i = cwr_i;
+      filt_q = cwr_q;
+    }
+
+    /* ── 5e. Hilbert FIR on Q + matched I delay for USB/LSB phasing demod.
      *
      *  Demod_USB/LSB expect H{Q} (Hilbert-transformed Q) as second argument,
      *  not raw Q.  The Hilbert FIR has group delay = HILBERT_DELAY = 31 samples;
      *  I is delayed through a ring buffer of size (HILBERT_DELAY+1) = 32 to
      *  keep I and H{Q} time-aligned.
      *
-     *  Only active in USB/LSB modes to save computation.  The Hilbert FIR and
-     *  delay buffer are reset in DSP_SetMode so the first 31 startup samples
-     *  output zero (inaudible at 48 kHz). */
-    float filt_i_d = filt_i;   /* aligned I: delayed for USB/LSB/DIGU/DIGL, direct otherwise */
-    float filt_q_h = filt_q;   /* hq arg:    H{Q} for SSB modes, raw Q for others            */
+     *  Only active in USB/LSB/CW modes to save computation.  The Hilbert FIR
+     *  and delay buffer are reset in DSP_SetMode so the first 31 startup
+     *  samples output zero (inaudible at 48 kHz).
+     *
+     *  CW reuses the same phasing product detector as USB/LSB (picked via
+     *  cw_reverse below) instead of an envelope detector with a reinserted
+     *  BFO tone: any residual DC/LO-leakage in the baseband then behaves
+     *  exactly as it does in SSB (stays near 0 Hz, removed by the ordinary
+     *  post-demod DC blocker) instead of being frequency-shifted up into an
+     *  audible, unblockable tone at the pitch frequency. */
+    float filt_i_d = filt_i;   /* aligned I: delayed for USB/LSB/DIGU/DIGL/CW, direct otherwise */
+    float filt_q_h = filt_q;   /* hq arg:    H{Q} for SSB/CW modes, raw Q for others             */
     if (dsp->mode == MODE_USB    || dsp->mode == MODE_LSB  ||
         dsp->mode == MODE_DIGU   || dsp->mode == MODE_DIGL ||
-        dsp->mode == MODE_FREEDV)
+        dsp->mode == MODE_FREEDV || dsp->mode == MODE_CW)
     {
       /* Hardware QSD produces Q = -sin for a signal at +f (USB side), i.e. the
        * complex baseband is exp(-jωt).  FFT_Precomp negates Im to fix the
@@ -1370,11 +1479,12 @@ void DSP_Process(DSP_State_t *dsp,
       case MODE_AM:   audio = Demod_AM(filt_i, filt_q);                          break;
       case MODE_FM:   audio = Demod_FM(&dsp->fm, filt_i, filt_q);               break;
       case MODE_USB:
-      case MODE_DIGU:
+      case MODE_DIGU: audio = Demod_USB(filt_i_d, filt_q_h);                    break;
       case MODE_FREEDV: audio = FreeDV_RX_Sample(&s_fdv, filt_i_d, filt_q_h);   break;
       case MODE_LSB:
       case MODE_DIGL: audio = Demod_LSB(filt_i_d, filt_q_h);                    break;
-      case MODE_CW:   audio = Demod_CW(filt_i, filt_q, &dsp->cw_phase_acc, dsp->cw_bfo_inc, dsp->cw_reverse); break;
+      case MODE_CW:   audio = dsp->cw_reverse ? Demod_LSB(filt_i_d, filt_q_h)
+                                               : Demod_USB(filt_i_d, filt_q_h); break;
       default:        audio = filt_i;                                             break;
     }
 
@@ -1408,6 +1518,12 @@ void DSP_Process(DSP_State_t *dsp,
 
     /* ── 8. AGC */
     audio = AGC_Process(&dsp->agc, audio);
+
+    /* ── 8b. RX tone control – bass/treble shelf, final tone shaping only.
+     *        Placed after AGC so it never feeds back into level detection or
+     *        squelch (signal_power_db is measured pre-AGC, step 5b above). */
+    audio = IIR_Biquad_Process(&dsp->bass_shelf,   audio);
+    audio = IIR_Biquad_Process(&dsp->treble_shelf, audio);
 
     /* ── 9. Write: 16-bit sample right-justified in bits[15:0] of 32-bit DMA word.
      *           STM32H7 SAI non-pack: DataSize=16 in bits[15:0], bits[31:16] ignored by SAI. */
@@ -1562,8 +1678,20 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
     audio = IIR_DCBlock_Process(&dsp->tx.dc_block, audio);
     audio = IIR_DCBlock_Process(&dsp->tx.hp_audio, audio);  /* TX Low-cut HPF */
 
-    /* ── 3. TX audio gain */
-    audio *= dsp->tx.audio_gain;
+    /* ── 3. TX audio gain.
+     * FM/AM: modulation depth (deviation / mod. index) must track mic_gain
+     * only — drive_gain (tx_power × PA foldback × ALC × trim) is applied
+     * separately to carrier amplitude further down (fm_amp / AM carrier).
+     * audio_gain = drive_gain × gain_src_pct/100 (see csdr_apply_tx), so
+     * dividing it back out here recovers the pure gain_src_pct/100 factor —
+     * otherwise lowering tx_power or PA foldback would also shrink FM
+     * deviation / AM modulation index instead of just RF carrier power. */
+    if (dsp->mode == MODE_FM || dsp->mode == MODE_AM) {
+      audio *= (dsp->tx.drive_gain > 0.0001f)
+                 ? (dsp->tx.audio_gain / dsp->tx.drive_gain) : 0.0f;
+    } else {
+      audio *= dsp->tx.audio_gain;
+    }
 
     /* ── 4. Audio FIR LPF BEFORE modulation.
      *       Filtering the real audio signal band-limits and ensures
@@ -1642,7 +1770,11 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         FreeDV_TX_Sample(&s_fdv, audio_lp, &tx_i, &tx_q);
         break;
       case MODE_AM:
-        tx_i = 0.5f + 0.5f * audio_lp;   /* carrier + DSB-AM */
+        /* Carrier ← drive_gain (tx_power × PA foldback × ALC × trim), same
+         * role as FM's fm_amp below, so PA protection/TRIP and tx_power act
+         * on real RF power; audio_lp (mic_gain only, stage 3) sets modulation
+         * index independent of drive. */
+        tx_i = dsp->tx.drive_gain * (0.5f + 0.5f * audio_lp);
         tx_q = 0.0f;
         break;
       case MODE_CW: {
@@ -1658,6 +1790,11 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         uint32_t cw_idx = dsp->tx.cw_phase_acc >> (32U - NCO_LUT_BITS);
         float cw_cos = s_nco_sin_lut[(cw_idx + (NCO_LUT_SIZE / 4U)) & NCO_LUT_MASK];
         float cw_sin = s_nco_sin_lut[cw_idx & NCO_LUT_MASK];
+        /* CW-R: conjugate → LSB-side carrier at LO−pitch, so a station tuned
+         * to the sidetone pitch on the reverse sideband is answered on its
+         * own frequency (mirrors the RX ±pitch convention above).  Sidetone
+         * monitor taps the I channel only, so it is unaffected. */
+        if (dsp->cw_reverse) cw_sin = -cw_sin;
         tx_i = cw_cos * dsp->tx.cw_env_amp;
         tx_q = cw_sin * dsp->tx.cw_env_amp;
         break;

@@ -143,6 +143,9 @@ typedef struct {
   /* Notch filter */
   bool        notch_on;          /*!< Audio notch filter enable */
   int16_t     notch_hz;          /*!< Notch center frequency Hz: 100-4000 */
+  /* RX tone control */
+  int8_t      bass_db;           /*!< Bass shelf gain dB: -10..+10, default 0 (flat) */
+  int8_t      treble_db;         /*!< Treble shelf gain dB: -10..+10, default 0 (flat) */
   /* VOX */
   bool        vox_on;            /*!< VOX enable */
   uint8_t     vox_gain;          /*!< VOX sensitivity 0-100 (100=most sensitive) */

@@ -36,6 +36,7 @@ static int32_t _sidetone_val, _bkin_val, _bkdelay_val, _cwrev_val, _cwfilter_val
 
 /* Audio group */
 static int32_t _vol_val, _mic_val, _digi_val;
+static int32_t _bass_val, _treble_val;
 
 /* Tuning group */
 static int32_t _step_val, _band_val, _mode_val, _marker_val;
@@ -253,58 +254,60 @@ void Menu_Init(Menu_Handle_t *m)
 
   /* ── Audio group (parent = 1) ───────────────────────────── */
   m->items[20] = (MenuItem_t){ "Volume",    MENU_TYPE_INT, 0,100,5, &_vol_val, NULL,0U,NULL,NULL,1 };
-  m->items[21] = (MenuItem_t){ "Mic Gain",  MENU_TYPE_INT, 0,100,1, &_mic_val, NULL,0U,NULL,NULL,1 };
-  m->items[22] = (MenuItem_t){ "Digi Drive",MENU_TYPE_INT, 0,100,1, &_digi_val,NULL,0U,NULL,NULL,1 };
-  m->items[52] = (MenuItem_t){ "Mic In",    MENU_TYPE_ENUM,0,0,0,    &_tx_src_val, tx_src_strs, 2U, NULL,NULL,1 };
+  m->items[21] = (MenuItem_t){ "Bass",      MENU_TYPE_INT, -10,10,1,&_bass_val,  NULL,0U,NULL,"dB",1 };
+  m->items[22] = (MenuItem_t){ "Treble",    MENU_TYPE_INT, -10,10,1,&_treble_val,NULL,0U,NULL,"dB",1 };
+  m->items[23] = (MenuItem_t){ "Mic Gain",  MENU_TYPE_INT, 0,100,1, &_mic_val, NULL,0U,NULL,NULL,1 };
+  m->items[24] = (MenuItem_t){ "Digi Drive",MENU_TYPE_INT, 0,100,1, &_digi_val,NULL,0U,NULL,NULL,1 };
+  m->items[54] = (MenuItem_t){ "Mic In",    MENU_TYPE_ENUM,0,0,0,    &_tx_src_val, tx_src_strs, 2U, NULL,NULL,1 };
 
   /* ── Tuning group (parent = 2) ──────────────────────────── */
-  m->items[23] = (MenuItem_t){ "Step",MENU_TYPE_ENUM,0,0,0,&_step_val,step_strs,6U, NULL,NULL,2 };
-  m->items[24] = (MenuItem_t){ "Band",MENU_TYPE_ENUM,0,0,0,&_band_val,band_strs,11U,NULL,NULL,2 };
-  m->items[25] = (MenuItem_t){ "Mode",MENU_TYPE_ENUM,0,0,0,&_mode_val,mode_strs,8U, NULL,NULL,2 };
-  m->items[54] = (MenuItem_t){ "Marker",MENU_TYPE_ENUM,0,0,0,&_marker_val,marker_strs,2U,NULL,NULL,2 };
+  m->items[25] = (MenuItem_t){ "Step",MENU_TYPE_ENUM,0,0,0,&_step_val,step_strs,6U, NULL,NULL,2 };
+  m->items[26] = (MenuItem_t){ "Band",MENU_TYPE_ENUM,0,0,0,&_band_val,band_strs,11U,NULL,NULL,2 };
+  m->items[27] = (MenuItem_t){ "Mode",MENU_TYPE_ENUM,0,0,0,&_mode_val,mode_strs,8U, NULL,NULL,2 };
+  m->items[56] = (MenuItem_t){ "Marker",MENU_TYPE_ENUM,0,0,0,&_marker_val,marker_strs,2U,NULL,NULL,2 };
 
   /* ── TX group (parent = 3) ──────────────────────────────── */
-  m->items[26] = (MenuItem_t){ "RF Power", MENU_TYPE_INT,  5,100,5,    &_rfpwr_val,   NULL,      0U,NULL,"%", 3 };
-  m->items[27] = (MenuItem_t){ "VOX",      MENU_TYPE_ENUM, 0,0,0,      &_vox_val,     onoff_strs,2U,NULL,NULL,3 };
-  m->items[28] = (MenuItem_t){ "VOX Gain", MENU_TYPE_INT,  0,100,5,    &_voxgain_val, NULL,      0U,NULL,NULL,3 };
-  m->items[29] = (MenuItem_t){ "VOX Delay",MENU_TYPE_INT,100,2000,100, &_voxdelay_val,NULL,      0U,NULL,"ms",3 };
-  m->items[30] = (MenuItem_t){ "TX Low",   MENU_TYPE_INT, 100,500,50,  &_tx_low_val,  NULL,      0U,NULL,"Hz",3 };
-  m->items[31] = (MenuItem_t){ "TX High",  MENU_TYPE_INT,2200,3500,100,&_tx_high_val, NULL,      0U,NULL,"Hz",3 };
+  m->items[28] = (MenuItem_t){ "RF Power", MENU_TYPE_INT,  5,100,5,    &_rfpwr_val,   NULL,      0U,NULL,"%", 3 };
+  m->items[29] = (MenuItem_t){ "VOX",      MENU_TYPE_ENUM, 0,0,0,      &_vox_val,     onoff_strs,2U,NULL,NULL,3 };
+  m->items[30] = (MenuItem_t){ "VOX Gain", MENU_TYPE_INT,  0,100,5,    &_voxgain_val, NULL,      0U,NULL,NULL,3 };
+  m->items[31] = (MenuItem_t){ "VOX Delay",MENU_TYPE_INT,100,2000,100, &_voxdelay_val,NULL,      0U,NULL,"ms",3 };
+  m->items[32] = (MenuItem_t){ "TX Low",   MENU_TYPE_INT, 100,500,50,  &_tx_low_val,  NULL,      0U,NULL,"Hz",3 };
+  m->items[33] = (MenuItem_t){ "TX High",  MENU_TYPE_INT,2200,3500,100,&_tx_high_val, NULL,      0U,NULL,"Hz",3 };
   /* Ext-PA block: toggle + its two sub-settings + the amp's ALC input.
-   * Slots 55-57 keep old indices stable; view order within the TX group is
+   * Slots 57-59 keep old indices stable; view order within the TX group is
    * ascending slot, so these render right after TX High. */
-  m->items[32] = (MenuItem_t){ "Ext PA",    MENU_TYPE_ENUM, 0,0,0,     &_extpa_val,   onoff_strs,2U,NULL,NULL,3 };
-  m->items[55] = (MenuItem_t){ "PA Key Dly",MENU_TYPE_INT,  0,50,5,    &_extpadly_val,NULL,      0U,NULL,"ms",3 };
-  m->items[56] = (MenuItem_t){ "PA Drv Max",MENU_TYPE_INT,  5,100,5,   &_extpadrv_val,NULL,      0U,NULL,"%", 3 };
-  m->items[57] = (MenuItem_t){ "Ext ALC",   MENU_TYPE_ENUM, 0,0,0,     &_alc_val,     onoff_strs,2U,NULL,NULL,3 };
+  m->items[34] = (MenuItem_t){ "Ext PA",    MENU_TYPE_ENUM, 0,0,0,     &_extpa_val,   onoff_strs,2U,NULL,NULL,3 };
+  m->items[57] = (MenuItem_t){ "PA Key Dly",MENU_TYPE_INT,  0,50,5,    &_extpadly_val,NULL,      0U,NULL,"ms",3 };
+  m->items[58] = (MenuItem_t){ "PA Drv Max",MENU_TYPE_INT,  5,100,5,   &_extpadrv_val,NULL,      0U,NULL,"%", 3 };
+  m->items[59] = (MenuItem_t){ "Ext ALC",   MENU_TYPE_ENUM, 0,0,0,     &_alc_val,     onoff_strs,2U,NULL,NULL,3 };
 
   /* ── CW group (parent = 4) ──────────────────────────────── */
-  m->items[33] = (MenuItem_t){ "CW Decode",MENU_TYPE_ENUM, 0,0,0,    &_cwdec_val,    onoff_strs,2U, NULL,NULL,4 };
-  m->items[34] = (MenuItem_t){ "Pitch",    MENU_TYPE_INT,  300,900,50,&_cw_pitch_val, NULL,      0U, NULL,"Hz",4 };
-  m->items[35] = (MenuItem_t){ "Speed",    MENU_TYPE_INT,  5,  40, 1, &_cw_wpm_val,  NULL,      0U, NULL,"WPM",4 };
-  m->items[36] = (MenuItem_t){ "Keyer",    MENU_TYPE_ENUM, 0,0,0,    &_keyer_val,    keyer_strs,3U, NULL,NULL,4 };
-  m->items[37] = (MenuItem_t){ "Sidetone", MENU_TYPE_INT,  0,100,5,  &_sidetone_val, NULL,      0U, NULL,"%", 4 };
-  m->items[38] = (MenuItem_t){ "BK-IN",    MENU_TYPE_ENUM, 0,0,0,    &_bkin_val,     bkin_strs, 3U, NULL,NULL,4 };
-  m->items[39] = (MenuItem_t){ "BK Delay", MENU_TYPE_INT,  50,2000,50,&_bkdelay_val, NULL,      0U, NULL,"ms",4 };
-  m->items[40] = (MenuItem_t){ "CW Rev",   MENU_TYPE_ENUM, 0,0,0,    &_cwrev_val,    onoff_strs,2U, NULL,NULL,4 };
-  m->items[41] = (MenuItem_t){ "Paddle Rev",MENU_TYPE_ENUM,0,0,0,    &_paddlerev_val,onoff_strs,2U, NULL,NULL,4 };
-  m->items[42] = (MenuItem_t){ "Filter",   MENU_TYPE_INT,  50,500,50,&_cwfilter_val, NULL,      0U, NULL,"Hz",4 };
+  m->items[35] = (MenuItem_t){ "CW Decode",MENU_TYPE_ENUM, 0,0,0,    &_cwdec_val,    onoff_strs,2U, NULL,NULL,4 };
+  m->items[36] = (MenuItem_t){ "Pitch",    MENU_TYPE_INT,  300,900,50,&_cw_pitch_val, NULL,      0U, NULL,"Hz",4 };
+  m->items[37] = (MenuItem_t){ "Speed",    MENU_TYPE_INT,  5,  40, 1, &_cw_wpm_val,  NULL,      0U, NULL,"WPM",4 };
+  m->items[38] = (MenuItem_t){ "Keyer",    MENU_TYPE_ENUM, 0,0,0,    &_keyer_val,    keyer_strs,3U, NULL,NULL,4 };
+  m->items[39] = (MenuItem_t){ "Sidetone", MENU_TYPE_INT,  0,100,5,  &_sidetone_val, NULL,      0U, NULL,"%", 4 };
+  m->items[40] = (MenuItem_t){ "BK-IN",    MENU_TYPE_ENUM, 0,0,0,    &_bkin_val,     bkin_strs, 3U, NULL,NULL,4 };
+  m->items[41] = (MenuItem_t){ "BK Delay", MENU_TYPE_INT,  50,2000,50,&_bkdelay_val, NULL,      0U, NULL,"ms",4 };
+  m->items[42] = (MenuItem_t){ "CW Rev",   MENU_TYPE_ENUM, 0,0,0,    &_cwrev_val,    onoff_strs,2U, NULL,NULL,4 };
+  m->items[43] = (MenuItem_t){ "Paddle Rev",MENU_TYPE_ENUM,0,0,0,    &_paddlerev_val,onoff_strs,2U, NULL,NULL,4 };
+  m->items[44] = (MenuItem_t){ "Filter",   MENU_TYPE_INT,  50,500,50,&_cwfilter_val, NULL,      0U, NULL,"Hz",4 };
 
   /* ── System group (parent = 5) ──────────────────────────── */
-  m->items[43] = (MenuItem_t){ "Backlight",   MENU_TYPE_INT,   0,100,10,&_bl_val,        NULL,          0U,NULL,NULL,5 };
-  m->items[44] = (MenuItem_t){ "USB",         MENU_TYPE_ENUM,  0,0,0,   &_usb_val,       usb_strs,      2U,NULL,NULL,5 };
-  m->items[45] = (MenuItem_t){ "USB Stream",  MENU_TYPE_ENUM,  0,0,0,   &_iq_stream_val, iq_stream_strs,2U,NULL,NULL,5 };
-  m->items[46] = (MenuItem_t){ "Calibration", MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
-  m->items[47] = (MenuItem_t){ "Factory Reset",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
-  m->items[53] = (MenuItem_t){ "Clock",        MENU_TYPE_TIME,  0,86399,1,&_clk_val,  NULL,  0U,apply_clock,NULL,5 };
-  m->items[48] = (MenuItem_t){ "About",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[45] = (MenuItem_t){ "Backlight",   MENU_TYPE_INT,   0,100,10,&_bl_val,        NULL,          0U,NULL,NULL,5 };
+  m->items[46] = (MenuItem_t){ "USB",         MENU_TYPE_ENUM,  0,0,0,   &_usb_val,       usb_strs,      2U,NULL,NULL,5 };
+  m->items[47] = (MenuItem_t){ "USB Stream",  MENU_TYPE_ENUM,  0,0,0,   &_iq_stream_val, iq_stream_strs,2U,NULL,NULL,5 };
+  m->items[48] = (MenuItem_t){ "Calibration", MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[49] = (MenuItem_t){ "Factory Reset",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[55] = (MenuItem_t){ "Clock",        MENU_TYPE_TIME,  0,86399,1,&_clk_val,  NULL,  0U,apply_clock,NULL,5 };
+  m->items[50] = (MenuItem_t){ "About",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
 
-  /* ── About sub-group (parent = 48) ──────────────────────── */
-  m->items[49] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,48 };
-  m->items[50] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,48 };
+  /* ── About sub-group (parent = 50) ──────────────────────── */
+  m->items[51] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,50 };
+  m->items[52] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,50 };
 
   /* ── Root action (parent = -1) — last so it appears at end of root view ── */
-  m->items[51] = (MenuItem_t){ "SWR Scan",  MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
+  m->items[53] = (MenuItem_t){ "SWR Scan",  MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
 
   Menu_BuildView(m);
   /* USER CODE END Menu_Init_0 */
@@ -551,6 +554,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t nr_level,
                        uint8_t bc_mode,
                        uint8_t marker_track,
+                       int8_t bass_db, int8_t treble_db,
                        MenuApplyFn apply_cb)
 {
   /* USER CODE BEGIN Menu_LoadFromSDR_0 */
@@ -566,6 +570,8 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _notch_val   = notch_on ? 1 : 0;
   _notchhz_val = (notch_hz >= 100 && notch_hz <= 4000) ? (int32_t)notch_hz : 1000;
   _vol_val  = (int32_t)vol;
+  _bass_val   = (bass_db   >= -10 && bass_db   <= 10) ? (int32_t)bass_db   : 0;
+  _treble_val = (treble_db >= -10 && treble_db <= 10) ? (int32_t)treble_db : 0;
   _mic_val  = (int32_t)mic_gain;
   _digi_val = (int32_t)digi_gain;
   _sq_val   = (int32_t)sq;
@@ -652,7 +658,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *nb_level,
                      uint8_t *nr_level,
                      uint8_t *bc_mode,
-                     uint8_t *marker_track)
+                     uint8_t *marker_track,
+                     int8_t *bass_db, int8_t *treble_db)
 {
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
@@ -671,6 +678,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *vox_gain    = (uint8_t)(_voxgain_val  >= 0   && _voxgain_val  <= 100  ? _voxgain_val  : 50);
   *vox_delay   = (uint16_t)(_voxdelay_val >= 100 && _voxdelay_val <= 2000 ? _voxdelay_val : 500);
   *vol       = (uint8_t)_vol_val;
+  *bass_db   = (int8_t)(_bass_val   >= -10 && _bass_val   <= 10 ? _bass_val   : 0);
+  *treble_db = (int8_t)(_treble_val >= -10 && _treble_val <= 10 ? _treble_val : 0);
   *mic_gain  = (uint8_t)_mic_val;
   *digi_gain = (uint8_t)_digi_val;
   *sq        = (uint8_t)_sq_val;

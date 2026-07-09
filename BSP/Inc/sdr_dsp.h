@@ -264,11 +264,22 @@ typedef struct {
   bool         notch_on;
   float        notch_hz;
 
-  /* CW BFO – RX demodulator */
-  uint32_t      cw_phase_acc;    /*!< RX CW BFO phase accumulator                    */
-  uint32_t      cw_bfo_inc;      /*!< RX CW BFO phase increment (sample-rate-derived) */
-  bool          cw_reverse;      /*!< Negate Q before CW demod (spectrum mirror)      */
+  /* RX tone control – low/high shelf, post-AGC (final tone shaping only,
+   * does not affect AGC/squelch level detection). Flat (0 dB) by default. */
+  IIR_Biquad_t bass_shelf;
+  IIR_Biquad_t treble_shelf;
+
+  /* CW RX — demodulated via the same phasing product detector as USB/LSB
+   * (see DSP_Process).  The IF LPF is centred on the correctly-tuned signal:
+   * eff_if (csdr_apply_nco_if) pre-shifts by −pitch (CW-N) so the station at
+   * dial+pitch lands at 0 Hz for filtering, then nco_cw_shift (step 5d in
+   * DSP_Process) shifts +pitch back so the product detector yields the
+   * sidetone pitch.  Net audio mapping is unchanged; only the filter window
+   * moves from [0, bw] to pitch ± bw/2. */
+  bool          cw_reverse;      /*!< Pick LSB- vs USB-like product detector for CW   */
   volatile bool cw_key_out;      /*!< Written by keyer (main loop), read by DSP ISR   */
+  NCO_t         nco_cw_shift;    /*!< Stage 3 (CW only): post-FIR re-centre, ±pitch   */
+  uint16_t      cw_pitch_hz;     /*!< Stored pitch so SetCWReverse can re-program NCO */
 
   /* CW keying envelope – pre-AGC tap for decoder */
   CWEnv_t    cw_env;
@@ -347,6 +358,9 @@ void  DSP_SetTxPassband(DSP_State_t *dsp, float hp_hz, float lp_hz);
 /* Notch filter */
 void  DSP_SetNotch(DSP_State_t *dsp, bool on, float hz);
 
+/* RX tone control: bass/treble shelf gain, -10..+10 dB, 0 = flat */
+void  DSP_SetTone(DSP_State_t *dsp, int8_t bass_db, int8_t treble_db);
+
 /* Noise Blanker */
 void  DSP_NB_Set(DSP_State_t *dsp, bool enabled, uint8_t level);
 /* Noise reduction: mode 0=off, 1=NR1 (LMS line enhancer), 2=NR2 (spectral).
@@ -378,7 +392,6 @@ float Demod_AM(float i, float q);
 float Demod_FM(FM_Demod_t *fm, float i, float q);
 float Demod_USB(float i, float q);
 float Demod_LSB(float i, float q);
-float Demod_CW(float i, float q, uint32_t *phase_acc, uint32_t phase_inc, bool reverse);
 
 #ifdef __cplusplus
 }

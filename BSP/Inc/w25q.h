@@ -223,6 +223,9 @@ typedef struct {
                                     0 = pre-pwr_scale blob → default 100 */
   uint8_t    marker_track;       /* Spectrum marker: 0=Fix (default), 1=Track;
                                     0 also = pre-marker blob padding      */
+  int8_t     bass_db;            /* RX bass shelf gain dB: -10..+10; also the
+                                    pre-tone-control blob padding value (0=flat) */
+  int8_t     treble_db;          /* RX treble shelf gain dB: -10..+10; same padding */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;

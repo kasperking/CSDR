@@ -2532,18 +2532,24 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     cx = (uint16_t)mpx;
   }
 
-  bool bw_lo_ok = (bw_lo_ratio > 0.0001f), bw_hi_ok = (bw_hi_ratio > 0.0001f);
-  uint16_t bw_lo = 0U, bw_hi = 0U;
-  if (bw_lo_ok) {
-    uint16_t off = (uint16_t)(bw_lo_ratio * (float)SPEC_W * cscale * zoom_corr + 0.5f);
-    if (!off) off = 1U;
-    bw_lo = (cx > off) ? (uint16_t)(cx - off) : 0U;
-  }
-  if (bw_hi_ok) {
-    uint16_t off = (uint16_t)(bw_hi_ratio * (float)SPEC_W * cscale * zoom_corr + 0.5f);
-    if (!off) off = 1U;
-    bw_hi = cx + off;
-    if (bw_hi >= SPEC_W) bw_hi = SPEC_W - 1U;
+  /* Ratios are signed extents from the carrier column (bw_lo = LEFT extent,
+   * bw_hi = RIGHT extent); a negative extent puts that edge on the opposite
+   * side of the carrier, so an offset passband (CW: pitch ± bw/2) works. */
+  bool bw_lo_ok = (bw_lo_ratio > 0.0001f) || (bw_lo_ratio < -0.0001f);
+  bool bw_hi_ok = (bw_hi_ratio > 0.0001f) || (bw_hi_ratio < -0.0001f);
+  int32_t pb_l = (int32_t)cx, pb_r = (int32_t)cx;
+  {
+    float scale = (float)SPEC_W * cscale * zoom_corr;
+    float lo_f  = bw_lo_ratio * scale;
+    float hi_f  = bw_hi_ratio * scale;
+    if (bw_lo_ok)
+      pb_l = (int32_t)cx - (int32_t)(lo_f >= 0.0f ? lo_f + 0.5f : lo_f - 0.5f);
+    if (bw_hi_ok)
+      pb_r = (int32_t)cx + (int32_t)(hi_f >= 0.0f ? hi_f + 0.5f : hi_f - 0.5f);
+    if (pb_l < 0) pb_l = 0;
+    if (pb_l > (int32_t)(SPEC_W - 1U)) pb_l = (int32_t)(SPEC_W - 1U);
+    if (pb_r < 0) pb_r = 0;
+    if (pb_r > (int32_t)(SPEC_W - 1U)) pb_r = (int32_t)(SPEC_W - 1U);
   }
 
   uint16_t spec_sw      = SWAP16(0xC7FFU);   /* icy white-blue: top     */
@@ -2552,17 +2558,11 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
   uint16_t cx_sw        = SWAP16(0xFFFFU);   /* bright white centre pixel     */
   uint16_t dot_sw       = SWAP16(UI_SPEC_GRID);
 
-  /* Passband shaded region: derive pixel span.
-   * USB/CW: center→bw_hi  |  LSB: bw_lo→center  |  AM/FM: bw_lo→bw_hi */
-  uint16_t pb_x0 = cx, pb_x1 = cx;
-  bool do_shade = false;
-  if (bw_lo_ok && bw_hi_ok) {
-    pb_x0 = bw_lo; pb_x1 = bw_hi; do_shade = true;
-  } else if (bw_hi_ok) {
-    pb_x0 = cx;    pb_x1 = bw_hi; do_shade = (bw_hi > cx);
-  } else if (bw_lo_ok) {
-    pb_x0 = bw_lo; pb_x1 = cx;    do_shade = (bw_lo < cx);
-  }
+  /* Passband shaded region: pb_l..pb_r as computed above.
+   * USB: center→right | LSB: left→center | AM/FM: left→right
+   * CW: offset span at pitch ± bw/2 (both edges may sit on one side). */
+  uint16_t pb_x0 = (uint16_t)pb_l, pb_x1 = (uint16_t)pb_r;
+  bool do_shade = (bw_lo_ok || bw_hi_ok) && (pb_r > pb_l);
 
   for (uint16_t y = 0U; y < (uint16_t)(SPEC_H - 1U); y++) {
     uint16_t *row    = s_spec_buf[y];

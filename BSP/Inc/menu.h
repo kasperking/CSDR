@@ -16,7 +16,7 @@
   *
   *  Root
   *   ├─ [RX]     → BW / AGC / ATT / Squelch / Span / NR / NB / NB Level / Notch / Notch Hz / RIT / RX Shift
-  *   ├─ [Audio]  → Volume / Mic Gain / Digi Drive / Mic In
+  *   ├─ [Audio]  → Volume / Bass / Treble / Mic Gain / Digi Drive / Mic In
   *   ├─ [Tuning] → Step / Band / Mode / Marker
   *   ├─ [TX]     → RF Power / VOX / VOX Gain / VOX Delay / TX Low / TX High / Ext PA / PA Key Dly / PA Drv Max / Ext ALC
   *   ├─ [CW]     → CW Decode / Pitch / Speed / Keyer / Sidetone / BK-IN / BK Delay / CW Rev / Paddle Rev / Filter
@@ -45,7 +45,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      58U   /* 7 groups (incl. About sub-group) + 51 leaf items */
+#define MENU_ITEM_COUNT      60U   /* 7 groups (incl. About sub-group) + 53 leaf items */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -62,11 +62,11 @@ extern "C" {
 #define MENU_BORDER_COLOR   0x10A2U   /* Dark subtle border   */
 
 /* Well-known item indices — keep in sync with Menu_Init slot assignments */
-#define MENU_IDX_RFPOWER    26U   /* TX → RF Power   */
-#define MENU_IDX_TXLOW      30U   /* TX → TX Low     */
-#define MENU_IDX_TXHIGH     31U   /* TX → TX High    */
+#define MENU_IDX_RFPOWER    28U   /* TX → RF Power   */
+#define MENU_IDX_TXLOW      32U   /* TX → TX Low     */
+#define MENU_IDX_TXHIGH     33U   /* TX → TX High    */
 #define MENU_IDX_CW_GROUP    4U   /* CW root group   */
-#define MENU_IDX_CWDEC      33U   /* CW → CW Decode  */
+#define MENU_IDX_CWDEC      35U   /* CW → CW Decode  */
 
 /* Exported types ------------------------------------------------------------*/
 
@@ -163,6 +163,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t nr_level,
                        uint8_t bc_mode,
                        uint8_t marker_track,
+                       int8_t bass_db, int8_t treble_db,
                        MenuApplyFn apply_cb);
 
 /**
@@ -191,7 +192,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *nb_level,
                      uint8_t *nr_level,
                      uint8_t *bc_mode,
-                     uint8_t *marker_track);
+                     uint8_t *marker_track,
+                     int8_t *bass_db, int8_t *treble_db);
 
 #ifdef __cplusplus
 }

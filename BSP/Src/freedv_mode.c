@@ -1,13 +1,14 @@
 /**
   ******************************************************************************
   * @file    freedv_mode.c
-  * @brief   FreeDV narrowband digital voice – Phase 3
+  * @brief   FreeDV narrowband digital voice — TX + RX with frame acquisition
   *
   *  This file implements:
   *    • 48 kHz → 8 kHz polyphase FIR decimator   (FDVR_RATIO = 6)
   *    • 8 kHz → 48 kHz polyphase FIR interpolator (FDVR_RATIO = 6)
   *    • 8 kHz narrowband USB (NBUSB) SSB modulator (Hilbert phasing)
-  *    • 8 kHz NBUSB SSB demodulator + OFDM DQPSK RX + LPC_Decode
+  *    • 8 kHz NBUSB SSB demodulator + staggered-phase OFDM DQPSK RX bank
+  *      (FdvModemBank_t, see fdv_modem.h) + LPC_Decode
   *    • LPC-10 analysis → 64-bit quantizer → 16-carrier DQPSK OFDM TX
   *
   *  All processing is sample-by-sample to slot into the existing per-sample
@@ -201,8 +202,8 @@ void FreeDV_Init(FreeDV_State_t *fdv, float audio_gain)
     hilbert8_init(&fdv->hilbert8);
     LPC_Voc_Init(&fdv->voc);
     FdvModem_Init(&fdv->modem);
-    /* RX pipeline */
-    FdvModem_RxInit(&fdv->rx_demod);
+    /* RX pipeline: staggered-phase bank for frame/timing acquisition */
+    FdvModemBank_Init(&fdv->rx_bank);
     LPC_Voc_Init(&fdv->rx_voc);
     dc8_init(&fdv->rx_dc8);
     /* rx_dec, rx_pcm8_buf, rx_out_buf zeroed by memset above */
@@ -293,10 +294,17 @@ void FreeDV_TX_Sample(FreeDV_State_t *fdv,
  *    1. USB SSB demod: audio = rx_i + rx_q  (gives 450-1575 Hz OFDM audio)
  *    2. 48→8 kHz polyphase decimate (rx_dec)
  *    3. DC block at 8 kHz (rx_dc8)
- *    4. OFDM DQPSK demodulate (rx_demod, 16 carriers × 2 bits)
- *    5. On frame boundary (320 samples):
- *         – verify sync 0xA55, LPC_Dequantize, LPC_Decode → rx_pcm8_buf
- *    6. Pull one 8 kHz PCM sample (or raw audio fallback before first frame)
+ *    4. Push into the FDV_SYNC_HYPS-hypothesis OFDM demod bank (rx_bank).
+ *       Each hypothesis's super-frame boundary is staggered by
+ *       FDV_HYP_SPACING samples (see fdv_modem.h), so — with no timing
+ *       reference shared between the independent TX and RX radios —
+ *       whichever hypothesis happens to land close to the real boundary
+ *       is the one whose sync word will verify.
+ *    5. For every hypothesis that completed a frame this sample: verify
+ *       sync 0xA55; on the first one that verifies, LPC_Dequantize +
+ *       LPC_Decode → rx_pcm8_buf (one decode per 8 kHz tick is enough).
+ *    6. Pull one 8 kHz PCM sample (or raw audio fallback before first
+ *       verified frame / while no hypothesis is aligned)
  *    7. 8→48 kHz polyphase interpolate (interp) → rx_out_buf[0..5]
  *
  *  Returns one interpolated 48 kHz sample per call.
@@ -313,20 +321,30 @@ float FreeDV_RX_Sample(FreeDV_State_t *fdv, float rx_i, float rx_q)
         /* 2. DC block at 8 kHz */
         pcm8 = dc8_process(&fdv->rx_dc8, pcm8);
 
-        /* 3. OFDM DQPSK demodulate */
-        FdvModem_RxPush(&fdv->rx_demod, pcm8);
+        /* 3. Advance every acquisition hypothesis; mask = those that just
+         *    completed a super-frame and are ready to be sync-checked. */
+        uint16_t ready_mask = FdvModemBank_Push(&fdv->rx_bank, pcm8);
 
-        /* 4. LPC decode when a complete frame arrives with valid sync */
-        if (fdv->rx_demod.frame_ready) {
-            fdv->rx_demod.frame_ready = false;
-            if (fdv->rx_demod.rx_bits[0] == 0xA5U &&
-                (fdv->rx_demod.rx_bits[1] & 0xF0U) == 0x50U) {
+        /* 4. LPC decode from the first hypothesis this tick whose sync
+         *    word verifies (misaligned hypotheses will (almost) never
+         *    produce a matching sync word, so this is effectively "the"
+         *    correctly-aligned one). */
+        for (uint32_t h = 0U; h < FDV_SYNC_HYPS && ready_mask != 0U; h++) {
+            if ((ready_mask & (uint16_t)(1U << h)) == 0U)
+                continue;
+            ready_mask &= (uint16_t)~(1U << h);
+
+            const uint8_t *rb = fdv->rx_bank.hyp[h].rx_bits;
+            if (rb[0] == 0xA5U && (rb[1] & 0xF0U) == 0x50U) {
                 LPC_Frame_t rx_frame;
-                LPC_Dequantize(fdv->rx_demod.rx_bits, &rx_frame);
+                LPC_Dequantize(rb, &rx_frame);
                 LPC_Decode(&fdv->rx_voc, &rx_frame, fdv->rx_pcm8_buf);
                 fdv->rx_pcm8_rd = 0U;
                 fdv->rx_pcm8_wr = LPC_FRAME_SAMPS;
                 fdv->rx_frames++;
+                fdv->rx_locked   = true;
+                fdv->rx_lock_hyp = (uint8_t)h;
+                break;
             }
         }
 

@@ -180,6 +180,32 @@ void FdvModem_RxPush(FdvModemRx_t *rx, float s)
     }
 }
 
+/* ── Frame acquisition bank ────────────────────────────────────────────── */
+
+void FdvModemBank_Init(FdvModemBank_t *bank)
+{
+    for (uint32_t h = 0U; h < FDV_SYNC_HYPS; h++) {
+        FdvModem_RxInit(&bank->hyp[h]);
+        /* Stagger each hypothesis's super-frame boundary across the full
+         * 320-sample ambiguity window so at least one lands close to the
+         * true (unknown) TX boundary. */
+        bank->hyp[h].samp_cnt = (uint16_t)(h * FDV_HYP_SPACING);
+    }
+}
+
+uint16_t FdvModemBank_Push(FdvModemBank_t *bank, float s)
+{
+    uint16_t mask = 0U;
+    for (uint32_t h = 0U; h < FDV_SYNC_HYPS; h++) {
+        FdvModem_RxPush(&bank->hyp[h], s);
+        if (bank->hyp[h].frame_ready) {
+            bank->hyp[h].frame_ready = false;
+            mask |= (uint16_t)(1U << h);
+        }
+    }
+    return mask;
+}
+
 /* ── TX encoder ─────────────────────────────────────────────────────────── */
 
 void FdvModem_EncodeSuperFrame(FdvModem_t *m,

@@ -364,6 +364,8 @@ static void csdr_save_settings(void)
   fs.tx_audio_high_hz   = g_sdr.tx_audio_high_hz;
   fs.notch_on           = g_sdr.notch_on ? 1U : 0U;
   fs.notch_hz           = g_sdr.notch_hz;
+  fs.bass_db            = g_sdr.bass_db;
+  fs.treble_db          = g_sdr.treble_db;
   fs.vox_on             = g_sdr.vox_on ? 1U : 0U;
   fs.vox_gain           = g_sdr.vox_gain;
   fs.vox_delay_ms       = g_sdr.vox_delay;
@@ -492,6 +494,8 @@ void CSDR_Init(void)
                                ? fs.tx_audio_high_hz : 2800U;
       g_sdr.notch_on  = (fs.notch_on != 0U);
       g_sdr.notch_hz  = (fs.notch_hz >= 100 && fs.notch_hz <= 4000) ? fs.notch_hz : 1000;
+      g_sdr.bass_db   = (fs.bass_db   >= -10 && fs.bass_db   <= 10) ? fs.bass_db   : 0;
+      g_sdr.treble_db = (fs.treble_db >= -10 && fs.treble_db <= 10) ? fs.treble_db : 0;
       g_sdr.vox_on    = (fs.vox_on != 0U);
       g_sdr.vox_gain  = (fs.vox_gain  <= 100U) ? fs.vox_gain  : 50U;
       g_sdr.vox_delay = (fs.vox_delay_ms >= 100U && fs.vox_delay_ms <= 2000U) ? fs.vox_delay_ms : 500U;
@@ -605,6 +609,7 @@ void CSDR_Init(void)
   DSP_Init(&g_dsp, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetTxPassband(&g_dsp, (float)g_sdr.tx_audio_low_hz, (float)g_sdr.tx_audio_high_hz);
   DSP_SetNotch(&g_dsp, g_sdr.notch_on, (float)g_sdr.notch_hz);
+  DSP_SetTone(&g_dsp, g_sdr.bass_db, g_sdr.treble_db);
   DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetIFShift(&g_dsp, (int32_t)g_sdr.if_shift_hz, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
@@ -628,6 +633,10 @@ void CSDR_Init(void)
     DSP_SetBW(&g_dsp, (float)g_sdr.cw_filter_hz);
   CWDec_Init(&g_cw_dec);
   g_cw_dec.dit_ms = 1200U / (uint32_t)g_sdr.cw_wpm;
+  /* Booting straight into CW: arm the INFO-strip [DEC] placeholder (it is
+   * otherwise only set on mode change / F3 toggle). */
+  if (g_sdr.mode == MODE_CW)
+    SDR_UI_SetCWDecActive(g_sdr.cw_decode_on);
   /* Keyer init */
   g_cw_keyer.mode          = (CWKeyerMode_t)g_sdr.keyer_mode;
   g_cw_keyer.paddle_reverse= g_sdr.paddle_reverse;
@@ -1085,7 +1094,7 @@ void CSDR_PrepareShutdown(void)
 /* Called after any DSP_SetMode to sync CW decoder + UI strip */
 static void csdr_on_mode_changed(SDR_Mode_t old_mode)
 {
-    CWDec_Reset(&g_cw_dec);
+    CWDec_Reset(&g_cw_dec, &g_dsp.cw_env);
     if (g_sdr.mode == MODE_CW) {
         /* Entering CW: apply CW-specific filter and pitch */
         DSP_SetBW(&g_dsp, (float)g_sdr.cw_filter_hz);
@@ -1182,7 +1191,7 @@ void CSDR_Loop(void)
    * CWDec_Update is cheap (a few compares + HAL_GetTick); no timer guard needed.
    * Decoded text is pushed to the INFO strip when the buffer changes. */
   if (g_sdr.cw_decode_on && g_sdr.mode == MODE_CW && !g_sdr.tx_mode) {
-    if (CWDec_Update(&g_cw_dec, g_dsp.cw_env.keyed)) {
+    if (CWDec_Update(&g_cw_dec, &g_dsp.cw_env)) {
       char cw_buf[CWDEC_TEXT_LEN + 1U];
       CWDec_GetText(&g_cw_dec, cw_buf, (uint8_t)(LCD_W / 6U));
       SDR_UI_DrawCWText(cw_buf);
@@ -1573,9 +1582,11 @@ void CSDR_Loop(void)
     }
     if (g_sdr.cat_vol_dirty) {
       /* Defer SAI stop/start for 500ms after USB connect — keeps CAT responses timely
-       * during flrig init sequence; dirty flag stays set and fires after window closes. */
-      if (!s_usb_connect_tick || (now - s_usb_connect_tick) >= 500U) {
-        g_sdr.cat_vol_dirty = false;
+       * during flrig init sequence; dirty flag stays set and fires after window closes.
+       * Also defer for as long as TX is active — csdr_apply_volume() re-arms
+       * cat_vol_dirty itself in that case, so this just retries every tick. */
+      if (!g_sdr.tx_mode &&
+          (!s_usb_connect_tick || (now - s_usb_connect_tick) >= 500U)) {
         csdr_apply_volume(g_sdr.volume);
       }
     }
@@ -2088,6 +2099,7 @@ static void csdr_handle_keys(void)
         g_sdr.nr_level,
         g_sdr.bc_mode,
         g_sdr.marker_track ? 1U : 0U,
+        g_sdr.bass_db, g_sdr.treble_db,
         menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
@@ -2223,7 +2235,7 @@ static void csdr_handle_keys(void)
         g_sdr.cw_decode_on = !g_sdr.cw_decode_on;
         SDR_UI_SetCWDecActive(g_sdr.cw_decode_on);
         if (!g_sdr.cw_decode_on) SDR_UI_ClearCWText();
-        CWDec_Reset(&g_cw_dec);
+        CWDec_Reset(&g_cw_dec, &g_dsp.cw_env);
         g_sdr.display_dirty |= DIRTY_ALL; /* refresh INFO: hints or [DEC] placeholder */
       }
     }
@@ -2296,6 +2308,14 @@ static void csdr_handle_keys(void)
     g_sdr.display_dirty |= (uint8_t)(DIRTY_HDR | DIRTY_VFO | DIRTY_SBR);
     csdr_apply_tx();
   } else if (Key_Release(&k_ptt)) {
+    /* Drop stale TUNE state (AC111 or TUNE-key carrier held under this PTT) —
+     * matches cat_set_tx's guard: leaving tune_active/cw_key_out set here
+     * would key a stray CW carrier on the next PTT TX. */
+    if (g_sdr.tune_mode) {
+      g_sdr.tune_mode      = false;
+      g_dsp.tx.tune_active = false;
+      g_dsp.cw_key_out     = false;
+    }
     g_sdr.tx_mode = false;
     g_sdr.display_dirty |= (uint8_t)DIRTY_ALL;
     csdr_apply_tx();
@@ -2328,17 +2348,28 @@ static void csdr_update_spectrum(void)
 
   g_dsp.fft_ready = false;
 
+  /* Ratios are signed extents from the carrier column: bw_lo = extent LEFT,
+   * bw_hi = extent RIGHT; a negative extent places that edge on the opposite
+   * side (used by CW whose passband is offset to pitch ± bw/2). */
   float bw_lo_ratio = 0.0f, bw_hi_ratio = 0.0f;
   if (g_dsp.sample_rate > 0U && g_sdr.bw_hz > 0U) {
-    float full = (float)g_sdr.bw_hz / (float)g_dsp.sample_rate;
+    float sr   = (float)g_dsp.sample_rate;
+    float full = (float)g_sdr.bw_hz / sr;
     float half = full * 0.5f;
     switch (g_sdr.mode) {
       case MODE_LSB:
       case MODE_DIGL: bw_lo_ratio = full; bw_hi_ratio = 0.0f; break;
       case MODE_USB:
       case MODE_DIGU:
-      case MODE_CW:
       case MODE_FREEDV: bw_lo_ratio = 0.0f; bw_hi_ratio = full; break;
+      case MODE_CW: {
+        /* Passband centred on the pitch (bw_hz = full CW filter width):
+         * pitch − bw/2 .. pitch + bw/2 above the dial (mirrored for CW-R). */
+        float p = (float)g_sdr.cw_pitch_hz / sr;
+        if (g_sdr.cw_reverse) { bw_lo_ratio = p + half;    bw_hi_ratio = -(p - half); }
+        else                  { bw_lo_ratio = -(p - half); bw_hi_ratio = p + half;    }
+        break;
+      }
       default:        bw_lo_ratio = half; bw_hi_ratio = half;  break;
     }
   }
@@ -2496,6 +2527,7 @@ static void menu_apply_cb(void)
   uint16_t cw_pitch, cw_filter, cw_bk_delay; uint8_t cw_wpm, keyer_mode, sidetone, cw_bkin;
   uint8_t nb_level, nr_level, nr, bc, marker_trk;
   bool ext_pa; uint8_t ext_pa_dly, ext_pa_drv;
+  int8_t bass_db, treble_db;
   Menu_SaveToSDR(&g_menu, &agc_speed, &nb, &nr, &rit,
                   &vol, &mic, &digi, &sq, &step, &bw, &att, &band, &mode, &usb, &zoom,
                   &ext_alc, &rfpwr, &ext_pa, &ext_pa_dly, &ext_pa_drv,
@@ -2503,7 +2535,13 @@ static void menu_apply_cb(void)
                   &vox_en, &vox_gain, &vox_delay, &cw_dec,
                   &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
                   &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream,
-                  &tx_src_new, &nb_level, &nr_level, &bc, &marker_trk);
+                  &tx_src_new, &nb_level, &nr_level, &bc, &marker_trk,
+                  &bass_db, &treble_db);
+  if (bass_db != g_sdr.bass_db || treble_db != g_sdr.treble_db) {
+    g_sdr.bass_db   = bass_db;
+    g_sdr.treble_db = treble_db;
+    DSP_SetTone(&g_dsp, bass_db, treble_db);
+  }
   if ((marker_trk != 0U) != g_sdr.marker_track) {
     g_sdr.marker_track = (marker_trk != 0U);
     /* Leaving Track mode: park the marker back at center (retunes LO to
@@ -2538,6 +2576,12 @@ static void menu_apply_cb(void)
   if (rfpwr != g_sdr.tx_power) {
     g_sdr.tx_power = rfpwr;
     g_sdr.display_dirty |= DIRTY_SBR;
+    if (g_sdr.tx_mode) g_sdr.cat_tx_dirty = true;
+  }
+  /* Mic/digi gain changes must reach a live TX via the gain-reapply path,
+   * same as tx_power/ext_pa above — otherwise adjusting Digi Drive mid-TX
+   * (e.g. WSJT-X tune) has no effect until the next TX start. */
+  if ((int16_t)mic != g_sdr.mic_gain || (int16_t)digi != g_sdr.digi_gain) {
     if (g_sdr.tx_mode) g_sdr.cat_tx_dirty = true;
   }
   g_sdr.mic_gain  = (int16_t)mic;
@@ -2599,14 +2643,17 @@ static void menu_apply_cb(void)
     SDR_UI_SetCWDecActive(effective);
     if (!effective) SDR_UI_ClearCWText();
   }
-  /* CW settings apply */
+  /* CW settings apply.  Pitch/reverse also move the eff_if pre-shift that
+   * centres the IF LPF on the tuned signal — recompute nco_if in CW mode. */
   if (cw_pitch != g_sdr.cw_pitch_hz) {
     g_sdr.cw_pitch_hz = cw_pitch;
     DSP_SetCWPitch(&g_dsp, cw_pitch, CSDR_AUDIO_SAMPLE_RATE);
+    if (g_sdr.mode == MODE_CW) csdr_apply_nco_if();
   }
   if (cw_rev != g_sdr.cw_reverse) {
     g_sdr.cw_reverse = cw_rev;
     DSP_SetCWReverse(&g_dsp, cw_rev);
+    if (g_sdr.mode == MODE_CW) csdr_apply_nco_if();
   }
   if (sidetone != g_sdr.sidetone_vol) {
     g_sdr.sidetone_vol = sidetone;
@@ -2614,7 +2661,11 @@ static void menu_apply_cb(void)
   }
   if (cw_filter != g_sdr.cw_filter_hz) {
     g_sdr.cw_filter_hz = cw_filter;
-    if (g_sdr.mode == MODE_CW) DSP_SetBW(&g_dsp, (float)cw_filter);
+    if (g_sdr.mode == MODE_CW) {
+      g_sdr.bw_hz = cw_filter;   /* keep sidebar BW readout in sync */
+      DSP_SetBW(&g_dsp, (float)cw_filter);
+      g_sdr.display_dirty |= DIRTY_SBR;
+    }
   }
   if (cw_wpm != g_sdr.cw_wpm) {
     g_sdr.cw_wpm    = cw_wpm;
@@ -2694,18 +2745,29 @@ static void csdr_vox_poll(void)
 static void csdr_apply_nco_if(void)
 {
   int32_t sl_sign = 0;
-  if (g_sdr.mode == MODE_USB || g_sdr.mode == MODE_CW ||
-      g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_FREEDV)
+  if (g_sdr.mode == MODE_USB || g_sdr.mode == MODE_DIGU ||
+      g_sdr.mode == MODE_FREEDV)
       sl_sign = +1;
   else if (g_sdr.mode == MODE_LSB || g_sdr.mode == MODE_DIGL)
       sl_sign = -1;
+  /* CW: pre-shift by −pitch (CW-N; +pitch for CW-R) so the IF LPF is centred
+   * on the correctly-tuned signal at dial±pitch; DSP_Process step 5d shifts
+   * the filtered baseband back, so the audio tone mapping is unchanged.
+   * Computed statelessly from g_sdr.mode/pitch on every call — no stale term
+   * can leak into other modes.  SL (SSB lo-cut) is excluded in CW: it would
+   * drag the signal off the filter centre. */
+  int32_t cw_shift = 0;
+  if (g_sdr.mode == MODE_CW)
+      cw_shift = g_sdr.cw_reverse ? +(int32_t)g_sdr.cw_pitch_hz
+                                  : -(int32_t)g_sdr.cw_pitch_hz;
   /* Marker sign: NCO_Step applies exp(−j·ω·t) (see DSP_SetFrequency), so
    * listening at +offset ABOVE the LO (right of spectrum center) requires
    * programming −offset into nco_if. */
   int32_t eff_if = -g_sdr.marker_offset_hz
                  + (int32_t)g_sdr.if_shift_hz
                  + (g_cat.rit_on ? (int32_t)g_sdr.rit_hz : 0)
-                 + sl_sign * (int32_t)g_sdr.sl_hz;
+                 + sl_sign * (int32_t)g_sdr.sl_hz
+                 + cw_shift;
   DSP_SetIFShift(&g_dsp, eff_if, CSDR_AUDIO_SAMPLE_RATE);
 }
 
@@ -2946,11 +3008,19 @@ static void     cat_set_att(uint8_t lv)
 
 /* Immediate volume apply — WM8731 LHPVOL updated via SAI stop/write/restart.
  * WM8731 NACKs all I2C when MCLK is active; must stop SAI to write LHPVOL.
- * Matches main-branch architecture: hardware LHPVOL controls volume, no rx_volume_scale. */
+ * Matches main-branch architecture: hardware LHPVOL controls volume, no rx_volume_scale.
+ * Deferred during TX: stopping SAI here would drop the SAI1 Block A1 TX feed
+ * (which also drives the QSE mixer during TX, see csdr_apply_tx) for the
+ * ~15 ms stop/write/restart gap, and WM8731_Init() would reset ANALOG_PATH
+ * (input source) mid-transmission.  cat_vol_dirty stays set so CSDR_Loop's
+ * consumer (gated on !tx_mode) re-tries this on every 10 ms CAT tick and
+ * applies it the instant TX ends. */
 static void csdr_apply_volume(uint8_t vol)
 {
   if (vol > 100U) vol = 100U;
   g_sdr.volume = vol;
+  if (g_sdr.tx_mode) { g_sdr.cat_vol_dirty = true; return; }
+  g_sdr.cat_vol_dirty = false;
 
   /* Soft-mute DSP immediately so SAI TX is silent during the stop/start gap */
   g_dsp.rx_volume_scale = 0.0f;
@@ -3008,7 +3078,6 @@ static void csdr_finish_rx_hw(void)
   }
   g_dsp.mic_buf = NULL;  /* TX → RX: DSP_ProcessTX sẽ không được gọi, clear cho an toàn */
   HAL_GPIO_WritePin(AUDIO_SD_GPIO_Port, AUDIO_SD_Pin, GPIO_PIN_SET); /* amp enable */
-  WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, false);
   WM8731_SetInputSource(&hi2c1, WM8731_I2C_ADDR, false); /* TX → RX: quay về LINE IN (QSD) */
   /* Lift the drain mute (mirrors csdr_apply_volume's mute convention) */
   g_dsp.rx_volume_scale = (g_sdr.volume == 0U) ? 0.0f : 1.0f;
@@ -3069,12 +3138,17 @@ static void csdr_apply_tx(void)
                     g_sdr.mode == MODE_FREEDV)                           ? base - 0.3f : base;
       if (lim < 1.0f) lim = 1.0f;
       PA_OC_SetCurrentLimit(lim); }
-    /* RX → TX: switch WM8731 input nếu tx_src==MIC, mute HP và shutdown amp (non-CW). */
+    /* RX → TX: switch WM8731 input nếu tx_src==MIC, shutdown headphone amp (non-CW).
+     * DACMU is NOT used here: the same WM8731 DAC output (SAI1 Block A1 / s_tx_buf)
+     * that feeds the headphone jack also feeds the QSE mixer during TX (see
+     * FIRMWARE_NOTES.md) — muting the DAC would silence the RF path along with the
+     * headphone.  AUDIO_SD alone gates the headphone power amp without touching
+     * the DAC feed, so the QSE keeps receiving IQ. CW skips this shutdown by
+     * design — the keyed carrier doubles as the operator's sidetone monitor. */
     bool use_mic_tx = (g_sdr.tx_src == 1U) && (g_sdr.mode != MODE_CW);
     WM8731_SetInputSource(&hi2c1, WM8731_I2C_ADDR, use_mic_tx);
     g_dsp.mic_buf = use_mic_tx ? s_rx_buf : NULL;
     if (g_sdr.mode != MODE_CW) {
-      WM8731_SetMute(&hi2c1, WM8731_I2C_ADDR, true);
       HAL_GPIO_WritePin(AUDIO_SD_GPIO_Port, AUDIO_SD_Pin, GPIO_PIN_RESET); /* amp shutdown */
     }
     if (pa_fitted) {
@@ -3278,6 +3352,15 @@ static void cat_set_bw(uint32_t hz)
              * as well as Hamlib normal (9000 Hz) and narrow (6000 Hz) AM filters. */
             if (hz < 1500U)       { hz = 1500U;  dbg_bw_clamped_count++; }
             else if (hz > 9000U)  { hz = 9000U;  dbg_bw_clamped_count++; }
+            break;
+        case MODE_CW:
+            /* CW: FW is the full passband width centred on the pitch
+             * (DSP_SetBW halves it into the one-sided IF LPF cutoff).
+             * Mirror into cw_filter_hz so menu display and CW mode
+             * re-entry keep using the CAT-set width. */
+            if (hz < 50U)         { hz = 50U;    dbg_bw_clamped_count++; }
+            else if (hz > 500U)   { hz = 500U;   dbg_bw_clamped_count++; }
+            g_sdr.cw_filter_hz = (uint16_t)hz;
             break;
         default:
             if (hz < 100U)        { hz = 100U;   dbg_bw_clamped_count++; }
