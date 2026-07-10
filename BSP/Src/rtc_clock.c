@@ -139,6 +139,49 @@ void RTC_Clock_SetTime(uint8_t h, uint8_t m, uint8_t s)
   RTC->BKP1R = RTC_CLOCK_MAGIC;
 }
 
+/* ── RTC_Clock_ShiftMs ───────────────────────────────────────────────────── */
+int32_t RTC_Clock_ShiftMs(int32_t shift_ms)
+{
+  if (!s_rtc_ok || shift_ms == 0) return 0;
+
+  /* Snapshot current time-of-day in ms (BYPSHAD: direct, re-read for
+   * SSR/TR coherency; SSR is a 256 Hz down-counter, PREDIV_S=255) */
+  uint32_t ss, tr;
+  do {
+    ss = RTC->SSR;
+    tr = RTC->TR;
+  } while (ss != RTC->SSR);
+  (void)RTC->DR;
+  uint32_t h = (((tr >> 20) & 0x3U) * 10U) + ((tr >> 16) & 0xFU);
+  uint32_t m = (((tr >> 12) & 0x7U) * 10U) + ((tr >>  8) & 0xFU);
+  uint32_t s = (((tr >>  4) & 0x7U) * 10U) + ( tr        & 0xFU);
+  int64_t old_ms = ((int64_t)(h * 3600U + m * 60U + s) * 1000)
+                 + (int64_t)(((255U - (ss & 0xFFU)) * 1000U) >> 8U);
+
+  /* Target rounded to the nearest whole second (sub-seconds restart at 0
+   * when leaving init mode, so only whole seconds can be written exactly) */
+  int64_t target = old_ms + shift_ms;
+  int64_t sec    = (target + 500) / 1000;          /* rounded             */
+  int64_t new_ms = sec * 1000;
+  int64_t sod    = ((sec % 86400) + 86400) % 86400; /* seconds-of-day     */
+
+  uint32_t nh = (uint32_t)(sod / 3600);
+  uint32_t nm = (uint32_t)((sod % 3600) / 60);
+  uint32_t ns = (uint32_t)(sod % 60);
+  uint32_t ntr = ((nh / 10U) << 20U) | ((nh % 10U) << 16U)
+               | ((nm / 10U) << 12U) | ((nm % 10U) <<  8U)
+               | ((ns / 10U) <<  4U) |  (ns % 10U);
+
+  rtc_unlock();
+  if (!rtc_enter_init()) { rtc_lock(); return 0; }
+  RTC->TR = ntr;
+  rtc_exit_init();
+  rtc_lock();
+
+  /* Applied shift = new − old (may differ from request by ±500 ms rounding) */
+  return (int32_t)(new_ms - old_ms);
+}
+
 /* ── RTC_Clock_GetTime ───────────────────────────────────────────────────── */
 void RTC_Clock_GetTime(uint8_t *h, uint8_t *m, uint8_t *s)
 {

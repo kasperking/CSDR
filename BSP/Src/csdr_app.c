@@ -38,6 +38,8 @@
 #include "cw_decode.h"
 #include "cw_keyer.h"
 #include "rtc_clock.h"
+#include "ft8_mode.h"
+#include "ft8_app.h"
 #include <string.h>
 #include <math.h>
 
@@ -383,6 +385,9 @@ static void csdr_save_settings(void)
   fs.cw_reverse     = g_sdr.cw_reverse ? 1U : 0U;
   fs.cw_filter_hz   = g_sdr.cw_filter_hz;
   fs.cw_decode_on   = g_sdr.cw_decode_on ? 1U : 0U;
+  fs.ft8_decode_on  = g_sdr.ft8_decode_on ? 1U : 0U;
+  memcpy(fs.ft8_call, g_sdr.ft8_call, sizeof(fs.ft8_call));
+  memcpy(fs.ft8_grid, g_sdr.ft8_grid, sizeof(fs.ft8_grid));
   fs.tx_src         = g_sdr.tx_src;
   fs.audio_gain_db   = g_sdr.audio_gain_db;
 
@@ -450,7 +455,11 @@ void CSDR_Init(void)
     if (Flash_LoadSettings(&g_flash, &fs) == HAL_OK) {
       /* VFO A */
       g_sdr.freq_hz       = fs.freq_hz;
-      g_sdr.mode          = (SDR_Mode_t)fs.mode;
+      /* Clamp against MODE_COUNT: an older firmware image may have persisted
+       * a mode index (e.g. the now-removed FreeDV=7) that is out of range
+       * for the current build's mode table — fall back to USB rather than
+       * read past the mode-name/colour arrays. */
+      g_sdr.mode          = (fs.mode < (uint8_t)MODE_COUNT) ? (SDR_Mode_t)fs.mode : MODE_USB;
       g_sdr.band_idx      = fs.band_idx;
       g_sdr.step          = (FreqStep_t)fs.step;
       g_sdr.bw_hz         = fs.bw_hz;
@@ -511,6 +520,21 @@ void CSDR_Init(void)
       g_sdr.cw_reverse     = (fs.cw_reverse    != 0U);
       g_sdr.cw_filter_hz   = (fs.cw_filter_hz  >= 50U  && fs.cw_filter_hz  <= 500U) ? fs.cw_filter_hz   : 500U;
       g_sdr.cw_decode_on   = (fs.cw_decode_on  != 0U);
+      g_sdr.ft8_decode_on  = (fs.ft8_decode_on != 0U);
+      /* FT8 station: copy with forced termination; reject non-printable
+       * garbage from old blobs (fields read 0 there → stay empty). */
+      memcpy(g_sdr.ft8_call, fs.ft8_call, sizeof(g_sdr.ft8_call));
+      memcpy(g_sdr.ft8_grid, fs.ft8_grid, sizeof(g_sdr.ft8_grid));
+      g_sdr.ft8_call[sizeof(g_sdr.ft8_call) - 1U] = '\0';
+      g_sdr.ft8_grid[sizeof(g_sdr.ft8_grid) - 1U] = '\0';
+      for (uint8_t ci = 0U; ci < sizeof(g_sdr.ft8_call); ci++) {
+        char cch = g_sdr.ft8_call[ci];
+        if (cch != '\0' && (cch < ' ' || cch > 'Z')) { g_sdr.ft8_call[0] = '\0'; break; }
+      }
+      for (uint8_t ci = 0U; ci < sizeof(g_sdr.ft8_grid); ci++) {
+        char cch = g_sdr.ft8_grid[ci];
+        if (cch != '\0' && (cch < ' ' || cch > 'Z')) { g_sdr.ft8_grid[0] = '\0'; break; }
+      }
       g_sdr.tx_src         = (fs.tx_src <= 1U) ? fs.tx_src : 0U;
       /* Calibration */
       g_sdr.xtal_ppm         = fs.xtal_ppm;
@@ -522,7 +546,7 @@ void CSDR_Init(void)
       g_sdr.iq_phase         = fs.iq_phase;
       /* VFO B */
       g_sdr.vfo_b.freq_hz     = fs.vfo_b_freq_hz;
-      g_sdr.vfo_b.mode        = (SDR_Mode_t)fs.vfo_b_mode;
+      g_sdr.vfo_b.mode        = (fs.vfo_b_mode < (uint8_t)MODE_COUNT) ? (SDR_Mode_t)fs.vfo_b_mode : MODE_USB;
       g_sdr.vfo_b.band_idx    = fs.vfo_b_band_idx;
       g_sdr.vfo_b.step        = (FreqStep_t)fs.vfo_b_step;
       g_sdr.vfo_b.bw_hz       = fs.vfo_b_bw_hz;
@@ -633,6 +657,10 @@ void CSDR_Init(void)
     DSP_SetBW(&g_dsp, (float)g_sdr.cw_filter_hz);
   CWDec_Init(&g_cw_dec);
   g_cw_dec.dit_ms = 1200U / (uint32_t)g_sdr.cw_wpm;
+  /* FT8 decoder — needs D2 SRAM clocks + FFT tables; armed from EEPROM flag,
+   * becomes active only in DIGU/USB RX (gated per-poll in FT8_Poll). */
+  FT8_Init();
+  FT8_SetEnabled(g_sdr.ft8_decode_on);
   /* Booting straight into CW: arm the INFO-strip [DEC] placeholder (it is
    * otherwise only set on mode change / F3 toggle). */
   if (g_sdr.mode == MODE_CW)
@@ -1120,6 +1148,48 @@ static void csdr_on_mode_changed(SDR_Mode_t old_mode)
     }
 }
 
+/* Launch the full-screen FT8 monitor app (menu root ACTION "FT8").
+ * The decoder tap only runs in DIGU/USB, so force DIGU first when needed —
+ * same call sequence as a menu mode change.  The mode intentionally stays
+ * DIGU after exit (the user is on an FT8 frequency).  On return, encoder
+ * counts/button events accumulated while the app owned the input are
+ * discarded so the VFO does not jump (same residue class as the Cal app). */
+static void csdr_ft8_app_launch(void)
+{
+  /* Always force DIGU (not just from non-USB modes): DIGU bypasses RX AGC
+   * (better decode) and the TX compressor (clean beacon tone), and the TX
+   * drive comes from digi_gain — exactly the WSJT-X path. */
+  if (g_sdr.mode != MODE_DIGU) {
+    SDR_Mode_t old_mode = g_sdr.mode;
+    g_sdr.mode  = MODE_DIGU;
+    g_sdr.bw_hz = default_bw_for_mode(MODE_DIGU);
+    g_sdr.sl_hz = 0U;
+    DSP_SetMode(&g_dsp, MODE_DIGU, CSDR_AUDIO_SAMPLE_RATE);
+    DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
+    AGC_SetMode(&g_dsp.agc, MODE_DIGU, g_sdr.agc_speed, CSDR_AUDIO_SAMPLE_RATE);
+    csdr_apply_nco_if();
+    csdr_on_mode_changed(old_mode);
+  }
+  FT8_App_Run();
+  (void)Encoder_GetDelta(&g_encoder);
+  (void)Encoder_GetButton(&g_encoder);
+  (void)Encoder_GetLongPress(&g_encoder);
+}
+
+/* Public wrappers for full-screen apps (CSDR_Loop-equivalent context only) */
+void CSDR_RequestTX(bool tx)
+{
+  if (g_sdr.tx_mode == tx) return;
+  g_sdr.tx_mode = tx;
+  g_sdr.display_dirty |= DIRTY_ALL;
+  csdr_apply_tx();
+}
+
+void CSDR_SaveSettings(void)
+{
+  csdr_save_settings();
+}
+
 void CSDR_Loop(void)
 {
   RuntimeDiag_MainLoopBeat();
@@ -1197,6 +1267,10 @@ void CSDR_Loop(void)
       SDR_UI_DrawCWText(cw_buf);
     }
   }
+
+  /* FT8 decoder – cooperative tick, ≤~1.5 ms of STFT/search/LDPC work per
+   * call; self-gates on DIGU/USB + RX and drives the INFO strip itself. */
+  FT8_Poll();
 
   /* Timed tasks */
   static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0, t_spec=0, t_tx_spec=0;
@@ -2038,6 +2112,8 @@ static void csdr_handle_encoder(void)
         } else if (strcmp(name, "SWR Scan") == 0) {
           csdr_marker_recenter();  /* scan retunes + restores LO to freq_hz */
           SWR_Scan_Run();
+        } else if (strcmp(name, "FT8") == 0) {
+          csdr_ft8_app_launch();
         } else if (strcmp(name, "Factory Reset") == 0) {
           csdr_factory_reset();
         }
@@ -2100,6 +2176,7 @@ static void csdr_handle_keys(void)
         g_sdr.bc_mode,
         g_sdr.marker_track ? 1U : 0U,
         g_sdr.bass_db, g_sdr.treble_db,
+        g_sdr.ft8_decode_on,
         menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
@@ -2218,6 +2295,8 @@ static void csdr_handle_keys(void)
           } else if (strcmp(name, "SWR Scan") == 0) {
             csdr_marker_recenter();  /* scan retunes + restores LO to freq_hz */
             SWR_Scan_Run();
+          } else if (strcmp(name, "FT8") == 0) {
+            csdr_ft8_app_launch();
           } else if (strcmp(name, "Factory Reset") == 0) {
             csdr_factory_reset();
           }
@@ -2360,8 +2439,7 @@ static void csdr_update_spectrum(void)
       case MODE_LSB:
       case MODE_DIGL: bw_lo_ratio = full; bw_hi_ratio = 0.0f; break;
       case MODE_USB:
-      case MODE_DIGU:
-      case MODE_FREEDV: bw_lo_ratio = 0.0f; bw_hi_ratio = full; break;
+      case MODE_DIGU: bw_lo_ratio = 0.0f; bw_hi_ratio = full; break;
       case MODE_CW: {
         /* Passband centred on the pitch (bw_hz = full CW filter width):
          * pitch − bw/2 .. pitch + bw/2 above the dial (mirrored for CW-R). */
@@ -2421,8 +2499,7 @@ static void csdr_refresh_display(void)
     ui.att_db    = g_sdr.att_db;
     ui.att_x2    = g_att.current_atten_x2;   /* 0.5 dB precision for sidebar display */
     ui.rf_agc_on = g_sdr.rf_agc_on;
-    ui.mic_gain  = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL ||
-                    g_sdr.mode == MODE_FREEDV)
+    ui.mic_gain  = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL)
                    ? g_sdr.digi_gain : g_sdr.mic_gain;
     ui.tx_power  = g_sdr.tx_power;
     ui.pa_watts  = g_sdr.pa_watts;
@@ -2513,7 +2590,6 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m)
     case MODE_LSB:
     case MODE_DIGU:
     case MODE_DIGL:   return 3000U;
-    case MODE_FREEDV: return 4000U;
     case MODE_CW:     return 500U;
     default:          return 4000U;
   }
@@ -2528,6 +2604,7 @@ static void menu_apply_cb(void)
   uint8_t nb_level, nr_level, nr, bc, marker_trk;
   bool ext_pa; uint8_t ext_pa_dly, ext_pa_drv;
   int8_t bass_db, treble_db;
+  bool ft8_dec;
   Menu_SaveToSDR(&g_menu, &agc_speed, &nb, &nr, &rit,
                   &vol, &mic, &digi, &sq, &step, &bw, &att, &band, &mode, &usb, &zoom,
                   &ext_alc, &rfpwr, &ext_pa, &ext_pa_dly, &ext_pa_drv,
@@ -2536,7 +2613,8 @@ static void menu_apply_cb(void)
                   &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
                   &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream,
                   &tx_src_new, &nb_level, &nr_level, &bc, &marker_trk,
-                  &bass_db, &treble_db);
+                  &bass_db, &treble_db,
+                  &ft8_dec);
   if (bass_db != g_sdr.bass_db || treble_db != g_sdr.treble_db) {
     g_sdr.bass_db   = bass_db;
     g_sdr.treble_db = treble_db;
@@ -2643,6 +2721,10 @@ static void menu_apply_cb(void)
     SDR_UI_SetCWDecActive(effective);
     if (!effective) SDR_UI_ClearCWText();
   }
+  if (ft8_dec != g_sdr.ft8_decode_on) {
+    g_sdr.ft8_decode_on = ft8_dec;
+    FT8_SetEnabled(ft8_dec);   /* FT8_Poll gates on DIGU/USB + RX and owns the UI strip */
+  }
   /* CW settings apply.  Pitch/reverse also move the eff_if pre-shift that
    * centres the IF LPF on the tuned signal — recompute nco_if in CW mode. */
   if (cw_pitch != g_sdr.cw_pitch_hz) {
@@ -2745,8 +2827,7 @@ static void csdr_vox_poll(void)
 static void csdr_apply_nco_if(void)
 {
   int32_t sl_sign = 0;
-  if (g_sdr.mode == MODE_USB || g_sdr.mode == MODE_DIGU ||
-      g_sdr.mode == MODE_FREEDV)
+  if (g_sdr.mode == MODE_USB || g_sdr.mode == MODE_DIGU)
       sl_sign = +1;
   else if (g_sdr.mode == MODE_LSB || g_sdr.mode == MODE_DIGL)
       sl_sign = -1;
@@ -3083,6 +3164,34 @@ static void csdr_finish_rx_hw(void)
   g_dsp.rx_volume_scale = (g_sdr.volume == 0U) ? 0.0f : 1.0f;
 }
 
+/* T/R sequencing poll for full-screen apps driving TX via CSDR_RequestTX
+ * (ft8_app beacon).  Mirrors the three steps CSDR_Loop runs in its 10 ms
+ * CAT tick — ext-PA keying gate, TX→RX drain release, deferred gain
+ * reapply — which otherwise never execute while an app owns the loop
+ * (without this, ext-PA RF never opens and the radio stays half-keyed and
+ * muted after the app's TX ends).  All three consume shared flags
+ * idempotently, so both this and the CSDR_Loop block may run. */
+void CSDR_PollTxSequencing(void)
+{
+  uint32_t now = HAL_GetTick();
+  if (s_rf_gate_pending) {
+    if (!g_sdr.tx_mode) {
+      s_rf_gate_pending = false;   /* TX aborted before the gate expired */
+    } else if ((now - s_rf_gate_tick) >= (uint32_t)g_sdr.ext_pa_delay_ms) {
+      s_rf_gate_pending = false;
+      g_sdr.cat_tx_dirty = true;   /* gain-only reapply opens RF */
+    }
+  }
+  if (s_rx_drain_pending && (now - s_rx_drain_tick) >= TX_RF_DRAIN_MS) {
+    s_rx_drain_pending = false;
+    csdr_finish_rx_hw();
+  }
+  if (g_sdr.cat_tx_dirty) {
+    g_sdr.cat_tx_dirty = false;
+    csdr_apply_tx();
+  }
+}
+
 /* TX/RX apply — RX→TX hardware switches synchronously here; TX→RX arms the
  * release drain and the hardware release runs in csdr_finish_rx_hw() from
  * CSDR_Loop TX_RF_DRAIN_MS later (see the sequencing-state comment block).
@@ -3134,8 +3243,7 @@ static void csdr_apply_tx(void)
     /* Nạp ngưỡng INA226: base từ cài đặt, CW/DIGI thấp hơn 0.5/0.3A */
     { float base = (float)g_sdr.pa_oc_limit_idx * 0.1f;
       float lim  = (g_sdr.mode == MODE_CW)                                ? base - 0.5f :
-                   (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL ||
-                    g_sdr.mode == MODE_FREEDV)                           ? base - 0.3f : base;
+                   (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL)   ? base - 0.3f : base;
       if (lim < 1.0f) lim = 1.0f;
       PA_OC_SetCurrentLimit(lim); }
     /* RX → TX: switch WM8731 input nếu tx_src==MIC, shutdown headphone amp (non-CW).
@@ -3191,8 +3299,7 @@ static void csdr_apply_tx(void)
    * target — see pa_protect.h).
    * Clamped to [0.01, 1.0]. Zero when no PA fitted (pa_watts=0). */
   {
-    bool digi    = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL ||
-                    g_sdr.mode == MODE_FREEDV);
+    bool digi    = (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL);
     bool cw_like = (g_sdr.mode == MODE_CW) || g_sdr.tune_mode;
     uint8_t gain_src_pct = cw_like ? 100U : (digi ? g_sdr.digi_gain : g_sdr.mic_gain);
     /* TUNE: fixed reduced drive (TUNE_POWER_PCT), independent of the normal

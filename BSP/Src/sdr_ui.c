@@ -965,8 +965,8 @@ static void draw_compact_status(const SDR_UI_State_t *ui)
   s_sbr_cache.step       = ui->step;
   s_sbr_cache.valid      = true;
 
-  static const char *const mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL","FDV"};
-  const char *mode_str = (ui->mode < 8U) ? mode_s[ui->mode] : "---";
+  static const char *const mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
+  const char *mode_str = (ui->mode < 7U) ? mode_s[ui->mode] : "---";
 
   char vol_str[8]; snprintf(vol_str, sizeof(vol_str), "VOL:%u",  ui->volume);
   char sql_str[8]; snprintf(sql_str, sizeof(sql_str), "SQL:%u",  ui->squelch);
@@ -1344,8 +1344,8 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   }
 
   /* RX = green (subtle), TX = red — per UI spec */
-  static const char *const vfo_mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL","FDV"};
-  const char *vfo_mode_str = (ui->mode < 8U) ? vfo_mode_s[ui->mode] : "---";
+  static const char *const vfo_mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
+  const char *vfo_mode_str = (ui->mode < 7U) ? vfo_mode_s[ui->mode] : "---";
   const char *rt_str       = ui->tx_mode ? "TX" : "RX";
   uint16_t    rt_color     = ui->tx_mode ? UI_TX_BG : UI_RX_BG;
 
@@ -1392,11 +1392,11 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
     } else
       snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%lu", (unsigned long)ui->bw_hz);
   }
-  static const uint16_t rp_mode_col_ls[8] = {
+  static const uint16_t rp_mode_col_ls[7] = {
     UI_MODE_AM, UI_MODE_FM, UI_MODE_USB, UI_MODE_LSB,
-    UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL, UI_MODE_FREEDV
+    UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL
   };
-  uint16_t rp_mc = (ui->mode < 8U) ? rp_mode_col_ls[ui->mode] : UI_STATUS_LBL;
+  uint16_t rp_mc = (ui->mode < 7U) ? rp_mode_col_ls[ui->mode] : UI_STATUS_LBL;
   uint16_t rp_nb = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
   uint16_t rp_nr = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
 #endif /* ST7789 landscape pre-compute */
@@ -1426,11 +1426,11 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
     } else
       snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%lu", (unsigned long)ui->bw_hz);
   }
-  static const uint16_t rp_mode_col[8] = {
+  static const uint16_t rp_mode_col[7] = {
     UI_MODE_AM, UI_MODE_FM, UI_MODE_USB, UI_MODE_LSB,
-    UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL, UI_MODE_FREEDV
+    UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL
   };
-  uint16_t rp_mc = (ui->mode < 8U) ? rp_mode_col[ui->mode] : UI_STATUS_LBL;
+  uint16_t rp_mc = (ui->mode < 7U) ? rp_mode_col[ui->mode] : UI_STATUS_LBL;
   uint16_t rp_nb = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
   uint16_t rp_nr = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
 #endif /* ST7789 portrait pre-compute */
@@ -1483,11 +1483,11 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   fx_base = (uint16_t)(vfo_right_edge - total_w);
   const uint16_t mode_x = (uint16_t)(vfo_right_edge + 10U);  /* 190, fixed */
   const uint16_t mode_y = (uint16_t)(freq_top + (BIG_H - MED_H) / 2U);
-  static const uint16_t s_mode_col[8] = {
+  static const uint16_t s_mode_col[7] = {
       UI_MODE_AM, UI_MODE_FM,  UI_MODE_USB, UI_MODE_LSB,
-      UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL, UI_MODE_FREEDV
+      UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL
   };
-  uint16_t mode_color = (ui->mode < 8U) ? s_mode_col[ui->mode] : UI_STATUS_LBL;
+  uint16_t mode_color = (ui->mode < 7U) ? s_mode_col[ui->mode] : UI_STATUS_LBL;
   rt_bx = (uint16_t)(mode_x + (uint16_t)(strlen(vfo_mode_str) * MED_W) + 12U);
 #else
   fx_base = (fx_base >= 14U) ? (uint16_t)(fx_base - 14U) : 0U;

@@ -31,12 +31,9 @@
 #include <string.h>
 #include "runtime_diag.h"
 #include "spi_assets.h"
-#include "freedv_mode.h"
 #include "nr_spec.h"
+#include "ft8_mode.h"
 /* USER CODE END Includes */
-
-/* FreeDV state — owned here; initialised on each MODE_FREEDV entry */
-static FreeDV_State_t s_fdv;
 
 /* ── FFT backend selection ──────────────────────────────────────────────────
  * Default: CMSIS-DSP arm_cfft_f32 (SDR_USE_CMSIS_FFT defined below).
@@ -533,7 +530,6 @@ void AGC_SetMode(AGC_t *agc, SDR_Mode_t mode, uint8_t speed, uint32_t sample_rat
     case MODE_FM:
     case MODE_DIGU:
     case MODE_DIGL:
-    case MODE_FREEDV:
       agc->bypass     = true;
       agc->gain       = 1.0f;
       agc->hang_timer = 0U;
@@ -906,13 +902,8 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
 
   /* Reset compressor when entering a voice mode from a digital mode so it
    * re-tracks from zero rather than inheriting the settled tone level. */
-  if (mode != MODE_DIGU && mode != MODE_DIGL && mode != MODE_FREEDV)
+  if (mode != MODE_DIGU && mode != MODE_DIGL)
     dsp->tx.comp_env = 0.0f;
-
-  /* Initialise FreeDV sub-path on mode entry so the resampler and Hilbert
-   * start from a clean state (avoids chirp artefact from stale history). */
-  if (mode == MODE_FREEDV)
-    FreeDV_Init(&s_fdv, 1.0f);
 
   float mode_bw_hz;
   switch (mode)
@@ -923,7 +914,6 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
     case MODE_LSB:
     case MODE_DIGU:
     case MODE_DIGL:   mode_bw_hz = 3000.0f;  break;
-    case MODE_FREEDV: mode_bw_hz = 4000.0f;  break;  /* 8 kHz sub-band: 4 kHz one-sided */
     case MODE_CW:     mode_bw_hz = 500.0f;   break;
     default:          mode_bw_hz = 4000.0f;  break;
   }
@@ -1457,7 +1447,7 @@ void DSP_Process(DSP_State_t *dsp,
     float filt_q_h = filt_q;   /* hq arg:    H{Q} for SSB/CW modes, raw Q for others             */
     if (dsp->mode == MODE_USB    || dsp->mode == MODE_LSB  ||
         dsp->mode == MODE_DIGU   || dsp->mode == MODE_DIGL ||
-        dsp->mode == MODE_FREEDV || dsp->mode == MODE_CW)
+        dsp->mode == MODE_CW)
     {
       /* Hardware QSD produces Q = -sin for a signal at +f (USB side), i.e. the
        * complex baseband is exp(-jωt).  FFT_Precomp negates Im to fix the
@@ -1480,7 +1470,6 @@ void DSP_Process(DSP_State_t *dsp,
       case MODE_FM:   audio = Demod_FM(&dsp->fm, filt_i, filt_q);               break;
       case MODE_USB:
       case MODE_DIGU: audio = Demod_USB(filt_i_d, filt_q_h);                    break;
-      case MODE_FREEDV: audio = FreeDV_RX_Sample(&s_fdv, filt_i_d, filt_q_h);   break;
       case MODE_LSB:
       case MODE_DIGL: audio = Demod_LSB(filt_i_d, filt_q_h);                    break;
       case MODE_CW:   audio = dsp->cw_reverse ? Demod_LSB(filt_i_d, filt_q_h)
@@ -1495,6 +1484,13 @@ void DSP_Process(DSP_State_t *dsp,
      *        Without this, AM demod (always-positive envelope) produces a DC
      *        signal that is inaudible through AC-coupled headphone outputs. */
     audio = IIR_DCBlock_Process(&dsp->dc_block_audio, audio);
+
+    /* ── 7b2. FT8 decoder tap — post-demod/LPF/DC-block, pre-notch/NR/AGC so
+     *         decode is independent of audio shaping, and pre-squelch (the
+     *         squelch gate only zeroes audio_out).  Gate flag is owned by
+     *         FT8_Poll; both run in CSDR_Loop context. */
+    if (g_ft8_tap_enable)
+      FT8_FeedAudio(audio);
 
     /* ── 7c. Notch filter – narrow-band rejection before AGC */
     if (dsp->notch_on)
@@ -1673,6 +1669,12 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
       g_usb_audio.tx_rd = (uint16_t)((g_usb_audio.tx_rd + 2U) % USB_AUDIO_RING_SIZE);
     }
 
+    /* ── 1b. FT8 beacon tone — replaces the mic/USB source while active.
+     *        Injected pre-gain so digi drive, tx_power, PA foldback and ALC
+     *        all apply exactly as for WSJT-X audio (DIGU linear path). */
+    if (g_ft8_tx_tone)
+      audio = FT8_TxSample();
+
     /* ── 2. Audio DC block – remove mic/line DC offset before Hilbert.
      *       DC in audio produces a carrier tone at the TX LO frequency. */
     audio = IIR_DCBlock_Process(&dsp->tx.dc_block, audio);
@@ -1713,7 +1715,7 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
      *     Both stages bypassed.  Pure linear pass — no gain riding, no
      *     harmonic generation.  audio_gain (from digi_gain) is the only
      *     amplitude scaling.  Preserves tone purity for WSJT-X/FT8/Tune. */
-    if (dsp->mode != MODE_DIGU && dsp->mode != MODE_DIGL && dsp->mode != MODE_FREEDV) {
+    if (dsp->mode != MODE_DIGU && dsp->mode != MODE_DIGL) {
       float env = fabsf(audio_lp);
       if (env > dsp->tx.comp_env)
         dsp->tx.comp_env = dsp->tx.comp_attack * dsp->tx.comp_env
@@ -1760,15 +1762,6 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         tx_q = (dsp->mode == MODE_USB || dsp->mode == MODE_DIGU) ? +audio_h : -audio_h;
         break;
       }
-      case MODE_FREEDV:
-        /* FreeDV NBUSB: audio is decimated to 8 kHz, modulated via a
-         * separate Hilbert SSB at 8 kHz bandwidth, then IQ is held at the
-         * 48 kHz output rate (sample-hold between 8 kHz updates).
-         * audio_gain is already applied inside FreeDV_TX_Sample via s_fdv.audio_gain;
-         * pass raw audio_lp (compressor already bypassed above). */
-        s_fdv.audio_gain = dsp->tx.audio_gain;
-        FreeDV_TX_Sample(&s_fdv, audio_lp, &tx_i, &tx_q);
-        break;
       case MODE_AM:
         /* Carrier ← drive_gain (tx_power × PA foldback × ALC × trim), same
          * role as FM's fm_amp below, so PA protection/TRIP and tx_power act

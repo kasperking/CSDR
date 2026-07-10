@@ -45,7 +45,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      60U   /* 7 groups (incl. About sub-group) + 53 leaf items */
+#define MENU_ITEM_COUNT      63U   /* 7 groups (incl. About sub-group) + 56 leaf items */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -164,6 +164,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t bc_mode,
                        uint8_t marker_track,
                        int8_t bass_db, int8_t treble_db,
+                       bool ft8_decode_on,
                        MenuApplyFn apply_cb);
 
 /**
@@ -193,7 +194,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *nr_level,
                      uint8_t *bc_mode,
                      uint8_t *marker_track,
-                     int8_t *bass_db, int8_t *treble_db);
+                     int8_t *bass_db, int8_t *treble_db,
+                     bool *ft8_decode_on);
 
 #ifdef __cplusplus
 }

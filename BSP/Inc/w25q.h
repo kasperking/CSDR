@@ -226,6 +226,10 @@ typedef struct {
   int8_t     bass_db;            /* RX bass shelf gain dB: -10..+10; also the
                                     pre-tone-control blob padding value (0=flat) */
   int8_t     treble_db;          /* RX treble shelf gain dB: -10..+10; same padding */
+  uint8_t    ft8_decode_on;      /* FT8 decoder armed: 0=off 1=on (grows the
+                                    struct → one-time settings reset, self-heals) */
+  char       ft8_call[12];       /* FT8 TX callsign, NUL-terminated; [0]=0 = unset */
+  char       ft8_grid[5];        /* FT8 TX 4-char grid, NUL-terminated             */
 
   /* ── always last ────────────────────────────────────────────── */
   uint32_t   crc32;

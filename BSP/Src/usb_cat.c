@@ -92,7 +92,7 @@ static inline uint8_t cat_clamp_vfo(uint8_t vfo)
 
 /* =========================================================
  * Mode mapping
- * SDR enum: 0=AM, 1=FM, 2=USB, 3=LSB, 4=CW, 5=DIGU, 6=DIGL, 7=FREEDV
+ * SDR enum: 0=AM, 1=FM, 2=USB, 3=LSB, 4=CW, 5=DIGU, 6=DIGL
  * ========================================================= */
 uint8_t CAT_SDRModeToCat(uint8_t m)
 {
@@ -106,8 +106,6 @@ uint8_t CAT_SDRModeToCat(uint8_t m)
          * CAT_MODE_DIGU/DIGL (0x0C/0x0D) are non-standard and would corrupt the frame */
         case 5U: return CAT_MODE_USB;
         case 6U: return CAT_MODE_LSB;
-        /* FreeDV reports as USB (narrowband SSB convention) */
-        case 7U: return CAT_MODE_USB;
         default: return CAT_MODE_USB;
     }
 }

@@ -30,12 +30,12 @@
 
 /* ── Mode metadata ────────────────────────────────────────────────────────── */
 static const char *const s_mode_names[MODE_COUNT] = {
-  "AM", "FM", "USB", "LSB", "CW", "DIGU", "DIGL", "FDV"
+  "AM", "FM", "USB", "LSB", "CW", "DIGU", "DIGL"
 };
 
 static const uint16_t s_mode_colors[MODE_COUNT] = {
   UI_MODE_AM, UI_MODE_FM, UI_MODE_USB, UI_MODE_LSB,
-  UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL, UI_MODE_FREEDV
+  UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL
 };
 
 /* ── Module state ─────────────────────────────────────────────────────────── */

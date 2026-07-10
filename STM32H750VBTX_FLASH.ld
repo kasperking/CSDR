@@ -178,6 +178,18 @@ SECTIONS
     . = ALIGN(32);
   } >RAM_D1
 
+  /* FT8 decoder working set – D2 SRAM (0x30000000, 288K), CPU-only (no DMA).
+   * Waterfall + FFT buffers từ ft8_mode.c: __attribute__((section(".ft8_ram")))
+   * NOLOAD: startup không đụng tới; ft8_mode.c tự init khi dùng.
+   * D2 SRAM clocks phải bật trước khi truy cập (FT8_Init làm việc này). */
+  .ft8_ram (NOLOAD) :
+  {
+    . = ALIGN(8);
+    *(.ft8_ram)
+    *(.ft8_ram*)
+    . = ALIGN(8);
+  } >RAM_D2
+
   /* Remove information from the standard libraries */
   /DISCARD/ :
   {

@@ -13,7 +13,7 @@
   *
   *  Layout: 4-column × 2-row grid over the SPEC+WF zone
   *   Row 0: AM  FM  USB  LSB
-  *   Row 1: CW DIGU DIGL FDV
+  *   Row 1: CW DIGU DIGL
   ******************************************************************************
   */
 /* USER CODE END Header */

@@ -29,6 +29,7 @@ static int32_t _att_val, _sq_val, _zoom_val, _bw_val;
 static int32_t _rxshift_val, _notch_val, _notchhz_val;
 static int32_t _nblvl_val, _nrlvl_val, _bc_val;
 static int32_t _cwdec_val;
+static int32_t _ft8dec_val;
 
 /* CW group */
 static int32_t _cw_pitch_val, _cw_wpm_val, _keyer_val, _paddlerev_val;
@@ -62,7 +63,7 @@ static const char *bkin_strs[]  = { "OFF", "SEMI", "FULL" };
 static const char *step_strs[] = { "1Hz","10Hz","100Hz","1KHz","10KHz","100KHz" };
 static const char *band_strs[] = { "160m","80m","60m","40m","30m",
                                     "20m","17m","15m","12m","10m","6m" };
-static const char *mode_strs[] = { "AM","FM","USB","LSB","CW","DIGU","DIGL","FDV" };
+static const char *mode_strs[] = { "AM","FM","USB","LSB","CW","DIGU","DIGL" };
 static const char *usb_strs[]       = { "Off","On" };
 static const char *iq_stream_strs[] = { "IQ","Demod" };
 static const char *tx_src_strs[]    = { "USB","MIC" };
@@ -249,8 +250,12 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[15] = (MenuItem_t){ "Notch",   MENU_TYPE_ENUM, 0,0,0,         &_notch_val,  onoff_strs,2U, NULL,NULL,0 };
   m->items[16] = (MenuItem_t){ "Notch Hz",MENU_TYPE_INT,  100,4000,50,   &_notchhz_val,NULL,      0U, NULL,"Hz",0 };
   m->items[17] = (MenuItem_t){ "Beat Cxl",MENU_TYPE_ENUM, 0,0,0,         &_bc_val,     bc_strs,   3U, NULL,NULL,0 };
-  m->items[18] = (MenuItem_t){ "RIT(Hz)", MENU_TYPE_INT,  -999,999,1,    &_rit_val,    NULL,      0U, NULL,NULL,0 };
-  m->items[19] = (MenuItem_t){ "RX Shift",MENU_TYPE_INT,  -2000,2000,50, &_rxshift_val,NULL,      0U, NULL,"Hz",0 };
+  /* FT8 decoder toggle sits with the other RX DSP features (after Beat Cxl).
+   * RIT / RX Shift keep their value pointers but moved to slots 60/61 so the
+   * view order (ascending slot) stays BW..Beat Cxl, FT8 Dec, RIT, RX Shift. */
+  m->items[18] = (MenuItem_t){ "FT8 Dec", MENU_TYPE_ENUM, 0,0,0,         &_ft8dec_val, onoff_strs,2U, NULL,NULL,0 };
+  m->items[60] = (MenuItem_t){ "RIT(Hz)", MENU_TYPE_INT,  -999,999,1,    &_rit_val,    NULL,      0U, NULL,NULL,0 };
+  m->items[61] = (MenuItem_t){ "RX Shift",MENU_TYPE_INT,  -2000,2000,50, &_rxshift_val,NULL,      0U, NULL,"Hz",0 };
 
   /* ── Audio group (parent = 1) ───────────────────────────── */
   m->items[20] = (MenuItem_t){ "Volume",    MENU_TYPE_INT, 0,100,5, &_vol_val, NULL,0U,NULL,NULL,1 };
@@ -263,7 +268,7 @@ void Menu_Init(Menu_Handle_t *m)
   /* ── Tuning group (parent = 2) ──────────────────────────── */
   m->items[25] = (MenuItem_t){ "Step",MENU_TYPE_ENUM,0,0,0,&_step_val,step_strs,6U, NULL,NULL,2 };
   m->items[26] = (MenuItem_t){ "Band",MENU_TYPE_ENUM,0,0,0,&_band_val,band_strs,11U,NULL,NULL,2 };
-  m->items[27] = (MenuItem_t){ "Mode",MENU_TYPE_ENUM,0,0,0,&_mode_val,mode_strs,8U, NULL,NULL,2 };
+  m->items[27] = (MenuItem_t){ "Mode",MENU_TYPE_ENUM,0,0,0,&_mode_val,mode_strs,7U, NULL,NULL,2 };
   m->items[56] = (MenuItem_t){ "Marker",MENU_TYPE_ENUM,0,0,0,&_marker_val,marker_strs,2U,NULL,NULL,2 };
 
   /* ── TX group (parent = 3) ──────────────────────────────── */
@@ -306,8 +311,9 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[51] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,50 };
   m->items[52] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,50 };
 
-  /* ── Root action (parent = -1) — last so it appears at end of root view ── */
+  /* ── Root actions (parent = -1) — last so they appear at end of root view ── */
   m->items[53] = (MenuItem_t){ "SWR Scan",  MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
+  m->items[62] = (MenuItem_t){ "FT8",       MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
 
   Menu_BuildView(m);
   /* USER CODE END Menu_Init_0 */
@@ -555,6 +561,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t bc_mode,
                        uint8_t marker_track,
                        int8_t bass_db, int8_t treble_db,
+                       bool ft8_decode_on,
                        MenuApplyFn apply_cb)
 {
   /* USER CODE BEGIN Menu_LoadFromSDR_0 */
@@ -599,6 +606,7 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _voxgain_val  = (vox_gain  <= 100U) ? (int32_t)vox_gain  : 50;
   _voxdelay_val = (vox_delay >= 100U && vox_delay <= 2000U) ? (int32_t)vox_delay : 500;
   _cwdec_val    = cw_decode_on ? 1 : 0;
+  _ft8dec_val   = ft8_decode_on ? 1 : 0;
 
   /* CW settings */
   _cw_pitch_val  = (cw_pitch_hz  >= 300U && cw_pitch_hz  <= 900U)  ? (int32_t)cw_pitch_hz  : 700;
@@ -659,7 +667,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *nr_level,
                      uint8_t *bc_mode,
                      uint8_t *marker_track,
-                     int8_t *bass_db, int8_t *treble_db)
+                     int8_t *bass_db, int8_t *treble_db,
+                     bool *ft8_decode_on)
 {
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
@@ -718,6 +727,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *usb_iq_stream    = (_iq_stream_val == 0);
   *tx_src           = (uint8_t)(_tx_src_val != 0 ? 1U : 0U);
   *marker_track     = (uint8_t)(_marker_val != 0 ? 1U : 0U);
+  *ft8_decode_on    = (_ft8dec_val != 0);
   /* USER CODE END Menu_SaveToSDR_0 */
 }
 

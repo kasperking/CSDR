@@ -53,8 +53,7 @@ typedef enum {
   MODE_CW   = 4,
   MODE_DIGU   = 5,   /* digital USB (WSJT-X/FT8/DATA-USB) — linear TX path */
   MODE_DIGL   = 6,   /* digital LSB (DATA-LSB)             — linear TX path */
-  MODE_FREEDV = 7,   /* FreeDV narrowband digital voice (8 kHz sub-path)   */
-  MODE_COUNT  = 8
+  MODE_COUNT  = 7
 } SDR_Mode_t;
 
 typedef enum {
@@ -152,6 +151,10 @@ typedef struct {
   uint16_t    vox_delay;         /*!< VOX hang time ms: 100-2000 */
   /* CW decode */
   bool        cw_decode_on;      /*!< CW decoder active (RX, CW mode only)         */
+  /* FT8 decode / beacon */
+  bool        ft8_decode_on;     /*!< FT8 decoder armed (runs in DIGU/USB RX)      */
+  char        ft8_call[12];      /*!< Station callsign for FT8 TX (empty = unset)  */
+  char        ft8_grid[5];       /*!< 4-char Maidenhead grid for FT8 TX            */
   /* CW keyer / TX */
   uint16_t    cw_pitch_hz;       /*!< BFO / sidetone pitch Hz: 300-900, default 700 */
   uint8_t     cw_wpm;            /*!< Keyer speed WPM: 5-40, default 20             */
@@ -213,6 +216,20 @@ void     CSDR_ClearDspFlags(void);
 void CSDR_ProcessAudioPending(void);
 
 void CSDR_Loop(void);
+
+/* Immediate TX/RX transition for full-screen apps (ft8_app beacon).
+ * Call ONLY from CSDR_Loop-equivalent context — runs the full apply chain
+ * (relays, codec, SI5351, PA_Protect OnTxStart/Stop). */
+void CSDR_RequestTX(bool tx);
+
+/* Persist g_sdr to flash (same serialiser as the menu path).  For apps that
+ * edit persisted fields outside the menu (ft8_app station setup). */
+void CSDR_SaveSettings(void);
+
+/* T/R sequencing poll (ext-PA keying gate, TX→RX drain, deferred gain
+ * reapply) — call every few ms from any app loop that drives TX via
+ * CSDR_RequestTX while CSDR_Loop is not running. */
+void CSDR_PollTxSequencing(void);
 
 void CSDR_SysTickCallback(void);
 
