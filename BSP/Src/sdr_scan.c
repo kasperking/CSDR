@@ -120,7 +120,7 @@ static void scan_tx_off(uint32_t restore_rx_hz)
     /* Switch BPF relay bank back to RX (OE1=0, OE2=1). */
     BPF_SetMode(RF_MODE_RX);
     if (g_sdr.si5351_ok)
-        SI5351_SetQSDFrequency(&g_si5351, restore_rx_hz + g_sdr.lo_offset_hz);
+        SI5351_SetQSDFrequency(&g_si5351, restore_rx_hz + CSDR_RxLoOffset());
 }
 
 /* ════════════════════════════════════════════════
@@ -389,7 +389,7 @@ void SWR_Scan_Run(void)
 
     /* Restore QSD (RX) frequency */
     if (g_sdr.si5351_ok)
-        SI5351_SetQSDFrequency(&g_si5351, center_hz + g_sdr.lo_offset_hz);
+        SI5351_SetQSDFrequency(&g_si5351, center_hz + CSDR_RxLoOffset());
     g_sdr.freq_hz = center_hz;
 
     /* Count actually measured points (needed when aborted) */

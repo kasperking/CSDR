@@ -922,8 +922,10 @@ void DSP_SetMode(DSP_State_t *dsp, SDR_Mode_t mode, uint32_t sample_rate)
    * this function; that is the sole place that updates dsp->bw_hz. */
   if (dsp->bw_hz <= 0.0f) dsp->bw_hz = mode_bw_hz;
 
-  /* Same CW half-width rule as DSP_SetBW (bw_hz = full width around pitch) */
-  float cutoff  = (mode == MODE_CW) ? (dsp->bw_hz * 0.5f) : dsp->bw_hz;
+  /* Same half-width rule as DSP_SetBW (CW: bw_hz = full width around pitch;
+   * AM: bw_hz = full RF bandwidth around the carrier). */
+  float cutoff  = (mode == MODE_CW || mode == MODE_AM) ? (dsp->bw_hz * 0.5f)
+                                                       : dsp->bw_hz;
   float bw_norm = cutoff / (float)sample_rate;
   FIR_Init_LPF(&dsp->fir_i, bw_norm, FIR_MAX_TAPS);
   FIR_Init_LPF(&dsp->fir_q, bw_norm, FIR_MAX_TAPS);
@@ -994,9 +996,13 @@ void DSP_SetBW(DSP_State_t *dsp, float bw_hz)
   dsp->bw_hz = bw_hz;
   /* CW: bw_hz is the full passband width centred on the tuned signal (the
    * −pitch pre-shift in eff_if puts it at 0 Hz here), so the one-sided LPF
-   * cutoff is half of it.  Other modes: sideband selection happens in the
-   * phasing demod, so the cutoff equals the full audio bandwidth. */
-  float cutoff  = (dsp->mode == MODE_CW) ? (bw_hz * 0.5f) : bw_hz;
+   * cutoff is half of it.  AM: bw_hz is the full RF bandwidth centred on
+   * the carrier (TS-2000 FW semantics — FW6000 = ±3 kHz sidebands), so the
+   * complex LPF cutoff is likewise half.  SSB/DIGI: sideband selection
+   * happens in the phasing demod, so the cutoff equals the full audio
+   * bandwidth. */
+  float cutoff  = (dsp->mode == MODE_CW || dsp->mode == MODE_AM)
+                    ? (bw_hz * 0.5f) : bw_hz;
   float bw_norm = cutoff / (float)sr;
   FIR_Init_LPF(&dsp->fir_i, bw_norm, FIR_MAX_TAPS);
   FIR_Init_LPF(&dsp->fir_q, bw_norm, FIR_MAX_TAPS);
@@ -1181,9 +1187,13 @@ void DSP_Process(DSP_State_t *dsp,
     float mix_i = raw_i * dsp->nco.cos_val - raw_q * dsp->nco.sin_val;
     float mix_q = raw_i * dsp->nco.sin_val + raw_q * dsp->nco.cos_val;
 
-    /* ── 3b. Post-mix DC removal – kills residual LO leakage / QSD imbalance
-     *        that survives the pre-mix blocker and would appear as center spike */
-    /* ── 3b+. Cal: IQ mismatch measurement — post-DC-block, pre-correction.
+    /* ── 3b. NO post-mix IQ DC blocker here — keep this chain DC-transparent.
+     *        The WM8731 ADC HPF already strips analog DC upstream, and the
+     *        AM low-IF path (LO parked +AM_LOW_IF_HZ, see CSDR_RxLoOffset)
+     *        lands the AM carrier at exactly 0 Hz *digital* after this mix:
+     *        an IQ DC blocker here would eat the carrier and break envelope
+     *        demodulation. */
+    /* ── 3b+. Cal: IQ mismatch measurement — pre-correction.
      *          Accumulates I²/Q²/I·Q to compute gain and phase imbalance.
      *          A real signal must be present for a meaningful result. */
     if (dsp->cal_meas.mode == DSP_CAL_IQ && !dsp->cal_meas.done) {

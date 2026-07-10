@@ -290,6 +290,7 @@ static void csdr_refresh_display(void);
 static void menu_apply_cb(void);
 static void csdr_vox_poll(void);
 static uint32_t default_bw_for_mode(SDR_Mode_t m);
+static uint32_t csdr_lo_offset_now(void);
 static void csdr_apply_nco_if(void);
 static int32_t csdr_marker_limit_hz(void);
 static void csdr_marker_recenter(void);
@@ -601,7 +602,7 @@ void CSDR_Init(void)
   dbg_si5351_ok = (uint32_t)SI5351_Init(&g_si5351, &hi2c1, SI5351_I2C_ADDR, SI5351_XTAL_HZ);
   if (dbg_si5351_ok == HAL_OK) {
     g_sdr.si5351_ok = true;
-    SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+    SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
   } else {
     RuntimeDiag_SetFault(FAULT_PLL);
   }
@@ -634,7 +635,7 @@ void CSDR_Init(void)
   DSP_SetTxPassband(&g_dsp, (float)g_sdr.tx_audio_low_hz, (float)g_sdr.tx_audio_high_hz);
   DSP_SetNotch(&g_dsp, g_sdr.notch_on, (float)g_sdr.notch_hz);
   DSP_SetTone(&g_dsp, g_sdr.bass_db, g_sdr.treble_db);
-  DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetIFShift(&g_dsp, (int32_t)g_sdr.if_shift_hz, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetMode(&g_dsp, g_sdr.mode, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
@@ -850,7 +851,7 @@ void CSDR_Init(void)
                                               SI5351_I2C_ADDR, SI5351_XTAL_HZ);
       if (dbg_si5351_ok == HAL_OK) {
         g_sdr.si5351_ok = true;
-        SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+        SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
         g_selftest.items[2].ok = true;
       } else {
         HW_Fault_Set(HW_FAULT_PLL);
@@ -1122,6 +1123,17 @@ void CSDR_PrepareShutdown(void)
 /* Called after any DSP_SetMode to sync CW decoder + UI strip */
 static void csdr_on_mode_changed(SDR_Mode_t old_mode)
 {
+    /* AM low-IF: entering or leaving AM moves the RX LO by AM_LOW_IF_HZ.
+     * DSP NCO first (cheap), then SI5351 (blocking I2C — all callers are
+     * main-loop context).  Skipped during TX: the LO is parked on the
+     * carrier; csdr_finish_rx_hw re-derives the RX LO on release. */
+    if ((old_mode == MODE_AM) != (g_sdr.mode == MODE_AM)) {
+        DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
+        if (g_sdr.si5351_ok && !g_sdr.tx_mode)
+            SI5351_SetQSDFrequency(&g_si5351,
+              (uint32_t)((int32_t)g_sdr.freq_hz - g_sdr.marker_offset_hz)
+              + CSDR_RxLoOffset());
+    }
     CWDec_Reset(&g_cw_dec, &g_dsp.cw_env);
     if (g_sdr.mode == MODE_CW) {
         /* Entering CW: apply CW-specific filter and pitch */
@@ -1639,15 +1651,15 @@ void CSDR_Loop(void)
      * happens here in main-loop context, never inside the CAT parser. */
     if (g_sdr.cat_freq_dirty) {
       g_sdr.cat_freq_dirty = false;
-      DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+      DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
       if (g_sdr.si5351_ok)
-        /* RX: LO center = listening freq - marker offset.
+        /* RX: LO center = listening freq - marker offset (+ AM low-IF).
          * TX: the carrier must sit exactly at freq_hz (marker offset only
          * shapes the RX view; csdr_apply_tx restores it on TX→RX). */
         SI5351_SetQSDFrequency(&g_si5351,
           (uint32_t)((int32_t)g_sdr.freq_hz
                      - (g_sdr.tx_mode ? 0 : g_sdr.marker_offset_hz))
-          + g_sdr.lo_offset_hz);
+          + csdr_lo_offset_now());
       uint8_t _b = BPF_FreqToBand(g_sdr.freq_hz);
       if (_b != 0xFFU && _b != g_sdr.band_idx) {
         BPF_SetBand(_b); LPF_SetBand(_b); g_sdr.band_idx = _b;
@@ -1867,8 +1879,8 @@ static void csdr_apply_band(uint8_t band)
     SDR_UI_SetSpecMarker(0);
     csdr_apply_nco_if();
   }
-  DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
-  if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, f + g_sdr.lo_offset_hz);
+  DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
+  if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, f + csdr_lo_offset_now());
   g_sdr.display_dirty |= (DIRTY_HDR | DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
 }
 
@@ -1964,7 +1976,7 @@ static void csdr_factory_reset(void)
   RFAGC_SetEnabled(&g_rfagc, false, g_att.current_atten_x2);
   DSP_SetTxPassband(&g_dsp, 200.0f, 2800.0f);
   DSP_SetNotch(&g_dsp, false, 1000.0f);
-  DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+  DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetIFShift(&g_dsp, 0, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetMode(&g_dsp, MODE_USB, CSDR_AUDIO_SAMPLE_RATE);
   DSP_SetBW(&g_dsp, 3000.0f);
@@ -2021,7 +2033,7 @@ static void csdr_handle_encoder(void)
       g_sdr.marker_offset_hz = new_off;
       uint32_t lo_new = (uint32_t)((int32_t)g_sdr.freq_hz - new_off);
       if (lo_new != lo_old && g_sdr.si5351_ok)
-        SI5351_SetQSDFrequency(&g_si5351, lo_new + g_sdr.lo_offset_hz);
+        SI5351_SetQSDFrequency(&g_si5351, lo_new + csdr_lo_offset_now());
       csdr_apply_nco_if();
       SDR_UI_SetSpecMarker(g_sdr.marker_offset_hz);
       uint8_t b = BPF_FreqToBand(g_sdr.freq_hz);
@@ -2032,8 +2044,8 @@ static void csdr_handle_encoder(void)
       }
     } else {
       g_sdr.freq_hz = (uint32_t)f;
-      DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
-      if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+      DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
+      if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + csdr_lo_offset_now());
       uint8_t b = BPF_FreqToBand(g_sdr.freq_hz);
       if (b != 0xFFU && b != g_sdr.band_idx) { BPF_SetBand(b); g_sdr.band_idx = b; }
     }
@@ -2097,11 +2109,11 @@ static void csdr_handle_encoder(void)
               g_pa_cfg.current_trip_a = _lim * 0.90f; }
             DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
             DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
-            DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+            DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
             if (g_sdr.si5351_ok) {
               g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
                 SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
-              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
             }
             csdr_save_settings();
           } else {
@@ -2281,11 +2293,11 @@ static void csdr_handle_keys(void)
                 g_pa_cfg.current_trip_a = _lim * 0.90f; }
               DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
               DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
-              DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
+              DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
               if (g_sdr.si5351_ok) {
                 g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
                   SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
-                SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+                SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
               }
               csdr_save_settings();
             } else {
@@ -2595,6 +2607,25 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m)
   }
 }
 
+/* Effective RX LO offset: user cal offset plus the AM low-IF (AM_LOW_IF_HZ).
+ * At zero-IF the AM carrier lands at 0 Hz where the AC-coupled QSD→codec
+ * path and the WM8731 ADC HPF notch it out, collapsing envelope demod into
+ * |m(t)| distortion.  Parking the LO +12 kHz away (NCO mixes back digitally,
+ * the digital chain is DC-transparent) keeps the carrier clear of the notch.
+ * Public — sdr_scan.c uses it to restore the RX LO after a SWR sweep. */
+uint32_t CSDR_RxLoOffset(void)
+{
+  return g_sdr.lo_offset_hz + ((g_sdr.mode == MODE_AM) ? AM_LOW_IF_HZ : 0U);
+}
+
+/* TX-aware variant for SI5351 retunes that can also fire mid-TX (CAT freq
+ * change, encoder tune, marker helpers): during TX the LO must stay at the
+ * carrier (plain cal offset) — the TX IQ path has no offset compensation. */
+static uint32_t csdr_lo_offset_now(void)
+{
+  return g_sdr.tx_mode ? g_sdr.lo_offset_hz : CSDR_RxLoOffset();
+}
+
 static void menu_apply_cb(void)
 {
   uint8_t agc_speed; bool nb, ext_alc, notch_en, vox_en, cw_dec, paddle_rev, cw_rev, iq_stream; int16_t rit, rxshift, notch_f;
@@ -2875,7 +2906,7 @@ static void csdr_marker_recenter(void)
   if (g_sdr.marker_offset_hz == 0) return;
   g_sdr.marker_offset_hz = 0;
   if (g_sdr.si5351_ok)
-    SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+    SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + csdr_lo_offset_now());
   csdr_apply_nco_if();
   SDR_UI_SetSpecMarker(0);
   g_sdr.display_dirty |= DIRTY_VFO;
@@ -2894,7 +2925,7 @@ static void csdr_marker_clamp_span(void)
   g_sdr.marker_offset_hz = off;
   if (g_sdr.si5351_ok)
     SI5351_SetQSDFrequency(&g_si5351,
-      (uint32_t)((int32_t)g_sdr.freq_hz - off) + g_sdr.lo_offset_hz);
+      (uint32_t)((int32_t)g_sdr.freq_hz - off) + csdr_lo_offset_now());
   csdr_apply_nco_if();
   SDR_UI_SetSpecMarker(off);
   g_sdr.display_dirty |= DIRTY_VFO;
@@ -2938,8 +2969,8 @@ static void csdr_vfo_swap(void)
   DSP_SetBW(&g_dsp, (float)g_sdr.bw_hz);
   AGC_SetMode(&g_dsp.agc, g_sdr.mode, g_sdr.agc_speed, CSDR_AUDIO_SAMPLE_RATE);
   csdr_apply_nco_if();
-  DSP_SetFrequency(&g_dsp, g_sdr.lo_offset_hz, CSDR_AUDIO_SAMPLE_RATE);
-  if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
+  DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
+  if (g_sdr.si5351_ok) SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + csdr_lo_offset_now());
   g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBL | DIRTY_SBR);
 }
 
@@ -3150,12 +3181,14 @@ static void csdr_finish_rx_hw(void)
   if (pa_fitted) {
     HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
     BPF_SetMode(RF_MODE_RX);
-    /* Restore RX LO = freq_hz − marker_offset (covers split return and
-     * the marker-track TX hop; offset is 0 when neither is active). */
-    if ((g_cat.split_on || g_sdr.marker_offset_hz != 0) && g_sdr.si5351_ok)
+    /* Restore RX LO = freq_hz − marker_offset + RX offset (covers split
+     * return, the marker-track TX hop and the AM low-IF hop; the mode is
+     * re-checked here so a mid-TX mode change still lands on the right LO). */
+    if ((g_cat.split_on || g_sdr.marker_offset_hz != 0 ||
+         g_sdr.mode == MODE_AM) && g_sdr.si5351_ok)
       SI5351_SetQSDFrequency(&g_si5351,
         (uint32_t)((int32_t)g_sdr.freq_hz - g_sdr.marker_offset_hz)
-        + g_sdr.lo_offset_hz);
+        + CSDR_RxLoOffset());
   }
   g_dsp.mic_buf = NULL;  /* TX → RX: DSP_ProcessTX sẽ không được gọi, clear cho an toàn */
   HAL_GPIO_WritePin(AUDIO_SD_GPIO_Port, AUDIO_SD_Pin, GPIO_PIN_SET); /* amp enable */
@@ -3210,7 +3243,9 @@ void CSDR_PollTxSequencing(void)
  *   Split:        TX on vfo_b.freq_hz (inactive slot is always the TX VFO).
  *   Marker-track: RX parks the LO at freq_hz − marker_offset; TX must carry
  *                 at freq_hz, so the LO hops there for the over and back.
- *   On RX both restore to freq_hz − marker_offset (offset 0 without marker).
+ *   AM low-IF:    RX parks the LO at freq_hz + AM_LOW_IF_HZ (CSDR_RxLoOffset);
+ *                 TX hops to freq_hz — the TX IQ path has no offset shift.
+ *   On RX all restore to freq_hz − marker_offset + CSDR_RxLoOffset().
  * The SI5351 call here is synchronous and safe — this function runs in main-loop
  * context (cat_tx_dirty path) or from the physical PTT key, never from an ISR. */
 static void csdr_apply_tx(void)
@@ -3263,11 +3298,13 @@ static void csdr_apply_tx(void)
       BPF_SetMode(RF_MODE_TX);
       /* Retune LO to the TX frequency before gating RF:
        * split → TX VFO (inactive slot); marker-track → freq_hz (RX had the
-       * LO parked at freq_hz − marker_offset; marker/view stay untouched). */
+       * LO parked at freq_hz − marker_offset; marker/view stay untouched);
+       * AM → freq_hz (RX parks the LO at freq_hz + AM_LOW_IF_HZ, but the TX
+       * IQ path has no offset compensation — the carrier must sit at the LO). */
       if (g_sdr.si5351_ok) {
         if (g_cat.split_on)
           SI5351_SetQSDFrequency(&g_si5351, g_sdr.vfo_b.freq_hz + g_sdr.lo_offset_hz);
-        else if (g_sdr.marker_offset_hz != 0)
+        else if (g_sdr.marker_offset_hz != 0 || g_sdr.mode == MODE_AM)
           SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + g_sdr.lo_offset_hz);
       }
       HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_SET);

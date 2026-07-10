@@ -44,6 +44,13 @@ extern "C" {
 /* Default LO offset used to initialise g_sdr.lo_offset_hz at boot. */
 #define LO_OFFSET_DEFAULT  0U
 
+/* AM RX low-IF: the LO parks AM_LOW_IF_HZ above the tuned frequency and the
+ * RX NCO mixes it back to baseband, so the AM carrier never sits in the
+ * analog DC notch (AC-coupled QSD→codec path + WM8731 ADC HPF) that destroys
+ * envelope demodulation at zero-IF.  TX always runs LO = carrier — the TX IQ
+ * path has no offset compensation (see the LO hop in csdr_apply_tx). */
+#define AM_LOW_IF_HZ  12000U
+
 /* ── SDR State ───────────────────────────────────────────── */
 typedef enum {
   MODE_AM   = 0,
@@ -230,6 +237,11 @@ void CSDR_SaveSettings(void);
  * reapply) — call every few ms from any app loop that drives TX via
  * CSDR_RequestTX while CSDR_Loop is not running. */
 void CSDR_PollTxSequencing(void);
+
+/* Effective RX LO offset: user cal offset (g_sdr.lo_offset_hz) plus the AM
+ * low-IF when mode == MODE_AM.  Use for every RX-side SI5351 retune and every
+ * DSP_SetFrequency call; TX LO programming uses the plain cal offset. */
+uint32_t CSDR_RxLoOffset(void);
 
 void CSDR_SysTickCallback(void);
 
