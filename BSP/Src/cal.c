@@ -44,7 +44,7 @@ static DSP_State_t *s_dsp;
 #define LN   LCD_GetLineBuf()
 
 #define CAL_X        10U
-#define CAL_W       300U
+#define CAL_W       (LCD_W - 2U * CAL_X)  /* full width minus side margins */
 #define CAL_Y        ZONE_SPEC_Y      /* overlay on spectrum zone */
 #define CAL_ITEM_H   15U              /* px per row               */
 #define CAL_VISIBLE   7U              /* rows visible: 16hdr+7*15=121px <= 130px avail */
@@ -85,6 +85,7 @@ typedef struct {
   int32_t            min, max, step;
   int32_t           *val;        /* NULL for actions */
   const char *const *choices;    /* CAL_T_ENUM: label per index; NULL otherwise */
+  const char        *act;        /* CAL_T_ACTION: value verb; NULL = "RUN"      */
 } CalItem_t;
 
 typedef struct {
@@ -133,7 +134,7 @@ static int32_t v_pwr_scale; /* tandem-match FWD power cal 50..200 %   */
 static const CalItem_t items_freq[] = {
   { "XTAL PPM",      CAL_T_INT,  -200,   200,     1, &v_xtal_ppm  },
   { "GPS Cal",       CAL_T_ACTION, 0,0,0,            NULL         },
-  { "Apply",         CAL_T_ACTION, 0,0,0,            NULL         },
+  { "Apply",         CAL_T_ACTION, 0,0,0,            NULL, NULL, "APPLY" },
   { "Exit",          CAL_T_BACK,   0,0,0,            NULL         },
 };
 
@@ -161,7 +162,7 @@ static const CalItem_t items_rf[] = {
   { "S-Meter Offs",  CAL_T_INT,    -60,    60,     1, &v_smeter_off},
   { "LO Offset Hz",  CAL_T_INT,      0, 25000,   500, &v_lo_offset },
   { "Auto S-Meter",  CAL_T_ACTION, 0,0,0,            NULL         },
-  { "Auto Noise Flr",CAL_T_ACTION, 0,0,0,            NULL         },
+  { "Meas Noise Flr",CAL_T_ACTION, 0,0,0,            NULL, NULL, "MEAS" },
   { "Auto AGC Ref",  CAL_T_ACTION, 0,0,0,            NULL         },
   { "Exit",          CAL_T_BACK,   0,0,0,            NULL         },
 };
@@ -180,7 +181,7 @@ static const CalItem_t items_band[] = {
   { "TX Drive Trim", CAL_T_INT,    -50,  50,  1, &v_band_tx_drive,  NULL },
   { "SWR Scale %",   CAL_T_INT,     50, 200,  1, &v_band_swr_scale, NULL },
   { "Auto Noise",    CAL_T_ACTION,   0,   0,  0, NULL,              NULL },
-  { "Save Band Cal", CAL_T_ACTION,   0,   0,  0, NULL,              NULL },
+  { "Save Band Cal", CAL_T_ACTION,   0,   0,  0, NULL,              NULL, "SAVE" },
   { "Exit",          CAL_T_BACK,     0,   0,  0, NULL,              NULL },
 };
 
@@ -293,7 +294,7 @@ static void render_sub_item(const CalItem_t *it, uint8_t idx,
   } else if (it->type == CAL_T_ENUM && it->val && it->choices)
     snprintf(val_s, sizeof(val_s), "%s", it->choices[*it->val]);
   else if (it->type == CAL_T_ACTION)
-    snprintf(val_s, sizeof(val_s), ">> RUN");
+    snprintf(val_s, sizeof(val_s), ">> %s", it->act ? it->act : "RUN");
   else if (it->type == CAL_T_BACK)
     snprintf(val_s, sizeof(val_s), "< Back");
 
@@ -308,17 +309,20 @@ static void render_sub_item(const CalItem_t *it, uint8_t idx,
     }
     if (!top && !bot && fr >= 4U && fr < 4U + (uint16_t)Font6x8.height) {
       uint16_t row = fr - 4U;
-      if (it->type == CAL_T_INT || it->type == CAL_T_FLOAT10 || it->type == CAL_T_ENUM) {
+      if (it->type == CAL_T_INT || it->type == CAL_T_FLOAT10 || it->type == CAL_T_ENUM ||
+          it->type == CAL_T_ACTION) {
+        /* Action cũng vẽ label + ">> <verb>" bên phải (RUN/APPLY/MEAS/SAVE
+         * theo it->act) — nhiều action liền nhau phải phân biệt được. */
         LCD_LineStr(ln, (uint16_t)(CAL_X + 4U), row,
                     it->label, &Font6x8, CAL_LBL, bg);
-        uint16_t vc = edit ? CAL_EDIT_VAL : CAL_VAL;
+        uint16_t vc = (it->type == CAL_T_ACTION) ? CAL_ACTION
+                      : (edit ? CAL_EDIT_VAL : CAL_VAL);
         LCD_LineStr(ln, (uint16_t)(CAL_X + CAL_W - 56U), row,
                     val_s, &Font6x8, vc, bg);
       } else {
-        uint16_t fc = (it->type == CAL_T_BACK) ? 0xFFFFU : CAL_ACTION;
         uint16_t tx = (uint16_t)(CAL_X + (CAL_W -
                        (uint16_t)strlen(val_s) * Font6x8.width) / 2U);
-        LCD_LineStr(ln, tx, row, val_s, &Font6x8, fc, bg);
+        LCD_LineStr(ln, tx, row, val_s, &Font6x8, 0xFFFFU, bg);
       }
     }
     push_ln(abs_y + fr);
