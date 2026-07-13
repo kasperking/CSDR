@@ -29,6 +29,7 @@
 #include "pa_protect.h"
 #include "pa_overcurrent.h"
 #include "fsdr_analog.h"
+#include "lcd_dma.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -103,6 +104,21 @@ static char    s_qso_msg[40];
 
 static const char s_charset[] = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/";
 #define CHARSET_LEN (sizeof(s_charset) - 1U)
+
+/* Full-screen clear on entry: the header/list/footer grid leaves 1-2 px
+ * seams (rows 14-15, above the footer) that would otherwise keep stale
+ * SDR-UI pixels (spectrum/waterfall) forever.  Line-by-line with periodic
+ * audio pumps instead of one blocking LCD_Clear. */
+static void app_clear_screen(void)
+{
+  LCD_Wait();   /* let any in-flight waterfall strip DMA finish first */
+  uint16_t *ln = LCD_GetLineBuf();
+  for (uint16_t y = 0U; y < LCD_H; y++) {
+    LCD_LineFill(ln, 0U, LCD_W, APP_BG);
+    LCD_PushWindow(0U, y, (uint16_t)(LCD_W - 1U), y, ln, LCD_W);
+    if ((y & 15U) == 0U) CSDR_ProcessAudioPending();
+  }
+}
 
 /* ── Row renderer: one APP_ROW_H-pixel text row, full width ──────────────── */
 static void app_row_render(uint16_t y, const char *text, uint16_t fg, uint16_t bg)
@@ -491,6 +507,7 @@ void FT8_App_Run(void)
   uint32_t last_seq = st.slot_seq;
   int32_t  prev_cyc = FT8_GetCycleMs();
 
+  app_clear_screen();
   app_draw_header(&st);
   app_draw_list();
   app_draw_footer(&st);
@@ -650,7 +667,7 @@ void FT8_App_Run(void)
 
   /* Full-screen overlay exit rule: invalidate UI caches + clear INFO strip */
   FT8_SetStripUI(true);
-  FT8_SetEnabled(g_sdr.ft8_decode_on);   /* back to the menu-toggle state */
+  FT8_SetEnabled(false);   /* decode runs only inside this app */
   SDR_UI_InvalidateCaches();
   SDR_UI_ClearCWText();
 }

@@ -15,14 +15,15 @@
   *  Cấu trúc menu (2 cấp):
   *
   *  Root
-  *   ├─ [RX]     → BW / AGC / ATT / Squelch / Span / NR / NB / NB Level / Notch / Notch Hz / RIT / RX Shift
+  *   ├─ [RX]     → BW / AGC / ATT / Squelch / Span / NR / NR Level / NB / NB Level / Notch / Notch Hz / Beat Cxl / RIT / RX Shift
   *   ├─ [Audio]  → Volume / Bass / Treble / Mic Gain / Digi Drive / Mic In
   *   ├─ [Tuning] → Step / Band / Mode / Marker
   *   ├─ [TX]     → RF Power / VOX / VOX Gain / VOX Delay / TX Low / TX High / Ext PA / PA Key Dly / PA Drv Max / Ext ALC
   *   ├─ [CW]     → CW Decode / Pitch / Speed / Keyer / Sidetone / BK-IN / BK Delay / CW Rev / Paddle Rev / Filter
   *   ├─ [System] → Backlight / USB / USB Stream / Calibration / Factory Reset / Clock / About
   *   │                └─ [About] → Version / Build Date
-  *   └─ SWR Scan  (root action)
+  *   ├─ SWR Scan  (root action)
+  *   └─ FT8       (root action — full-screen app; FT8 decode runs only inside it)
   *
   *  Renderer: overlay trên vùng Spectrum (Y=ZONE_SPEC_Y)
   *  Scanline-based: mỗi item = 16px cao, width MENU_W, x=MENU_X
@@ -45,7 +46,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      63U   /* 7 groups (incl. About sub-group) + 56 leaf items */
+#define MENU_ITEM_COUNT      61U   /* slots 0..60, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -164,7 +165,6 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t bc_mode,
                        uint8_t marker_track,
                        int8_t bass_db, int8_t treble_db,
-                       bool ft8_decode_on,
                        MenuApplyFn apply_cb);
 
 /**
@@ -194,8 +194,7 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *nr_level,
                      uint8_t *bc_mode,
                      uint8_t *marker_track,
-                     int8_t *bass_db, int8_t *treble_db,
-                     bool *ft8_decode_on);
+                     int8_t *bass_db, int8_t *treble_db);
 
 #ifdef __cplusplus
 }

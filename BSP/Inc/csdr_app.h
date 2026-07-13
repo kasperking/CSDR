@@ -158,8 +158,7 @@ typedef struct {
   uint16_t    vox_delay;         /*!< VOX hang time ms: 100-2000 */
   /* CW decode */
   bool        cw_decode_on;      /*!< CW decoder active (RX, CW mode only)         */
-  /* FT8 decode / beacon */
-  bool        ft8_decode_on;     /*!< FT8 decoder armed (runs in DIGU/USB RX)      */
+  /* FT8 station (decode runs only inside the full-screen FT8 app) */
   char        ft8_call[12];      /*!< Station callsign for FT8 TX (empty = unset)  */
   char        ft8_grid[5];       /*!< 4-char Maidenhead grid for FT8 TX            */
   /* CW keyer / TX */

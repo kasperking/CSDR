@@ -386,7 +386,7 @@ static void csdr_save_settings(void)
   fs.cw_reverse     = g_sdr.cw_reverse ? 1U : 0U;
   fs.cw_filter_hz   = g_sdr.cw_filter_hz;
   fs.cw_decode_on   = g_sdr.cw_decode_on ? 1U : 0U;
-  fs.ft8_decode_on  = g_sdr.ft8_decode_on ? 1U : 0U;
+  fs.ft8_reserved   = 0U;
   memcpy(fs.ft8_call, g_sdr.ft8_call, sizeof(fs.ft8_call));
   memcpy(fs.ft8_grid, g_sdr.ft8_grid, sizeof(fs.ft8_grid));
   fs.tx_src         = g_sdr.tx_src;
@@ -521,7 +521,6 @@ void CSDR_Init(void)
       g_sdr.cw_reverse     = (fs.cw_reverse    != 0U);
       g_sdr.cw_filter_hz   = (fs.cw_filter_hz  >= 50U  && fs.cw_filter_hz  <= 500U) ? fs.cw_filter_hz   : 500U;
       g_sdr.cw_decode_on   = (fs.cw_decode_on  != 0U);
-      g_sdr.ft8_decode_on  = (fs.ft8_decode_on != 0U);
       /* FT8 station: copy with forced termination; reject non-printable
        * garbage from old blobs (fields read 0 there → stay empty). */
       memcpy(g_sdr.ft8_call, fs.ft8_call, sizeof(g_sdr.ft8_call));
@@ -658,10 +657,9 @@ void CSDR_Init(void)
     DSP_SetBW(&g_dsp, (float)g_sdr.cw_filter_hz);
   CWDec_Init(&g_cw_dec);
   g_cw_dec.dit_ms = 1200U / (uint32_t)g_sdr.cw_wpm;
-  /* FT8 decoder — needs D2 SRAM clocks + FFT tables; armed from EEPROM flag,
-   * becomes active only in DIGU/USB RX (gated per-poll in FT8_Poll). */
+  /* FT8 decoder — needs D2 SRAM clocks + FFT tables.  Stays disabled here;
+   * only the full-screen FT8 app enables it (and disables it on exit). */
   FT8_Init();
-  FT8_SetEnabled(g_sdr.ft8_decode_on);
   /* Booting straight into CW: arm the INFO-strip [DEC] placeholder (it is
    * otherwise only set on mode change / F3 toggle). */
   if (g_sdr.mode == MODE_CW)
@@ -1186,6 +1184,12 @@ static void csdr_ft8_app_launch(void)
   (void)Encoder_GetDelta(&g_encoder);
   (void)Encoder_GetButton(&g_encoder);
   (void)Encoder_GetLongPress(&g_encoder);
+  /* The app painted the FULL screen (incl. the static skeleton, which is
+   * otherwise drawn only once at boot — DIRTY_ALL repaints dynamic zones
+   * only).  Repaint the frame + footer ruler; the caller's DIRTY_ALL then
+   * restores the rest against the caches the app already invalidated. */
+  SDR_UI_DrawFrame(CSDR_AUDIO_SAMPLE_RATE, DSP_FFT_SIZE);
+  SDR_UI_RedrawFooter();
 }
 
 /* Public wrappers for full-screen apps (CSDR_Loop-equivalent context only) */
@@ -1275,7 +1279,11 @@ void CSDR_Loop(void)
   if (g_sdr.cw_decode_on && g_sdr.mode == MODE_CW && !g_sdr.tx_mode) {
     if (CWDec_Update(&g_cw_dec, &g_dsp.cw_env)) {
       char cw_buf[CWDEC_TEXT_LEN + 1U];
-      CWDec_GetText(&g_cw_dec, cw_buf, (uint8_t)(LCD_W / 6U));
+      /* Reserve the persistent "[DEC] " prefix width so the newest chars
+       * (tail of the ring) are not clipped at the right edge.  Text region
+       * ends at SBR_X (RSSI column) — SBR_X == LCD_W without that column. */
+      CWDec_GetText(&g_cw_dec, cw_buf,
+                    (uint8_t)(SBR_X / 6U - SDR_UI_CW_PREFIX_CHARS));
       SDR_UI_DrawCWText(cw_buf);
     }
   }
@@ -2188,7 +2196,6 @@ static void csdr_handle_keys(void)
         g_sdr.bc_mode,
         g_sdr.marker_track ? 1U : 0U,
         g_sdr.bass_db, g_sdr.treble_db,
-        g_sdr.ft8_decode_on,
         menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
@@ -2635,7 +2642,6 @@ static void menu_apply_cb(void)
   uint8_t nb_level, nr_level, nr, bc, marker_trk;
   bool ext_pa; uint8_t ext_pa_dly, ext_pa_drv;
   int8_t bass_db, treble_db;
-  bool ft8_dec;
   Menu_SaveToSDR(&g_menu, &agc_speed, &nb, &nr, &rit,
                   &vol, &mic, &digi, &sq, &step, &bw, &att, &band, &mode, &usb, &zoom,
                   &ext_alc, &rfpwr, &ext_pa, &ext_pa_dly, &ext_pa_drv,
@@ -2644,8 +2650,7 @@ static void menu_apply_cb(void)
                   &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
                   &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream,
                   &tx_src_new, &nb_level, &nr_level, &bc, &marker_trk,
-                  &bass_db, &treble_db,
-                  &ft8_dec);
+                  &bass_db, &treble_db);
   if (bass_db != g_sdr.bass_db || treble_db != g_sdr.treble_db) {
     g_sdr.bass_db   = bass_db;
     g_sdr.treble_db = treble_db;
@@ -2751,10 +2756,6 @@ static void menu_apply_cb(void)
     g_sdr.cw_decode_on = effective;
     SDR_UI_SetCWDecActive(effective);
     if (!effective) SDR_UI_ClearCWText();
-  }
-  if (ft8_dec != g_sdr.ft8_decode_on) {
-    g_sdr.ft8_decode_on = ft8_dec;
-    FT8_SetEnabled(ft8_dec);   /* FT8_Poll gates on DIGU/USB + RX and owns the UI strip */
   }
   /* CW settings apply.  Pitch/reverse also move the eff_if pre-shift that
    * centres the IF LPF on the tuned signal — recompute nco_if in CW mode. */

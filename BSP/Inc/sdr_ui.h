@@ -493,8 +493,12 @@ void SDR_UI_DrawWaterfall(const float *fft_db, uint16_t bins);
 /* CW decoder text strip (INFO zone, Y=120..144, 24 px).
  * text: null-terminated string of decoded chars; drawn amber in CW mode.
  * Call SDR_UI_ClearCWText() when leaving CW mode to restore INFO to blank.
- * Call SDR_UI_SetCWDecActive(true) when decode is enabled — shows dim [DEC]
- * placeholder until first decoded char arrives; false clears it. */
+ * Call SDR_UI_SetCWDecActive(true) when decode is enabled — a dim persistent
+ * "[DEC]" prefix is drawn before the text (and alone while no text yet);
+ * false clears it.  Callers should shorten text by SDR_UI_CW_PREFIX_CHARS
+ * so the newest characters are not clipped at the right edge. */
+#define SDR_UI_CW_PREFIX        "[DEC] "
+#define SDR_UI_CW_PREFIX_CHARS  (sizeof(SDR_UI_CW_PREFIX) - 1U)
 void SDR_UI_DrawCWText(const char *text);
 void SDR_UI_ClearCWText(void);
 void SDR_UI_SetCWDecActive(bool on);

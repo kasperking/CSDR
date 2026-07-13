@@ -1121,7 +1121,15 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
       if (abs_r >= SBL_H) break;
       uint16_t *ln = s_sbl_buf + (uint32_t)abs_r * SBL_W;
 
-      if (i > 0U && row == 0U) { LCD_LineFill(ln, 0, SBL_W, UI_DIVIDER); continue; }
+      /* Detached rounded badge frame: rows 0/23 = gap between cells,
+       * rows 1/22 = top/bottom edge with corner pixels skipped (rounded
+       * look), side rails at x=0/W-1 on rows 2..21 — keeps the existing
+       * x=2 text margin clear of the frame */
+      if (row == 0U || row == (uint16_t)(item_h - 1U)) continue;
+      if (row == 1U || row == (uint16_t)(item_h - 2U)) {
+        LCD_LineFill(ln, 1U, (uint16_t)(SBL_W - 2U), UI_DIVIDER);
+        continue;
+      }
 
       switch (i) {
         case 0:  /* VFO — "VFO" left, A/B right, all MED */
@@ -1134,12 +1142,15 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
           }
           break;
 
-        case 1:  /* NR / NB color badges */
-          if (row >= val_off && row < val_off + MED_H + 4U) {
-            LCD_LineFill(ln,  2U, 34U, nr_bg);
-            LCD_LineFill(ln, 44U, 34U, nb_bg);
-            if (row >= val_off + 2U && row < val_off + 2U + MED_H) {
-              uint16_t fr = row - (val_off + 2U);
+        case 1:  /* NR / NB colour chips — inset from the frame, corners
+                    rounded the same way (cap rows narrowed by 1 px) */
+          if (row >= 3U && row <= 20U) {
+            bool     cap = (row == 3U || row == 20U);
+            uint16_t cw  = cap ? 32U : 34U;
+            LCD_LineFill(ln, cap ?  3U :  2U, cw, nr_bg);
+            LCD_LineFill(ln, cap ? 45U : 44U, cw, nb_bg);
+            if (row >= val_off && row < val_off + MED_H) {
+              uint16_t fr = row - val_off;
               ln_medstr(ln,  7U, fr, "NR", UI_BG, nr_bg);
               ln_medstr(ln, 49U, fr, "NB", UI_BG, nb_bg);
             }
@@ -1164,6 +1175,11 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
 
         default: break;
       }
+
+      /* 1-px side rails — drawn after content so full-width MED glyph cells
+       * (e.g. 'B' at x=68 spans to x=79) can't punch through the frame */
+      LCD_LineFill(ln, 0U, 1U, UI_DIVIDER);
+      LCD_LineFill(ln, (uint16_t)(SBL_W - 1U), 1U, UI_DIVIDER);
     }
   }
 
@@ -1288,13 +1304,26 @@ void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
       if (abs_r >= SBR_H) break;
       uint16_t *ln = s_sbr_buf + (uint32_t)abs_r * SBR_W;
 
-      if (i > 0U && row == 0U) { LCD_LineFill(ln, 0, SBR_W, UI_DIVIDER); continue; }
+      /* Detached rounded badge frame: rows 0/23 = gap between cells,
+       * rows 1/22 = top/bottom edge with corner pixels skipped (rounded
+       * look), side rails at x=0/W-1 on rows 2..21 — keeps the existing
+       * x=2 text margin clear of the frame */
+      if (row == 0U || row == (uint16_t)(item_h - 1U)) continue;
+      if (row == 1U || row == (uint16_t)(item_h - 2U)) {
+        LCD_LineFill(ln, 1U, (uint16_t)(SBR_W - 2U), UI_DIVIDER);
+        continue;
+      }
 
       if (row >= val_off && row < val_off + MED_H) {
         uint16_t fr = row - val_off;
         ln_medstr(ln, 2U,    fr, items[i].lbl, UI_STATUS_LBL,  UI_SBR_BG);
         ln_medstr(ln, val_x, fr, items[i].val, items[i].vc,   UI_SBR_BG);
       }
+
+      /* 1-px side rails — drawn after content so MED glyph background
+       * columns can't punch through the frame */
+      LCD_LineFill(ln, 0U, 1U, UI_DIVIDER);
+      LCD_LineFill(ln, (uint16_t)(SBR_W - 1U), 1U, UI_DIVIDER);
     }
   }
 
@@ -2794,23 +2823,36 @@ static void cw_text_draw_rows(const char *text)
 {
   uint16_t *ln    = LCD_GetLineBuf();
   uint16_t  txt_y = (uint16_t)((INFO_H - Font6x8.height) / 2U);
-  /* When decode is armed but no text yet, show dim "[DEC]" placeholder */
-  const char *render = text ? text : (s_cw_dec_active ? "[DEC]" : NULL);
-  uint16_t    color  = text ? UI_MODE_CW : UI_STATUS_LBL;
+  /* Decode armed: persistent dim "[DEC] " prefix, decoded text follows in
+   * amber.  Not armed (e.g. FT8 status line): text drawn plain, no prefix. */
+  const char *prefix = s_cw_dec_active ? SDR_UI_CW_PREFIX : NULL;
+  /* Only columns [0..SBR_X-1] are written — RSSI lives at [SBR_X..LCD_W-1]
+   * and is managed independently by rssi_info_draw(); never overwrite it
+   * (full-width pushes here made the RSSI readout flicker on every decode
+   * update).  SBR_X == LCD_W on panels without the RSSI column. */
+  const uint16_t cw_w = (uint16_t)SBR_X;
 
   for (uint16_t row = 0U; row < INFO_H; row++) {
-    LCD_LineFill(ln, 0U, LCD_W, UI_BG);
-    if (render && row >= txt_y && row < txt_y + Font6x8.height) {
+    LCD_LineFill(ln, 0U, cw_w, UI_BG);
+    if ((prefix || text) && row >= txt_y && row < txt_y + Font6x8.height) {
       uint16_t fr = row - txt_y;
       uint16_t x  = 4U;
-      for (const char *p = render; *p && x + Font6x8.width <= LCD_W; p++) {
-        LCD_LineChar(ln, x, fr, *p, &Font6x8, color, UI_BG);
-        x = (uint16_t)(x + Font6x8.width);
+      if (prefix) {
+        for (const char *p = prefix; *p && x + Font6x8.width <= cw_w; p++) {
+          LCD_LineChar(ln, x, fr, *p, &Font6x8, UI_STATUS_LBL, UI_BG);
+          x = (uint16_t)(x + Font6x8.width);
+        }
+      }
+      if (text) {
+        for (const char *p = text; *p && x + Font6x8.width <= cw_w; p++) {
+          LCD_LineChar(ln, x, fr, *p, &Font6x8, UI_MODE_CW, UI_BG);
+          x = (uint16_t)(x + Font6x8.width);
+        }
       }
     }
     LCD_PushWindow(0U, (uint16_t)(INFO_Y + row),
-                   (uint16_t)(LCD_W - 1U), (uint16_t)(INFO_Y + row),
-                   ln, LCD_W);
+                   (uint16_t)(cw_w - 1U), (uint16_t)(INFO_Y + row),
+                   ln, cw_w);
   }
 }
 
