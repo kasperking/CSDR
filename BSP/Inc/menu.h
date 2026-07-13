@@ -46,7 +46,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      61U   /* slots 0..60, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
+#define MENU_ITEM_COUNT      63U   /* slots 0..62, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */

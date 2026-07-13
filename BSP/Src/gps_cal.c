@@ -1,0 +1,181 @@
+/**
+  ******************************************************************************
+  * @file    gps_cal.c
+  * @brief   GPS 1PPS frequency calibration — TIM1 reciprocal counter.
+  *
+  *  TIM1 đếm CLK2 (external clock mode 1 qua TI1FP1/PA8); mỗi sườn lên
+  *  1PPS trên TI2/PA9 latch counter bằng phần cứng.  Hiệu hai lần latch
+  *  liên tiếp = số chu kỳ CLK2 trong đúng 1 giây GPS.
+  *
+  *  Interval lệch quá ±0.5% danh định (mất PPS, mất CLK, glitch) làm
+  *  reset bộ tích lũy — kết quả chỉ gồm các giây liên tục hợp lệ.
+  ******************************************************************************
+  */
+#include "gps_cal.h"
+#include "stm32h7xx_hal.h"
+
+#define GPSCAL_IRQ_PRIO      12U    /* dưới audio DMA (0) và PA-OC EXTI (5) */
+#define GPSCAL_PPS_TIMEOUT   2500U  /* ms không capture → NO_PPS            */
+
+static volatile uint32_t s_ovf;         /* 16→32 bit extension               */
+static volatile uint32_t s_prev_tick;   /* tick 32-bit của capture trước     */
+static volatile bool     s_have_prev;
+static volatile uint64_t s_sum;         /* tổng count các interval hợp lệ    */
+static volatile uint32_t s_n;           /* số interval hợp lệ                */
+static volatile uint32_t s_last_delta;  /* interval gần nhất (kể cả loại bỏ) */
+static volatile uint32_t s_last_pps_ms; /* HAL_GetTick tại capture gần nhất  */
+
+static uint32_t s_nom_hz;
+static bool     s_running;
+static uint32_t s_cnt_probe;            /* phát hiện CLK đứng (getter)       */
+
+/* ── ISRs ─────────────────────────────────────────────────────────────────
+ * Cùng priority nên không preempt lẫn nhau; race capture-sát-overflow xử lý
+ * bằng cờ UIF pending + nửa dải counter (pattern chuẩn). */
+void TIM1_UP_IRQHandler(void)
+{
+  if (TIM1->SR & TIM_SR_UIF) {
+    TIM1->SR = ~TIM_SR_UIF;
+    s_ovf++;
+  }
+}
+
+void TIM1_CC_IRQHandler(void)
+{
+  if (TIM1->SR & TIM_SR_CC2IF) {
+    uint16_t cc  = (uint16_t)TIM1->CCR2;      /* đọc CCR2 tự xóa CC2IF */
+    uint32_t ovf = s_ovf;
+    if ((TIM1->SR & TIM_SR_UIF) && cc < 0x8000U) { ovf++; }
+    uint32_t tick = (ovf << 16) | cc;
+
+    s_last_pps_ms = HAL_GetTick();
+
+    if (!s_have_prev) {
+      s_prev_tick = tick;
+      s_have_prev = true;
+      return;
+    }
+
+    uint32_t delta = tick - s_prev_tick;
+    s_prev_tick  = tick;
+    s_last_delta = delta;
+
+    uint32_t tol = s_nom_hz / 200U;           /* ±0.5% */
+    if (delta < s_nom_hz - tol || delta > s_nom_hz + tol) {
+      s_sum = 0U;                             /* glitch/mất xung → làm lại */
+      s_n   = 0U;
+      return;
+    }
+    s_sum += delta;
+    s_n++;
+  }
+}
+
+/* ── API ─────────────────────────────────────────────────────────────────── */
+void GPSCal_Start(uint32_t nominal_hz)
+{
+  if (s_running) { return; }
+  s_nom_hz     = (nominal_hz != 0U) ? nominal_hz : 25000000UL;
+  s_ovf        = 0U;
+  s_have_prev  = false;
+  s_sum        = 0U;
+  s_n          = 0U;
+  s_last_delta = 0U;
+  s_last_pps_ms = HAL_GetTick();
+
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  GPIO_InitTypeDef gi = {0};
+  gi.Mode      = GPIO_MODE_AF_PP;
+  gi.Alternate = GPIO_AF1_TIM1;
+  gi.Speed     = GPIO_SPEED_FREQ_LOW;
+  gi.Pin       = GPIO_PIN_8;              /* TIM1_CH1 ← SI5351 CLK2 */
+  gi.Pull      = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &gi);
+  gi.Pin       = GPIO_PIN_9;              /* TIM1_CH2 ← GPS 1PPS    */
+  gi.Pull      = GPIO_PULLDOWN;           /* không GPS → không rung */
+  HAL_GPIO_Init(GPIOA, &gi);
+
+  __HAL_RCC_TIM1_CLK_ENABLE();
+  TIM1->CR1  = 0U;
+  TIM1->CR2  = 0U;
+  TIM1->PSC  = 0U;
+  TIM1->ARR  = 0xFFFFU;
+  /* CH1 = input TI1, không filter (25 MHz); CH2 = input TI2,
+   * filter fDTS/32 N=8 (~1 µs) chống glitch trên đường PPS */
+  TIM1->CCMR1 = TIM_CCMR1_CC1S_0 | TIM_CCMR1_CC2S_0 | TIM_CCMR1_IC2F;
+  TIM1->CCER  = TIM_CCER_CC2E;            /* capture sườn lên, CC1E off */
+  /* External clock mode 1, nguồn TI1FP1 */
+  TIM1->SMCR  = TIM_SMCR_TS_2 | TIM_SMCR_TS_0
+              | TIM_SMCR_SMS_2 | TIM_SMCR_SMS_1 | TIM_SMCR_SMS_0;
+  TIM1->CNT   = 0U;
+  TIM1->SR    = 0U;
+  TIM1->DIER  = TIM_DIER_CC2IE | TIM_DIER_UIE;
+
+  HAL_NVIC_SetPriority(TIM1_UP_IRQn, GPSCAL_IRQ_PRIO, 0U);
+  HAL_NVIC_SetPriority(TIM1_CC_IRQn, GPSCAL_IRQ_PRIO, 0U);
+  HAL_NVIC_ClearPendingIRQ(TIM1_UP_IRQn);
+  HAL_NVIC_ClearPendingIRQ(TIM1_CC_IRQn);
+  HAL_NVIC_EnableIRQ(TIM1_UP_IRQn);
+  HAL_NVIC_EnableIRQ(TIM1_CC_IRQn);
+
+  TIM1->CR1 = TIM_CR1_CEN;
+  s_cnt_probe = TIM1->CNT;
+  s_running   = true;
+}
+
+void GPSCal_Stop(void)
+{
+  if (!s_running) { return; }
+  TIM1->CR1  = 0U;
+  TIM1->DIER = 0U;
+  TIM1->SR   = 0U;
+  HAL_NVIC_DisableIRQ(TIM1_UP_IRQn);
+  HAL_NVIC_DisableIRQ(TIM1_CC_IRQn);
+  __HAL_RCC_TIM1_CLK_DISABLE();
+  HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8 | GPIO_PIN_9);
+  s_running = false;
+}
+
+void GPSCal_Read(GPSCal_Result_t *out)
+{
+  out->state      = GPSCAL_IDLE;
+  out->secs       = 0U;
+  out->ppb        = 0;
+  out->last_count = 0U;
+  if (!s_running) { return; }
+
+  __disable_irq();
+  uint64_t sum     = s_sum;
+  uint32_t n       = s_n;
+  uint32_t last    = s_last_delta;
+  uint32_t pps_ms  = s_last_pps_ms;
+  bool     got_pps = s_have_prev;
+  __enable_irq();
+
+  out->last_count = last;
+
+  /* CLK2 sống = counter nhích giữa hai lần gọi (getter chạy mỗi ~100 ms
+   * từ UI loop → 25 MHz phải nhích trừ khi đứng hẳn) */
+  uint32_t cnt_now = TIM1->CNT;
+  bool clk_ok = (cnt_now != s_cnt_probe);
+  s_cnt_probe = cnt_now;
+
+  if (!clk_ok) {
+    out->state = GPSCAL_NO_CLK;
+    return;
+  }
+  if (!got_pps || (HAL_GetTick() - pps_ms) > GPSCAL_PPS_TIMEOUT) {
+    out->state = GPSCAL_NO_PPS;
+    return;
+  }
+  if (n == 0U) {
+    out->state = GPSCAL_SETTLING;
+    return;
+  }
+
+  int64_t expected = (int64_t)n * (int64_t)s_nom_hz;
+  int64_t err      = (int64_t)sum - expected;
+  out->ppb   = (int32_t)((err * 1000000000LL) / expected);
+  out->secs  = n;
+  out->state = GPSCAL_MEASURING;
+}

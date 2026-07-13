@@ -38,6 +38,7 @@
 #include "cw_decode.h"
 #include "cw_keyer.h"
 #include "rtc_clock.h"
+#include "gps_nmea.h"
 #include "ft8_mode.h"
 #include "ft8_app.h"
 #include <string.h>
@@ -393,7 +394,9 @@ static void csdr_save_settings(void)
   fs.audio_gain_db   = g_sdr.audio_gain_db;
 
   /* Calibration */
-  fs.xtal_ppm        = g_sdr.xtal_ppm;
+  fs.xtal_ppm        = g_sdr.xtal_ppb;
+  fs.xtal_cal_unit   = 1U;             /* field trên lưu ppb */
+  fs.utc_offset_h    = (int8_t)GPS_NMEA_GetUtcOffset();
   fs.dc_i_offset     = g_sdr.dc_i_offset;
   fs.dc_q_offset     = g_sdr.dc_q_offset;
   fs.lo_offset_hz    = g_sdr.lo_offset_hz;
@@ -427,6 +430,9 @@ void CSDR_Init(void)
 
   /* RTC — must be before flash restore so IsSet() works */
   RTC_Clock_Init();
+
+  /* GPS NMEA time sync — USART2 RX (PD6); không GPS thì im lặng */
+  GPS_NMEA_Init();
 
   /* ═══ I2C BUS SCANNER - find devices on I2C1 ═══
    * Kết quả trong dbg_i2c_devices[addr7bit] = 1 nếu device có mặt.
@@ -536,8 +542,10 @@ void CSDR_Init(void)
         if (cch != '\0' && (cch < ' ' || cch > 'Z')) { g_sdr.ft8_grid[0] = '\0'; break; }
       }
       g_sdr.tx_src         = (fs.tx_src <= 1U) ? fs.tx_src : 0U;
-      /* Calibration */
-      g_sdr.xtal_ppm         = fs.xtal_ppm;
+      /* Calibration — blob cũ lưu ppm nguyên (unit=0), blob mới lưu ppb */
+      g_sdr.xtal_ppb         = (fs.xtal_cal_unit == 1U)
+                               ? fs.xtal_ppm : fs.xtal_ppm * 1000;
+      GPS_NMEA_SetUtcOffset(fs.utc_offset_h);  /* clamp trong setter; blob cũ = 0 */
       g_sdr.dc_i_offset      = fs.dc_i_offset;
       g_sdr.dc_q_offset      = fs.dc_q_offset;
       g_sdr.lo_offset_hz     = fs.lo_offset_hz;
@@ -601,6 +609,7 @@ void CSDR_Init(void)
   dbg_si5351_ok = (uint32_t)SI5351_Init(&g_si5351, &hi2c1, SI5351_I2C_ADDR, SI5351_XTAL_HZ);
   if (dbg_si5351_ok == HAL_OK) {
     g_sdr.si5351_ok = true;
+    SI5351_SetCorrection(&g_si5351, g_sdr.xtal_ppb);  /* cal từ EEPROM */
     SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
   } else {
     RuntimeDiag_SetFault(FAULT_PLL);
@@ -849,6 +858,7 @@ void CSDR_Init(void)
                                               SI5351_I2C_ADDR, SI5351_XTAL_HZ);
       if (dbg_si5351_ok == HAL_OK) {
         g_sdr.si5351_ok = true;
+        SI5351_SetCorrection(&g_si5351, g_sdr.xtal_ppb);
         SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
         g_selftest.items[2].ok = true;
       } else {
@@ -1291,6 +1301,9 @@ void CSDR_Loop(void)
   /* FT8 decoder – cooperative tick, ≤~1.5 ms of STFT/search/LDPC work per
    * call; self-gates on DIGU/USB + RX and drives the INFO strip itself. */
   FT8_Poll();
+
+  /* GPS NMEA → RTC: drain UART ring + parse; no-op tức thì khi không GPS */
+  GPS_NMEA_Poll();
 
   /* Timed tasks */
   static uint32_t t_analog=0, t_fan=0, t_pwr=0, t_disp=0, t_cat=0, t_wf=0, t_spec=0, t_tx_spec=0;
@@ -1895,7 +1908,7 @@ static void csdr_apply_band(uint8_t band)
 static void csdr_factory_reset(void)
 {
   /* Preserve hardware calibration — these survive factory reset */
-  int32_t  sv_xtal_ppm        = g_sdr.xtal_ppm;
+  int32_t  sv_xtal_ppb        = g_sdr.xtal_ppb;
   int32_t  sv_dc_i_offset     = g_sdr.dc_i_offset;
   int32_t  sv_dc_q_offset     = g_sdr.dc_q_offset;
   uint32_t sv_lo_offset_hz    = g_sdr.lo_offset_hz;
@@ -1966,7 +1979,7 @@ static void csdr_factory_reset(void)
   g_sdr.cw_filter_hz     = 500U;
 
   /* Restore calibration */
-  g_sdr.xtal_ppm         = sv_xtal_ppm;
+  g_sdr.xtal_ppb         = sv_xtal_ppb;
   g_sdr.dc_i_offset      = sv_dc_i_offset;
   g_sdr.dc_q_offset      = sv_dc_q_offset;
   g_sdr.lo_offset_hz     = sv_lo_offset_hz;
@@ -2084,7 +2097,7 @@ static void csdr_handle_encoder(void)
         g_sdr.display_dirty |= DIRTY_ALL;
         if (strcmp(name, "Calibration") == 0) {
           Cal_Params_t cp = {
-            .xtal_ppm        = g_sdr.xtal_ppm,
+            .xtal_ppb        = g_sdr.xtal_ppb,
             .iq_gain         = g_sdr.iq_gain,
             .iq_phase        = g_sdr.iq_phase,
             .dc_i_offset     = g_sdr.dc_i_offset,
@@ -2099,7 +2112,7 @@ static void csdr_handle_encoder(void)
           };
           csdr_marker_recenter();  /* full-screen overlay: LO must sit at freq_hz */
           if (Cal_Run(&cp, &g_dsp)) {
-            g_sdr.xtal_ppm        = cp.xtal_ppm;
+            g_sdr.xtal_ppb        = cp.xtal_ppb;
             g_sdr.iq_gain         = cp.iq_gain;
             g_sdr.iq_phase        = cp.iq_phase;
             g_sdr.dc_i_offset     = cp.dc_i_offset;
@@ -2119,15 +2132,19 @@ static void csdr_handle_encoder(void)
             DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
             DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
             if (g_sdr.si5351_ok) {
-              g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
-                SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
+              SI5351_SetCorrection(&g_si5351, g_sdr.xtal_ppb);
               SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
             }
             csdr_save_settings();
           } else {
-            /* Cancelled — restore live DSP state from saved settings */
+            /* Cancelled — restore live DSP state from saved settings.
+             * GPS Cal/Apply có thể đã nạp correction thử → trả về giá trị lưu. */
             DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
             DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
+            if (g_sdr.si5351_ok) {
+              SI5351_SetCorrection(&g_si5351, g_sdr.xtal_ppb);
+              SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
+            }
           }
         } else if (strcmp(name, "SWR Scan") == 0) {
           csdr_marker_recenter();  /* scan retunes + restores LO to freq_hz */
@@ -2267,7 +2284,7 @@ static void csdr_handle_keys(void)
           g_sdr.display_dirty |= DIRTY_ALL;
           if (strcmp(name, "Calibration") == 0) {
             Cal_Params_t cp = {
-              .xtal_ppm        = g_sdr.xtal_ppm,
+              .xtal_ppb        = g_sdr.xtal_ppb,
               .iq_gain         = g_sdr.iq_gain,
               .iq_phase        = g_sdr.iq_phase,
               .dc_i_offset     = g_sdr.dc_i_offset,
@@ -2282,7 +2299,7 @@ static void csdr_handle_keys(void)
             };
             csdr_marker_recenter();  /* full-screen overlay: LO must sit at freq_hz */
             if (Cal_Run(&cp, &g_dsp)) {
-              g_sdr.xtal_ppm        = cp.xtal_ppm;
+              g_sdr.xtal_ppb        = cp.xtal_ppb;
               g_sdr.iq_gain         = cp.iq_gain;
               g_sdr.iq_phase        = cp.iq_phase;
               g_sdr.dc_i_offset     = cp.dc_i_offset;
@@ -2302,14 +2319,17 @@ static void csdr_handle_keys(void)
               DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
               DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
               if (g_sdr.si5351_ok) {
-                g_si5351.xtal_hz = (uint32_t)((int32_t)SI5351_XTAL_HZ +
-                  SI5351_XTAL_HZ / 1000000L * g_sdr.xtal_ppm);
+                SI5351_SetCorrection(&g_si5351, g_sdr.xtal_ppb);
                 SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
               }
               csdr_save_settings();
             } else {
               DSP_SetIQCorr(&g_dsp, g_sdr.iq_gain, g_sdr.iq_phase);
               DSP_SetDCOffset(&g_dsp, g_sdr.dc_i_offset, g_sdr.dc_q_offset);
+              if (g_sdr.si5351_ok) {
+                SI5351_SetCorrection(&g_si5351, g_sdr.xtal_ppb);
+                SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
+              }
             }
           } else if (strcmp(name, "SWR Scan") == 0) {
             csdr_marker_recenter();  /* scan retunes + restores LO to freq_hz */

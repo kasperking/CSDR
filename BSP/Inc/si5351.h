@@ -143,7 +143,10 @@ typedef struct {
 typedef struct {
   I2C_HandleTypeDef *hi2c;          /*!< I2C handle (chung với WM8731)   */
   uint8_t            i2c_addr;      /*!< 8-bit I2C addr (0xC0 mặc định) */
-  uint32_t           xtal_hz;       /*!< XTAL frequency (Hz)             */
+  uint32_t           xtal_hz;       /*!< XTAL frequency danh định (Hz)   */
+  int32_t            freq_corr_ppb; /*!< Sai số XTAL đo được (ppb, dương
+                                         = xtal chạy nhanh); SetQSDFrequency
+                                         bù bằng cách trừ vào tần số nạp  */
   uint32_t           vco_a_hz;      /*!< VCO_A frequency hiện tại        */
   uint32_t           freq_hz;       /*!< Tần số output hiện tại          */
   SI5351_CLK_State_t clk[3];        /*!< Trạng thái CLK0..CLK2           */
@@ -164,6 +167,14 @@ HAL_StatusTypeDef SI5351_SetQSDFrequency(SI5351_Handle_t *si, uint32_t freq_hz);
 
 /** Bật/tắt từng CLK output */
 HAL_StatusTypeDef SI5351_EnableOutput(SI5351_Handle_t *si, uint8_t clk_num, bool enable);
+
+/** Cài sai số XTAL (ppb).  Chỉ lưu giá trị — caller phải gọi lại
+ *  SI5351_SetQSDFrequency để nạp LO với correction mới. */
+void SI5351_SetCorrection(SI5351_Handle_t *si, int32_t ppb);
+
+/** Bật/tắt CLK2 = XTAL passthrough (không qua PLL) cho GPS frequency cal.
+ *  Không đụng PLLA/CLK0 nên LO đang chạy không bị gián đoạn. */
+HAL_StatusTypeDef SI5351_SetCalOutput(SI5351_Handle_t *si, bool on);
 
 /** Cài drive strength */
 HAL_StatusTypeDef SI5351_SetDrive(SI5351_Handle_t *si, uint8_t clk_num, uint8_t drive_ma);

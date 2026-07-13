@@ -25,6 +25,7 @@
 #include "encoder.h"
 #include "input_scan.h"
 #include "rtc_clock.h"
+#include "gps_nmea.h"
 #include "runtime_diag.h"
 #include "pa_protect.h"
 #include "pa_overcurrent.h"
@@ -518,6 +519,7 @@ void FT8_App_Run(void)
      * and the T/R sequencing that CSDR_Loop would otherwise be running */
     CSDR_ProcessAudioPending();
     FT8_Poll();
+    GPS_NMEA_Poll();          /* giữ RTC sync khi GPS cắm — FT8 cần giờ đúng */
     CSDR_PollTxSequencing();
     PA_OC_HandleFaultInLoop();
     uint32_t now = HAL_GetTick();

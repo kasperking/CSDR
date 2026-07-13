@@ -111,7 +111,7 @@ typedef struct {
   uint8_t     usb_mode;
   bool        usb_iq_stream;  /*!< true = raw IQ to USB audio; false = demodulated audio */
   /* Calibration */
-  int32_t     xtal_ppm;
+  int32_t     xtal_ppb;   /*!< SI5351 XTAL correction ppb (GPS cal ghi trực tiếp) */
   int16_t     iq_gain;
   int16_t     iq_phase;
   int32_t     dc_i_offset;

@@ -23,6 +23,8 @@
 #include "w25q.h"
 #include "csdr_app.h"
 #include "pe4302.h"     /* g_att — display path adds back front-end attenuation */
+#include "si5351.h"     /* g_si5351 — XTAL correction + CLK2 cal output */
+#include "gps_cal.h"    /* TIM1 reciprocal counter (PA8=CLK2, PA9=1PPS) */
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -113,7 +115,8 @@ static int32_t v_band_swr_scale;
 static char    s_band_cal_title[24] = "Band Cal";
 
 /* ── Value storage ─ mirrors Cal_Params_t fields for live editing ───────── */
-static int32_t v_xtal_ppm;
+static int32_t v_xtal_ppb;   /* nguồn chân lý — GPS cal ghi ppb chính xác  */
+static int32_t v_xtal_ppm;   /* hiển thị/chỉnh tay, bước 1 ppm             */
 static int32_t v_iq_gain;
 static int32_t v_iq_phase;
 static int32_t v_dc_i;
@@ -129,6 +132,7 @@ static int32_t v_pwr_scale; /* tandem-match FWD power cal 50..200 %   */
 /* ── Section item tables ────────────────────────────────────────────────── */
 static const CalItem_t items_freq[] = {
   { "XTAL PPM",      CAL_T_INT,  -200,   200,     1, &v_xtal_ppm  },
+  { "GPS Cal",       CAL_T_ACTION, 0,0,0,            NULL         },
   { "Apply",         CAL_T_ACTION, 0,0,0,            NULL         },
   { "Exit",          CAL_T_BACK,   0,0,0,            NULL         },
 };
@@ -182,7 +186,7 @@ static const CalItem_t items_band[] = {
 
 /* s_sections is non-const so the band entry title can be updated at runtime */
 static CalSection_t s_sections[] = {
-  { "Frequency Cal",   items_freq,  3U },
+  { "Frequency Cal",   items_freq,  4U },
   { "IQ Calibration",  items_iq,    4U },
   { "DC Offset",       items_dc,    4U },
   { "Audio Cal",       items_audio, 3U },
@@ -377,6 +381,153 @@ static void render_cal_result(const char *line1, const char *line2)
     push_ln(y + fr);
   }
   HAL_Delay(1400U);
+}
+
+/* ── XTAL / GPS frequency cal ───────────────────────────────────────────── */
+
+/* ppb → "+X.XXX ppm" (printf float tắt — tách nguyên/phân integer) */
+static void fmt_ppm(char *buf, size_t sz, int32_t ppb)
+{
+  uint32_t a = (uint32_t)(ppb < 0 ? -ppb : ppb);
+  snprintf(buf, sz, "%c%lu.%03lu ppm",
+           (ppb < 0) ? '-' : '+',
+           (unsigned long)(a / 1000U), (unsigned long)(a % 1000U));
+}
+
+/* v_xtal_ppb là nguồn chân lý; item "XTAL PPM" hiển thị bản làm tròn.
+ * Nếu user chỉnh tay item ppm (khác bản làm tròn) thì giá trị tay thắng. */
+static void xtal_reconcile(void)
+{
+  int32_t shown = (v_xtal_ppb + ((v_xtal_ppb >= 0) ? 500 : -500)) / 1000;
+  if (v_xtal_ppm != shown) { v_xtal_ppb = v_xtal_ppm * 1000; }
+}
+
+static void xtal_sync_ppm_display(void)
+{
+  v_xtal_ppm = (v_xtal_ppb + ((v_xtal_ppb >= 0) ? 500 : -500)) / 1000;
+}
+
+/* Nạp correction vào SI5351 và retune LO tại chỗ */
+static void xtal_apply_live(void)
+{
+  if (!g_sdr.si5351_ok) { return; }
+  SI5351_SetCorrection(&g_si5351, v_xtal_ppb);
+  SI5351_SetQSDFrequency(&g_si5351, g_sdr.freq_hz + CSDR_RxLoOffset());
+}
+
+static void apply_xtal(void)
+{
+  xtal_reconcile();
+  if (!g_sdr.si5351_ok) {
+    render_cal_result("XTAL Apply:", "SI5351 not ready");
+    return;
+  }
+  xtal_apply_live();
+  char buf[40];
+  fmt_ppm(buf, sizeof(buf), v_xtal_ppb);
+  render_cal_result("XTAL corr applied:", buf);
+}
+
+/* Status box 2 dòng, không delay — vẽ lại tối đa 10 Hz từ vòng đo */
+static void render_gps_status(const char *line1, const char *line2)
+{
+  uint16_t y = (uint16_t)(CAL_Y + 60U);
+  for (uint16_t fr = 0U; fr < 28U; fr++) {
+    uint16_t *ln = LN;
+    LCD_LineFill(ln, 0U, LCD_W, UI_BG);
+    bool edge = (fr == 0U || fr == 27U);
+    LCD_LineFill(ln, CAL_X, CAL_W, edge ? CAL_BORDER : CAL_SEL_BG);
+    if (!edge) {
+      ln[CAL_X]              = sw16(CAL_BORDER);
+      ln[CAL_X + CAL_W - 1U] = sw16(CAL_BORDER);
+    }
+    if (!edge && fr >= 4U && fr < 4U + (uint16_t)Font6x8.height)
+      LCD_LineStr(ln, (uint16_t)(CAL_X + 8U), fr - 4U,
+                  line1, &Font6x8, 0xFFFFU, CAL_SEL_BG);
+    if (!edge && fr >= 15U && fr < 15U + (uint16_t)Font6x8.height)
+      LCD_LineStr(ln, (uint16_t)(CAL_X + 8U), fr - 15U,
+                  line2, &Font6x8, 0xFFE0U, CAL_SEL_BG);
+    push_ln(y + fr);
+  }
+}
+
+/* GPS 1PPS cal: CLK2 = XTAL passthrough → PA8, 1PPS → PA9.
+ * ENC (khi đủ ≥5 s) = nhận kết quả + áp ngay; F4 = hủy. */
+static void gps_cal_run(void)
+{
+  if (!g_sdr.si5351_ok) {
+    render_cal_result("GPS Cal:", "SI5351 not ready");
+    return;
+  }
+  if (SI5351_SetCalOutput(&g_si5351, true) != HAL_OK) {
+    render_cal_result("GPS Cal:", "CLK2 enable failed");
+    return;
+  }
+  GPSCal_Start(g_si5351.xtal_hz);
+
+  Key_t k_enc = {0}, k_f4 = {0};
+  Key_Init   (&k_enc, ENC_SW_GPIO_Port, ENC_SW_Pin);
+  Key_InitPCA(&k_f4,  &g_pca9555_raw,  PCA_BIT_F4);
+  Key_Sync(&k_enc); Key_Sync(&k_f4);
+
+  GPSCal_Result_t r = {0};
+  bool accepted = false;
+  uint32_t last_draw = 0U;
+
+  for (;;) {
+    CSDR_ProcessAudioPending();
+    Key_Poll(&k_enc); Key_Poll(&k_f4);
+    GPSCal_Read(&r);
+
+    uint32_t now = HAL_GetTick();
+    if (now - last_draw >= 100U) {
+      last_draw = now;
+      char l1[44], l2[44];
+      switch (r.state) {
+        case GPSCAL_NO_CLK:
+          snprintf(l1, sizeof(l1), "GPS Cal: NO CLK2 on PA8");
+          snprintf(l2, sizeof(l2), "Check wire      F4=cancel");
+          break;
+        case GPSCAL_NO_PPS:
+          snprintf(l1, sizeof(l1), "GPS Cal: waiting 1PPS PA9");
+          snprintf(l2, sizeof(l2), "Check GPS fix   F4=cancel");
+          break;
+        case GPSCAL_SETTLING:
+          snprintf(l1, sizeof(l1), "GPS Cal: PPS OK, settling");
+          snprintf(l2, sizeof(l2), "                F4=cancel");
+          break;
+        default: {
+          char p[20];
+          fmt_ppm(p, sizeof(p), r.ppb);
+          snprintf(l1, sizeof(l1), "GPS Cal: %lus  %s",
+                   (unsigned long)r.secs, p);
+          snprintf(l2, sizeof(l2), (r.secs >= 5U)
+                   ? "ENC=accept      F4=cancel"
+                   : "Wait 5s min     F4=cancel");
+          break;
+        }
+      }
+      render_gps_status(l1, l2);
+    }
+
+    if (Key_Press(&k_enc) && r.state == GPSCAL_MEASURING && r.secs >= 5U) {
+      accepted = true;
+      break;
+    }
+    if (Key_Press(&k_f4)) { break; }
+  }
+
+  GPSCal_Stop();
+  SI5351_SetCalOutput(&g_si5351, false);
+
+  if (accepted) {
+    v_xtal_ppb = r.ppb;
+    xtal_sync_ppm_display();
+    xtal_apply_live();
+    char buf[40];
+    fmt_ppm(buf, sizeof(buf), v_xtal_ppb);
+    render_cal_result("GPS Cal applied:", buf);
+  }
 }
 
 /* ── RX DC Offset auto-cal ──────────────────────────────────────────────── */
@@ -681,6 +832,8 @@ static void run_section(uint8_t sect_idx)
       } else if (it->type == CAL_T_BACK) {
         return;
       } else if (it->type == CAL_T_ACTION) {
+        if (sect_idx == 0U && cursor == 1U) gps_cal_run();
+        if (sect_idx == 0U && cursor == 2U) apply_xtal();
         if (sect_idx == 1U && cursor == 2U) auto_iq_cal();
         if (sect_idx == 2U && cursor == 2U) auto_dc_cal();
         if (sect_idx == 4U && cursor == 2U) auto_smeter_zero();
@@ -755,7 +908,8 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
   s_dsp = dsp;   /* expose to all auto-cal routines */
 
   /* Copy params into working storage */
-  v_xtal_ppm   = params->xtal_ppm;
+  v_xtal_ppb   = params->xtal_ppb;
+  xtal_sync_ppm_display();
   v_iq_gain    = (int32_t)params->iq_gain;
   v_iq_phase   = (int32_t)params->iq_phase;
   v_dc_i       = params->dc_i_offset;
@@ -819,7 +973,8 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
         render_toplevel(cursor, scroll);
 
       } else if (it->kind == TOP_SAVE) {
-        params->xtal_ppm        = v_xtal_ppm;
+        xtal_reconcile();
+        params->xtal_ppb        = v_xtal_ppb;
         params->iq_gain         = (int16_t)v_iq_gain;
         params->iq_phase        = (int16_t)v_iq_phase;
         params->dc_i_offset     = v_dc_i;
@@ -835,7 +990,8 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
 
       } else if (it->kind == TOP_LOAD) {
         /* Restore caller-supplied values (reload from flash is caller's job) */
-        v_xtal_ppm   = params->xtal_ppm;
+        v_xtal_ppb   = params->xtal_ppb;
+        xtal_sync_ppm_display();
         v_iq_gain    = (int32_t)params->iq_gain;
         v_iq_phase   = (int32_t)params->iq_phase;
         v_dc_i       = params->dc_i_offset;
@@ -853,7 +1009,7 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
 
       } else if (it->kind == TOP_RESET) {
         Cal_Params_t def = CAL_PARAMS_DEFAULT;
-        params->xtal_ppm         = def.xtal_ppm;
+        params->xtal_ppb         = def.xtal_ppb;
         params->iq_gain          = def.iq_gain;
         params->iq_phase         = def.iq_phase;
         params->dc_i_offset      = def.dc_i_offset;
@@ -866,7 +1022,8 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
         params->pa_oc_limit_idx  = def.pa_oc_limit_idx;
         params->pwr_scale        = def.pwr_scale;
         /* Sync working vars so UI reflects reset values on any re-entry */
-        v_xtal_ppm   = def.xtal_ppm;
+        v_xtal_ppb   = def.xtal_ppb;
+        xtal_sync_ppm_display();
         v_iq_gain    = (int32_t)def.iq_gain;
         v_iq_phase   = (int32_t)def.iq_phase;
         v_dc_i       = def.dc_i_offset;

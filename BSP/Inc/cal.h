@@ -23,7 +23,9 @@ extern "C" {
 
 typedef struct {
   /* Frequency */
-  int32_t  xtal_ppm;           /* XTAL correction   -200 .. +200 ppm   */
+  int32_t  xtal_ppb;           /* XTAL correction, ppb (dương = xtal nhanh).
+                                  GPS Cal ghi giá trị ppb chính xác; item
+                                  "XTAL PPM" chỉnh tay theo bước 1 ppm.    */
 
   /* IQ */
   int16_t  iq_gain;            /* IQ gain balance    -50 .. +50         */

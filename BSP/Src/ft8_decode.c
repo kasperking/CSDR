@@ -12,7 +12,7 @@
 //   y - increase in signal level dB when adding a weaker independent signal
 //   x - specific relative strength of the weaker signal in dB
 // Table index corresponds to x in dB (index 0: 0 dB, index 1: -1 dB etc)
-static const float db_power_sum[40] = {
+static const float db_power_sum[40] __attribute__((unused)) = {
     3.01029995663981f, 2.53901891043867f, 2.1244260279434f, 1.76434862436485f, 1.45540463109294f,
     1.19331048066095f, 0.973227937086954f, 0.790097496525665f, 0.638920341433796f, 0.514969420252302f,
     0.413926851582251f, 0.331956199884278f, 0.265723755961025f, 0.212384019142551f, 0.16954289279533f,
@@ -525,7 +525,7 @@ static void ft8_extract_symbol(const WF_ELEM_T* wf, float* logl)
 }
 
 // Compute unnormalized log likelihood log(p(1) / p(0)) of bits corresponding to several FSK symbols at once
-static void ft8_decode_multi_symbols(const WF_ELEM_T* wf, int num_bins, int n_syms, int bit_idx, float* log174)
+static void __attribute__((unused)) ft8_decode_multi_symbols(const WF_ELEM_T* wf, int num_bins, int n_syms, int bit_idx, float* log174)
 {
     const int n_bits = 3 * n_syms;
     const int n_tones = (1 << n_bits);

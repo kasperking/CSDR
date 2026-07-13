@@ -278,6 +278,7 @@ HAL_StatusTypeDef SI5351_Init(SI5351_Handle_t *si,
   si->hi2c         = hi2c;
   si->i2c_addr     = i2c_addr;
   si->xtal_hz      = xtal_hz;
+  si->freq_corr_ppb = 0;
   si->vco_a_hz     = 0U;
   si->freq_hz      = 0U;
   si->initialized  = false;
@@ -340,6 +341,15 @@ HAL_StatusTypeDef SI5351_SetQSDFrequency(SI5351_Handle_t *si, uint32_t freq_hz)
 
   /* ── 1. CLK output frequency = RF LO × 4 ─────────────── */
   uint32_t clk_freq = freq_hz * 4U;
+
+  /* XTAL correction: xtal thật = danh định × (1 + ppb/1e9) nên output
+   * thật = nạp × (1 + e).  Nạp tần số đã trừ sai số để output đúng. */
+  if (si->freq_corr_ppb != 0) {
+    int64_t corr = ((int64_t)clk_freq * si->freq_corr_ppb
+                    + (si->freq_corr_ppb >= 0 ? 500000000LL : -500000000LL))
+                   / 1000000000LL;
+    clk_freq = (uint32_t)((int64_t)clk_freq - corr);
+  }
 
   /* ── 2. Compute PLL_A / MS0 parameters ───────────────── */
   uint8_t  r_div_code;
@@ -418,6 +428,44 @@ HAL_StatusTypeDef SI5351_EnableOutput(SI5351_Handle_t *si, uint8_t clk_num, bool
   if (clk_num < 3U) { si->clk[clk_num].enabled = enable; }
   return SI5351_WriteReg(si, SI5351_REG_OUTPUT_EN_CTRL, en_reg);
   /* USER CODE END SI5351_EnableOutput_0 */
+}
+
+/**
+  * @brief  Cài sai số XTAL đo được (ppb, dương = xtal chạy nhanh).
+  *         Caller gọi lại SI5351_SetQSDFrequency để áp dụng.
+  */
+void SI5351_SetCorrection(SI5351_Handle_t *si, int32_t ppb)
+{
+  si->freq_corr_ppb = ppb;
+}
+
+/**
+  * @brief  CLK2 = XTAL passthrough cho GPS cal (đo trực tiếp thạch anh).
+  *
+  *  Nguồn CLK2 = XTAL (bits[3:2] = 00), không qua PLL/MultiSynth nên
+  *  PLLA và CLK0 (LO đang chạy) không bị ảnh hưởng.  Drive 2 mA đủ cho
+  *  dây ngắn vào chân timer MCU.
+  *  Lưu ý: SetQSDFrequency ghi Reg3 = 0xFE mỗi lần retune (tắt CLK2) —
+  *  không retune LO trong lúc đang đo.
+  */
+HAL_StatusTypeDef SI5351_SetCalOutput(SI5351_Handle_t *si, bool on)
+{
+  if (!si->initialized) { return HAL_ERROR; }
+  HAL_StatusTypeDef ret;
+  if (on) {
+    ret = SI5351_WriteReg(si, SI5351_REG_CLK2_CTRL,
+                           (uint8_t)(SI5351_CLK_SRC_XTAL | SI5351_CLK_IDRV_2MA));
+    if (ret != HAL_OK) { return ret; }
+    ret = SI5351_EnableOutput(si, 2U, true);
+  } else {
+    ret = SI5351_EnableOutput(si, 2U, false);
+    HAL_StatusTypeDef r2 = SI5351_WriteReg(si, SI5351_REG_CLK2_CTRL,
+                           (uint8_t)(SI5351_CLK_PDN | SI5351_CLK_SRC_MS |
+                                     SI5351_CLK_IDRV_8MA));
+    if (ret == HAL_OK) { ret = r2; }
+  }
+  si->clk[2].freq_hz = on ? si->xtal_hz : 0U;
+  return ret;
 }
 
 /**

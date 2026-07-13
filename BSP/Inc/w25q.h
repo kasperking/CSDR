@@ -135,7 +135,8 @@ typedef struct {
   uint32_t   sl_hz;              /* low-cut filter edge Hz       */
 
   /* ── Calibration — 4-byte ───────────────────────────────────── */
-  int32_t    xtal_ppm;           /* SI5351 crystal correction    */
+  int32_t    xtal_ppm;           /* SI5351 crystal correction — đơn vị
+                                    theo xtal_cal_unit (0=ppm, 1=ppb) */
   int32_t    dc_i_offset;        /* DSP DC-I bias                */
   int32_t    dc_q_offset;        /* DSP DC-Q bias                */
   uint32_t   lo_offset_hz;       /* LO tuning offset             */
@@ -187,7 +188,13 @@ typedef struct {
   /* ── SI5351 per-band calibration (future) — tail carved for Ext PA
    *    (array was [32], never written → old blobs read 0 in the new
    *    fields; offsets of everything after are unchanged) ─────────── */
-  uint8_t    si5351_cal[29];
+  uint8_t    si5351_cal[27];
+  int8_t     utc_offset_h;       /* Múi giờ hiển thị: RTC = UTC + offset giờ,
+                                    -12..+14; 0 cũng = blob cũ → UTC+0.
+                                    Carved thêm từ si5351_cal tail        */
+  uint8_t    xtal_cal_unit;      /* Đơn vị của field xtal_ppm phía trên:
+                                    0 = ppm (blob cũ), 1 = ppb (GPS cal).
+                                    Carved thêm từ si5351_cal tail        */
   uint8_t    ext_pa_on;          /* External PA fitted: 0=off 1=on;
                                     0 also = pre-ext-pa blob padding      */
   uint8_t    ext_pa_delay_p1;    /* TX keying delay, stored ms+1: 1..51 =

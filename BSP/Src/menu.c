@@ -7,6 +7,7 @@
 
 #include "menu.h"
 #include "sdr_ui.h"
+#include "gps_nmea.h"
 #include "build_info.h"
 #include <string.h>
 #include <stdio.h>
@@ -49,6 +50,7 @@ static int32_t _extpa_val, _extpadly_val, _extpadrv_val;
 /* System group */
 static int32_t _bl_val, _usb_val, _iq_stream_val, _tx_src_val;
 static int32_t _clk_val;   /* seconds 0-86399, decomposed to HH:MM:SS for display */
+static int32_t _utcofs_val; /* Time Zone: RTC = UTC + offset (giờ, -12..+14) */
 
 /* Misc */
 static uint8_t s_pa_watts = 0U;
@@ -77,6 +79,11 @@ static void apply_clock(void)
   SDR_UI_SetClock((uint8_t)((s / 3600U) % 24U),
                   (uint8_t)((s % 3600U) / 60U),
                   (uint8_t)(s % 60U));
+}
+
+static void apply_utcofs(void)
+{
+  GPS_NMEA_SetUtcOffset(_utcofs_val);  /* câu RMC kế tiếp re-sync RTC */
 }
 
 /* About info strings */
@@ -303,8 +310,12 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[47] = (MenuItem_t){ "USB Stream",  MENU_TYPE_ENUM,  0,0,0,   &_iq_stream_val, iq_stream_strs,2U,NULL,NULL,5 };
   m->items[48] = (MenuItem_t){ "Calibration", MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
   m->items[49] = (MenuItem_t){ "Factory Reset",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
-  m->items[55] = (MenuItem_t){ "Clock",        MENU_TYPE_TIME,  0,86399,1,&_clk_val,  NULL,  0U,apply_clock,NULL,5 };
+  m->items[55] = (MenuItem_t){ "Clock",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
   m->items[50] = (MenuItem_t){ "About",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+
+  /* ── Clock sub-group (parent = 55) ──────────────────────── */
+  m->items[61] = (MenuItem_t){ "Set Time",  MENU_TYPE_TIME, 0,86399,1,&_clk_val,   NULL,0U,apply_clock, NULL,55 };
+  m->items[62] = (MenuItem_t){ "Time Zone", MENU_TYPE_INT,  -12,14,1, &_utcofs_val,NULL,0U,apply_utcofs,"h", 55 };
 
   /* ── About sub-group (parent = 50) ──────────────────────── */
   m->items[51] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,50 };
@@ -329,6 +340,7 @@ void Menu_Toggle(Menu_Handle_t *m)
     uint8_t ch, cm, cs;
     SDR_UI_GetClock(&ch, &cm, &cs);
     _clk_val = (int32_t)((uint32_t)ch * 3600U + (uint32_t)cm * 60U + cs);
+    _utcofs_val = GPS_NMEA_GetUtcOffset();
     m->time_field = 0U;
   }
   Menu_BuildView(m);
