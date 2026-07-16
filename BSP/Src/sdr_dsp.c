@@ -33,7 +33,13 @@
 #include "spi_assets.h"
 #include "nr_spec.h"
 #include "ft8_mode.h"
+#include "rtty_decode.h"
 /* USER CODE END Includes */
+
+/* Diagnostic: counts AGC state resets after a NaN/Inf reached the envelope
+ * tracker (see the recovery block at the top of DSP_Process).  Non-zero
+ * after an audio dropout confirms the upstream-NaN root cause. */
+volatile uint32_t dbg_agc_nan_resets = 0U;
 
 /* ── FFT backend selection ──────────────────────────────────────────────────
  * Default: CMSIS-DSP arm_cfft_f32 (SDR_USE_CMSIS_FFT defined below).
@@ -1155,6 +1161,22 @@ void DSP_Process(DSP_State_t *dsp,
   /* USER CODE BEGIN DSP_Process_0 */
   float power_acc = 0.0f;
 
+  /* AGC NaN/Inf recovery — once per block, not per sample.  A single bad
+   * float from any upstream stage (diverged adaptive filter, IIR overflow)
+   * would otherwise latch env_smooth/level at NaN forever
+   * (0.9·NaN + anything = NaN) and mute audio until reboot: AGC_SetMode /
+   * AGC_SetSpeed never reset these fields, so nothing else recovers them. */
+  if (!isfinite(dsp->agc.level) || !isfinite(dsp->agc.env_smooth) ||
+      !isfinite(dsp->agc.gain)) {
+    dsp->agc.level      = 0.0f;
+    dsp->agc.env_smooth = 0.0f;
+    dsp->agc.prev_level = 0.0f;
+    dsp->agc.drate      = 0.0f;
+    dsp->agc.gain       = 1.0f;
+    dsp->agc.hang_timer = 0U;
+    dbg_agc_nan_resets++;
+  }
+
   for (uint32_t n = 0U; n < len; n++)
   {
     /* ── 1. Read: SAI RX stores 16-bit data right-justified in bits[15:0].
@@ -1501,6 +1523,13 @@ void DSP_Process(DSP_State_t *dsp,
      *         FT8_Poll; both run in CSDR_Loop context. */
     if (g_ft8_tap_enable)
       FT8_FeedAudio(audio);
+
+    /* ── 7b3. RTTY decoder tap — same tap point and gating pattern as FT8
+     *         above (post-demod/LPF/DC-block, pre-notch/NR/AGC/squelch).
+     *         Gate flag is owned by CSDR_Loop; both run in main-loop
+     *         context.  Cost when enabled ≈ 50 cycles/sample. */
+    if (g_rtty_tap_enable)
+      RTTY_FeedAudio(audio);
 
     /* ── 7c. Notch filter – narrow-band rejection before AGC */
     if (dsp->notch_on)

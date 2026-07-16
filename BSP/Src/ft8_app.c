@@ -168,7 +168,8 @@ static void app_draw_header(const FT8_Status_t *st)
 static void app_draw_footer(const FT8_Status_t *st)
 {
   char line[80];
-  if (s_notice[0] != '\0' && HAL_GetTick() < s_notice_until) {
+  /* Wrap-safe remaining-time check (signed difference), not a raw compare */
+  if (s_notice[0] != '\0' && (int32_t)(s_notice_until - HAL_GetTick()) > 0) {
     snprintf(line, sizeof(line), "%s", s_notice);
   } else {
     /* Diagnostic chain readout: blk → tap+STFT · cand/top → Costas sync ·
@@ -521,6 +522,7 @@ void FT8_App_Run(void)
     FT8_Poll();
     GPS_NMEA_Poll();          /* giữ RTC sync khi GPS cắm — FT8 cần giờ đúng */
     CSDR_PollTxSequencing();
+    Flash_SaveTick(&g_flash); /* finish a save armed before the app opened */
     PA_OC_HandleFaultInLoop();
     uint32_t now = HAL_GetTick();
     RuntimeDiag_WatchdogRefreshIfHealthy(now);
@@ -655,8 +657,8 @@ void FT8_App_Run(void)
 
   /* Drain the exit key so csdr_app's own key machines (polled again after we
    * return) don't see the held button as a fresh press (ghost-press rule).
-   * 1 s cap: on a PCA9555 I2C fault Input_Scan keeps the stale "pressed"
-   * value forever — never wedge the radio on it. */
+   * 1 s cap: on a PCA9555 I2C fault Input_Scan skips key reads until its
+   * retry/backoff recovers — never wedge the radio waiting on it. */
   uint32_t drain_t0 = HAL_GetTick();
   for (;;) {
     CSDR_ProcessAudioPending();

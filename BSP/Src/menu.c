@@ -31,6 +31,9 @@ static int32_t _rxshift_val, _notch_val, _notchhz_val;
 static int32_t _nblvl_val, _nrlvl_val, _bc_val;
 static int32_t _cwdec_val;
 
+/* RTTY group */
+static int32_t _rttydec_val, _rttybaud_val, _rttyshift_val;
+
 /* CW group */
 static int32_t _cw_pitch_val, _cw_wpm_val, _keyer_val, _paddlerev_val;
 static int32_t _sidetone_val, _bkin_val, _bkdelay_val, _cwrev_val, _cwfilter_val;
@@ -70,6 +73,9 @@ static const char *iq_stream_strs[] = { "IQ","Demod" };
 static const char *tx_src_strs[]    = { "USB","MIC" };
 static const char *zoom_strs[] = { "+/-24k","+/-12k","+/-6k","+/-3k" };
 static const char *marker_strs[] = { "FIX", "TRACK" };
+/* Keep in sync with g_rtty_baud_x100 / g_rtty_shift_hz (rtty_decode.c) */
+static const char *rtty_baud_strs[]  = { "45.45", "50", "75" };
+static const char *rtty_shift_strs[] = { "170", "425", "850" };
 
 static MenuApplyFn s_apply_cb = NULL;
 
@@ -260,8 +266,15 @@ void Menu_Init(Menu_Handle_t *m)
   /* Every slot 0..MENU_ITEM_COUNT-1 MUST be assigned: a hole is zero-filled
    * by the memset above (label=NULL, parent=0) and would surface as a ghost
    * item in the RX group whose render dereferences NULL → hard fault. */
-  m->items[18] = (MenuItem_t){ "RIT(Hz)", MENU_TYPE_INT,  -999,999,1,    &_rit_val,    NULL,      0U, NULL,NULL,0 };
-  m->items[19] = (MenuItem_t){ "RX Shift",MENU_TYPE_INT,  -2000,2000,50, &_rxshift_val,NULL,      0U, NULL,"Hz",0 };
+  m->items[19] = (MenuItem_t){ "RIT(Hz)", MENU_TYPE_INT,  -999,999,1,    &_rit_val,    NULL,      0U, NULL,NULL,0 };
+  m->items[63] = (MenuItem_t){ "RX Shift",MENU_TYPE_INT,  -2000,2000,50, &_rxshift_val,NULL,      0U, NULL,"Hz",0 };
+
+  /* ── RTTY group (slot 53 root, children parent = 53; view order within
+   *    the group is ascending slot: 18 Decode, 60 Baud, 64 Shift) ───── */
+  m->items[53] = (MenuItem_t){ "RTTY",     MENU_TYPE_GROUP,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
+  m->items[18] = (MenuItem_t){ "Decode",   MENU_TYPE_ENUM, 0,0,0, &_rttydec_val,  onoff_strs,     2U, NULL,NULL,53 };
+  m->items[60] = (MenuItem_t){ "Baud",     MENU_TYPE_ENUM, 0,0,0, &_rttybaud_val, rtty_baud_strs, 3U, NULL,NULL,53 };
+  m->items[64] = (MenuItem_t){ "Shift(Hz)",MENU_TYPE_ENUM, 0,0,0, &_rttyshift_val,rtty_shift_strs,3U, NULL,NULL,53 };
 
   /* ── Audio group (parent = 1) ───────────────────────────── */
   m->items[20] = (MenuItem_t){ "Volume",    MENU_TYPE_INT, 0,100,5, &_vol_val, NULL,0U,NULL,NULL,1 };
@@ -321,9 +334,10 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[51] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,50 };
   m->items[52] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,50 };
 
-  /* ── Root actions (parent = -1) — last so they appear at end of root view ── */
-  m->items[53] = (MenuItem_t){ "SWR Scan",  MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
-  m->items[60] = (MenuItem_t){ "FT8",       MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
+  /* ── Root actions (parent = -1) — highest slots so they render after all
+   *    root groups (view order is ascending slot; RTTY group sits at 53) ── */
+  m->items[65] = (MenuItem_t){ "SWR Scan",  MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
+  m->items[66] = (MenuItem_t){ "FT8",       MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
 
   Menu_BuildView(m);
   /* USER CODE END Menu_Init_0 */
@@ -559,7 +573,8 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        int16_t rx_shift_hz,
                        bool notch_on, int16_t notch_hz,
                        bool vox_on, uint8_t vox_gain, uint16_t vox_delay,
-                       bool cw_decode_on,
+                       bool cw_decode_on, bool rtty_decode_on,
+                       uint8_t rtty_baud_idx, uint8_t rtty_shift_idx,
                        uint16_t cw_pitch_hz, uint8_t cw_wpm,
                        uint8_t keyer_mode, bool paddle_reverse,
                        uint8_t sidetone_vol, uint8_t cw_bkin,
@@ -616,6 +631,9 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _voxgain_val  = (vox_gain  <= 100U) ? (int32_t)vox_gain  : 50;
   _voxdelay_val = (vox_delay >= 100U && vox_delay <= 2000U) ? (int32_t)vox_delay : 500;
   _cwdec_val    = cw_decode_on ? 1 : 0;
+  _rttydec_val  = rtty_decode_on ? 1 : 0;
+  _rttybaud_val  = (rtty_baud_idx  < 3U) ? (int32_t)rtty_baud_idx  : 0;
+  _rttyshift_val = (rtty_shift_idx < 3U) ? (int32_t)rtty_shift_idx : 0;
 
   /* CW settings */
   _cw_pitch_val  = (cw_pitch_hz  >= 300U && cw_pitch_hz  <= 900U)  ? (int32_t)cw_pitch_hz  : 700;
@@ -664,7 +682,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      int16_t *rx_shift_hz,
                      bool *notch_on, int16_t *notch_hz,
                      bool *vox_on, uint8_t *vox_gain, uint16_t *vox_delay,
-                     bool *cw_decode_on,
+                     bool *cw_decode_on, bool *rtty_decode_on,
+                     uint8_t *rtty_baud_idx, uint8_t *rtty_shift_idx,
                      uint16_t *cw_pitch_hz, uint8_t *cw_wpm,
                      uint8_t *keyer_mode, bool *paddle_reverse,
                      uint8_t *sidetone_vol, uint8_t *cw_bkin,
@@ -723,6 +742,9 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *tx_audio_low_hz  = (uint16_t)_tx_low_val;
   *tx_audio_high_hz = (uint16_t)_tx_high_val;
   *cw_decode_on     = (_cwdec_val != 0);
+  *rtty_decode_on   = (_rttydec_val != 0);
+  *rtty_baud_idx    = (uint8_t)(_rttybaud_val  >= 0 && _rttybaud_val  < 3 ? _rttybaud_val  : 0);
+  *rtty_shift_idx   = (uint8_t)(_rttyshift_val >= 0 && _rttyshift_val < 3 ? _rttyshift_val : 0);
   *cw_pitch_hz      = (uint16_t)(_cw_pitch_val >= 300 && _cw_pitch_val <= 900 ? _cw_pitch_val : 700);
   *cw_wpm           = (uint8_t) (_cw_wpm_val   >= 5   && _cw_wpm_val   <= 40  ? _cw_wpm_val   : 20);
   *keyer_mode       = (uint8_t) (_keyer_val     >= 0   && _keyer_val    <= 2   ? _keyer_val    : 0);

@@ -187,9 +187,13 @@ void RTC_Clock_GetTime(uint8_t *h, uint8_t *m, uint8_t *s)
 {
   if (!s_rtc_ok) { *h = 0U; *m = 0U; *s = 0U; return; }
 
-  /* With BYPSHAD set, RTC->TR reads directly from the counters — no wait needed.
-   * Reading TR first, then DR releases any potential double-read lock. */
+  /* With BYPSHAD set, RTC->TR reads directly from the counters.  RM0433
+   * requires reading the calendar twice and comparing: an APB read can
+   * capture mid-update and return a torn value (wrong second/hour digit).
+   * Loop until two consecutive reads agree, then read DR to keep the
+   * TR→DR unlock convention. */
   uint32_t tr = RTC->TR;
+  for (uint32_t tr2 = RTC->TR; tr != tr2; tr2 = RTC->TR) { tr = tr2; }
   (void)RTC->DR;
 
   *h = (uint8_t)(((tr >> 20U) & 0x3U) * 10U + ((tr >> 16U) & 0xFU));

@@ -181,8 +181,13 @@ void Encoder_Poll(Encoder_t *enc)
 int32_t Encoder_GetDelta(Encoder_t *enc)
 {
   /* USER CODE BEGIN Encoder_GetDelta_0 */
+  /* Encoder_Poll runs in the SysTick ISR: an increment landing between the
+   * read and the clear below would be lost (missed detent).  Mask IRQs for
+   * the two accesses — a handful of cycles once per main-loop tick. */
+  __disable_irq();
   int32_t d = enc->delta;
   enc->delta = 0;
+  __enable_irq();
   return d;
   /* USER CODE END Encoder_GetDelta_0 */
 }
@@ -193,8 +198,12 @@ int32_t Encoder_GetDelta(Encoder_t *enc)
 bool Encoder_GetButton(Encoder_t *enc)
 {
   /* USER CODE BEGIN Encoder_GetButton_0 */
-  if (enc->btn_pressed) { enc->btn_pressed = false; return true; }
-  return false;
+  /* Same test-and-clear atomicity as Encoder_GetDelta. */
+  bool hit = false;
+  __disable_irq();
+  if (enc->btn_pressed) { enc->btn_pressed = false; hit = true; }
+  __enable_irq();
+  return hit;
   /* USER CODE END Encoder_GetButton_0 */
 }
 
@@ -204,8 +213,11 @@ bool Encoder_GetButton(Encoder_t *enc)
 bool Encoder_GetLongPress(Encoder_t *enc)
 {
   /* USER CODE BEGIN Encoder_GetLongPress_0 */
-  if (enc->btn_long) { enc->btn_long = false; return true; }
-  return false;
+  bool hit = false;
+  __disable_irq();
+  if (enc->btn_long) { enc->btn_long = false; hit = true; }
+  __enable_irq();
+  return hit;
   /* USER CODE END Encoder_GetLongPress_0 */
 }
 

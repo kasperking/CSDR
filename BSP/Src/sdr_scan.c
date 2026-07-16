@@ -403,7 +403,9 @@ void SWR_Scan_Run(void)
     scan_draw_zone(start_hz, stop_hz, done_pts, npts, true);
 
     /* Wait: release held F4 (from abort), then wait for a fresh press+release.
-     * Timeout guards prevent infinite block when PCA9555 is absent (HAS_PCA9555=0). */
+     * Input_F4_IsPressed() reports released on any I2C fault (fail-safe), so
+     * these loops cannot wedge on a dead PCA9555; the 5 s timeout below also
+     * covers the chip-absent build (HAS_PCA9555=0). */
     while (Input_F4_IsPressed())  HAL_Delay(5U);
     HAL_Delay(60U);   /* debounce */
     { uint32_t _t0 = HAL_GetTick();

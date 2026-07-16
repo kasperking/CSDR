@@ -46,7 +46,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      63U   /* slots 0..62, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
+#define MENU_ITEM_COUNT      67U   /* slots 0..66, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -152,7 +152,8 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        int16_t rx_shift_hz,
                        bool notch_on, int16_t notch_hz,
                        bool vox_on, uint8_t vox_gain, uint16_t vox_delay,
-                       bool cw_decode_on,
+                       bool cw_decode_on, bool rtty_decode_on,
+                       uint8_t rtty_baud_idx, uint8_t rtty_shift_idx,
                        uint16_t cw_pitch_hz, uint8_t cw_wpm,
                        uint8_t keyer_mode, bool paddle_reverse,
                        uint8_t sidetone_vol, uint8_t cw_bkin,
@@ -182,7 +183,8 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      int16_t *rx_shift_hz,
                      bool *notch_on, int16_t *notch_hz,
                      bool *vox_on, uint8_t *vox_gain, uint16_t *vox_delay,
-                     bool *cw_decode_on,
+                     bool *cw_decode_on, bool *rtty_decode_on,
+                     uint8_t *rtty_baud_idx, uint8_t *rtty_shift_idx,
                      uint16_t *cw_pitch_hz, uint8_t *cw_wpm,
                      uint8_t *keyer_mode, bool *paddle_reverse,
                      uint8_t *sidetone_vol, uint8_t *cw_bkin,

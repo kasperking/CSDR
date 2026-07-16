@@ -41,6 +41,7 @@
 #include "gps_nmea.h"
 #include "ft8_mode.h"
 #include "ft8_app.h"
+#include "rtty_decode.h"
 #include <string.h>
 #include <math.h>
 
@@ -100,6 +101,9 @@ SDR_State_t g_sdr = {
   .vox_gain  = 50U,
   .vox_delay = 500U,
   .cw_decode_on   = false,
+  .rtty_decode_on = false,
+  .rtty_baud_idx  = 0U,   /* 45.45 Bd */
+  .rtty_shift_idx = 0U,   /* 170 Hz   */
   .cw_pitch_hz    = 700U,
   .cw_wpm         = 20U,
   .keyer_mode     = 0U,   /* Straight */
@@ -298,6 +302,9 @@ static void csdr_marker_recenter(void);
 static void csdr_marker_clamp_span(void);
 static void csdr_vfo_swap(void);
 static void csdr_on_mode_changed(SDR_Mode_t old_mode);
+static bool csdr_rtty_mode(SDR_Mode_t m);
+static void csdr_rtty_apply_reverse(void);
+static void csdr_rtty_update_ui_tones(void);
 /* CAT VFO-B callbacks */
 static void     cat_set_lo_cut(uint32_t hz);
 static uint32_t cat_get_lo_cut(void);
@@ -387,7 +394,9 @@ static void csdr_save_settings(void)
   fs.cw_reverse     = g_sdr.cw_reverse ? 1U : 0U;
   fs.cw_filter_hz   = g_sdr.cw_filter_hz;
   fs.cw_decode_on   = g_sdr.cw_decode_on ? 1U : 0U;
-  fs.ft8_reserved   = 0U;
+  fs.rtty_decode_on = g_sdr.rtty_decode_on ? 1U : 0U;
+  fs.rtty_baud_idx  = g_sdr.rtty_baud_idx;
+  fs.rtty_shift_idx = g_sdr.rtty_shift_idx;
   memcpy(fs.ft8_call, g_sdr.ft8_call, sizeof(fs.ft8_call));
   memcpy(fs.ft8_grid, g_sdr.ft8_grid, sizeof(fs.ft8_grid));
   fs.tx_src         = g_sdr.tx_src;
@@ -414,7 +423,10 @@ static void csdr_save_settings(void)
   fs.vfo_b_if_shift_hz = g_sdr.vfo_b.if_shift_hz;
   fs.active_vfo        = g_sdr.active_vfo;
 
-  Flash_SaveSettings(&g_flash, &fs);
+  /* Async: erase/program advance one step per Flash_SaveTick() in CSDR_Loop —
+   * the old synchronous call blocked the main loop 45–400 ms on the sector
+   * erase, starving the USB audio pump and the key scan (audit F-03). */
+  Flash_SaveSettingsAsync(&g_flash, &fs);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -467,7 +479,10 @@ void CSDR_Init(void)
        * for the current build's mode table — fall back to USB rather than
        * read past the mode-name/colour arrays. */
       g_sdr.mode          = (fs.mode < (uint8_t)MODE_COUNT) ? (SDR_Mode_t)fs.mode : MODE_USB;
-      g_sdr.band_idx      = fs.band_idx;
+      /* Clamp: band_idx indexes g_band_cal[BAND_COUNT] directly in the RX/TX
+       * gain paths — a blob from a build with a different band table must not
+       * read out of bounds.  3 = 40 m, the struct-init default. */
+      g_sdr.band_idx      = (fs.band_idx < BAND_COUNT) ? fs.band_idx : 3U;
       g_sdr.step          = (FreqStep_t)fs.step;
       g_sdr.bw_hz         = fs.bw_hz;
       g_sdr.sl_hz         = fs.sl_hz;
@@ -527,6 +542,11 @@ void CSDR_Init(void)
       g_sdr.cw_reverse     = (fs.cw_reverse    != 0U);
       g_sdr.cw_filter_hz   = (fs.cw_filter_hz  >= 50U  && fs.cw_filter_hz  <= 500U) ? fs.cw_filter_hz   : 500U;
       g_sdr.cw_decode_on   = (fs.cw_decode_on  != 0U);
+      /* Reused ft8_reserved byte: old blobs always wrote 0 → off */
+      g_sdr.rtty_decode_on = (fs.rtty_decode_on == 1U);
+      /* Carved from the si5351_cal tail: old blobs read 0 → 45.45/170 */
+      g_sdr.rtty_baud_idx  = (fs.rtty_baud_idx  < RTTY_BAUD_COUNT)  ? fs.rtty_baud_idx  : 0U;
+      g_sdr.rtty_shift_idx = (fs.rtty_shift_idx < RTTY_SHIFT_COUNT) ? fs.rtty_shift_idx : 0U;
       /* FT8 station: copy with forced termination; reject non-printable
        * garbage from old blobs (fields read 0 there → stay empty). */
       memcpy(g_sdr.ft8_call, fs.ft8_call, sizeof(g_sdr.ft8_call));
@@ -555,7 +575,7 @@ void CSDR_Init(void)
       /* VFO B */
       g_sdr.vfo_b.freq_hz     = fs.vfo_b_freq_hz;
       g_sdr.vfo_b.mode        = (fs.vfo_b_mode < (uint8_t)MODE_COUNT) ? (SDR_Mode_t)fs.vfo_b_mode : MODE_USB;
-      g_sdr.vfo_b.band_idx    = fs.vfo_b_band_idx;
+      g_sdr.vfo_b.band_idx    = (fs.vfo_b_band_idx < BAND_COUNT) ? fs.vfo_b_band_idx : 5U;
       g_sdr.vfo_b.step        = (FreqStep_t)fs.vfo_b_step;
       g_sdr.vfo_b.bw_hz       = fs.vfo_b_bw_hz;
       g_sdr.vfo_b.sl_hz       = fs.vfo_b_sl_hz;
@@ -673,6 +693,15 @@ void CSDR_Init(void)
    * otherwise only set on mode change / F3 toggle). */
   if (g_sdr.mode == MODE_CW)
     SDR_UI_SetCWDecActive(g_sdr.cw_decode_on);
+  /* RTTY decoder — filter coefficients + framer; the tap gate itself is
+   * recomputed every CSDR_Loop pass (mode + RX + enable). */
+  RTTY_Init(CSDR_AUDIO_SAMPLE_RATE);
+  RTTY_Configure(g_rtty_baud_x100[g_sdr.rtty_baud_idx],
+                 g_rtty_shift_hz[g_sdr.rtty_shift_idx]);
+  if (csdr_rtty_mode(g_sdr.mode)) {
+    csdr_rtty_apply_reverse();
+    SDR_UI_SetCWDecActive(g_sdr.rtty_decode_on);
+  }
   /* Keyer init */
   g_cw_keyer.mode          = (CWKeyerMode_t)g_sdr.keyer_mode;
   g_cw_keyer.paddle_reverse= g_sdr.paddle_reverse;
@@ -1091,6 +1120,9 @@ static void csdr_draw_hw_fault_warning(void)
 void CSDR_PrepareShutdown(void)
 {
   csdr_save_settings();
+  /* Save is asynchronous (Flash_SaveSettingsAsync) and the animation below
+   * never runs Flash_SaveTick — force completion before power drops. */
+  Flash_SaveFlush(&g_flash);
 
   LCD_Clear(0x0000U);
 
@@ -1126,6 +1158,34 @@ void CSDR_PrepareShutdown(void)
   }
 
   PWR_Shutdown();
+}
+
+/* RTTY decoder working modes: any linear sideband (voice or data) */
+static bool csdr_rtty_mode(SDR_Mode_t m)
+{
+  return (m == MODE_USB || m == MODE_LSB || m == MODE_DIGU || m == MODE_DIGL);
+}
+
+/* Mark = higher RF tone; in USB/DIGU the audio spectrum is inverted vs the
+ * LSB convention (mark on 2125 Hz), so the decoder bit sense swaps there. */
+static void csdr_rtty_apply_reverse(void)
+{
+  RTTY_SetReverse(g_sdr.mode == MODE_USB || g_sdr.mode == MODE_DIGU);
+}
+
+/* Spectrum tuning markers at the expected tone pair — audio offsets are
+ * signed by sideband (below the carrier in LSB/DIGL).  Cleared when the
+ * decoder tap is off. */
+static void csdr_rtty_update_ui_tones(void)
+{
+  if (g_rtty_tap_enable) {
+    int32_t m = (int32_t)RTTY_MARK_HZ;
+    int32_t s = m + (int32_t)g_rtty_shift_hz[g_sdr.rtty_shift_idx];
+    if (g_sdr.mode == MODE_LSB || g_sdr.mode == MODE_DIGL) { m = -m; s = -s; }
+    SDR_UI_SetRttyTones(m, s);
+  } else {
+    SDR_UI_SetRttyTones(0, 0);
+  }
 }
 
 /* Called after any DSP_SetMode to sync CW decoder + UI strip */
@@ -1166,6 +1226,23 @@ static void csdr_on_mode_changed(SDR_Mode_t old_mode)
         SDR_UI_SetCWDecActive(false);
         SDR_UI_ClearCWText();
     }
+    /* RTTY decoder follows the CW decoder lifecycle: framing state never
+     * survives a mode change; the enable flag survives moves within the
+     * four working modes and auto-clears when leaving them. */
+    RTTY_Reset();
+    if (csdr_rtty_mode(g_sdr.mode)) {
+        csdr_rtty_apply_reverse();
+        SDR_UI_SetCWDecActive(g_sdr.rtty_decode_on);
+        /* Sideband change flips the marker signs; tap-enable transitions
+         * are handled by the CSDR_Loop gate block. */
+        csdr_rtty_update_ui_tones();
+    } else if (csdr_rtty_mode(old_mode)) {
+        g_sdr.rtty_decode_on = false;
+        /* Entering CW: the CW branch above already armed the strip */
+        if (g_sdr.mode != MODE_CW) SDR_UI_SetCWDecActive(false);
+        SDR_UI_ClearCWText();
+        SDR_UI_SetRttyTones(0, 0);
+    }
 }
 
 /* Launch the full-screen FT8 monitor app (menu root ACTION "FT8").
@@ -1190,6 +1267,9 @@ static void csdr_ft8_app_launch(void)
     csdr_apply_nco_if();
     csdr_on_mode_changed(old_mode);
   }
+  /* The app pumps the DSP itself; keep the RTTY tap out of its audio path
+   * and off its INFO strip.  CSDR_Loop re-arms the gate after return. */
+  g_rtty_tap_enable = false;
   FT8_App_Run();
   (void)Encoder_GetDelta(&g_encoder);
   (void)Encoder_GetButton(&g_encoder);
@@ -1295,6 +1375,28 @@ void CSDR_Loop(void)
       CWDec_GetText(&g_cw_dec, cw_buf,
                     (uint8_t)(SBR_X / 6U - SDR_UI_CW_PREFIX_CHARS));
       SDR_UI_DrawCWText(cw_buf);
+    }
+  }
+
+  /* RTTY decoder – recompute the DSP tap gate (enable + working mode + RX;
+   * also re-arms after the FT8 app or a TX cleared it), then run the framer.
+   * RTTY_Poll is cheap: a few compares per queued edge, ~6 chars/s. */
+  {
+    bool want = g_sdr.rtty_decode_on && !g_sdr.tx_mode
+                && csdr_rtty_mode(g_sdr.mode);
+    if (want != g_rtty_tap_enable) {
+      g_rtty_tap_enable = want;
+      if (want) {
+        csdr_rtty_apply_reverse();
+        RTTY_Reset();          /* never resume mid-character across a gap */
+      }
+      csdr_rtty_update_ui_tones();   /* spectrum tone markers follow the tap */
+    }
+    if (g_rtty_tap_enable && RTTY_Poll()) {
+      char rtty_buf[RTTY_TEXT_LEN + 1U];
+      RTTY_GetText(rtty_buf,
+                   (uint8_t)(SBR_X / 6U - SDR_UI_CW_PREFIX_CHARS));
+      SDR_UI_DrawCWText(rtty_buf);
     }
   }
 
@@ -1734,7 +1836,6 @@ void CSDR_Loop(void)
       s_save_on_disconnect  = false;
       csdr_save_settings();
     }
-    USB_Audio_Process(&g_usb_audio);
     /* Discard buffered PC TX audio when not transmitting.
      * Without this the ring fills to 9216 bytes and stays there,
      * causing every subsequent USB OUT packet to hit the overrun path.
@@ -1747,6 +1848,10 @@ void CSDR_Loop(void)
       __set_BASEPRI(0U);
     }
   }
+
+  /* Async settings save: advance one flash step (erase poll / next page).
+   * No-op when idle; one 2-byte SR1 read per tick while a save is in flight. */
+  Flash_SaveTick(&g_flash);
 
   /* Flash protocol: execute any pending command and send response.
    * Runs before CAT_FlushTX so the CDC TX is free when CAT needs it. */
@@ -1968,6 +2073,9 @@ static void csdr_factory_reset(void)
   g_sdr.usb_iq_stream    = false;
   g_sdr.tx_src           = 0U;   /* USB */
   g_sdr.cw_decode_on     = false;
+  g_sdr.rtty_decode_on   = false;
+  g_sdr.rtty_baud_idx    = 0U;
+  g_sdr.rtty_shift_idx   = 0U;
   g_sdr.cw_pitch_hz      = 700U;
   g_sdr.cw_wpm           = 20U;
   g_sdr.keyer_mode       = 0U;
@@ -2200,7 +2308,8 @@ static void csdr_handle_keys(void)
         g_sdr.tx_audio_low_hz, g_sdr.tx_audio_high_hz,
         g_sdr.if_shift_hz, g_sdr.notch_on, g_sdr.notch_hz,
         g_sdr.vox_on, g_sdr.vox_gain, g_sdr.vox_delay,
-        g_sdr.cw_decode_on,
+        g_sdr.cw_decode_on, g_sdr.rtty_decode_on,
+        g_sdr.rtty_baud_idx, g_sdr.rtty_shift_idx,
         g_sdr.cw_pitch_hz, g_sdr.cw_wpm,
         g_sdr.keyer_mode, g_sdr.paddle_reverse,
         g_sdr.sidetone_vol, g_sdr.cw_bkin,
@@ -2355,6 +2464,14 @@ static void csdr_handle_keys(void)
         if (!g_sdr.cw_decode_on) SDR_UI_ClearCWText();
         CWDec_Reset(&g_cw_dec, &g_dsp.cw_env);
         g_sdr.display_dirty |= DIRTY_ALL; /* refresh INFO: hints or [DEC] placeholder */
+      } else if (csdr_rtty_mode(g_sdr.mode)) {
+        /* Same hold gesture in the RTTY working modes toggles that decoder */
+        g_sdr.rtty_decode_on = !g_sdr.rtty_decode_on;
+        SDR_UI_SetCWDecActive(g_sdr.rtty_decode_on);
+        if (!g_sdr.rtty_decode_on) SDR_UI_ClearCWText();
+        RTTY_Reset();
+        s_freq_save_tick = HAL_GetTick();  /* persisted field changed outside the menu */
+        g_sdr.display_dirty |= DIRTY_ALL;
       }
     }
     if (!Menu_IsOpen(&g_menu) && Key_Release(&k_f3)) {
@@ -2655,7 +2772,8 @@ static uint32_t csdr_lo_offset_now(void)
 
 static void menu_apply_cb(void)
 {
-  uint8_t agc_speed; bool nb, ext_alc, notch_en, vox_en, cw_dec, paddle_rev, cw_rev, iq_stream; int16_t rit, rxshift, notch_f;
+  uint8_t agc_speed; bool nb, ext_alc, notch_en, vox_en, cw_dec, rtty_dec, paddle_rev, cw_rev, iq_stream; int16_t rit, rxshift, notch_f;
+  uint8_t rtty_baud, rtty_shift;
   uint8_t vol, mic, digi, sq, att, band, mode, usb, zoom, rfpwr, vox_gain, tx_src_new; uint32_t step, bw;
   uint16_t tx_low, tx_high, vox_delay;
   uint16_t cw_pitch, cw_filter, cw_bk_delay; uint8_t cw_wpm, keyer_mode, sidetone, cw_bkin;
@@ -2666,7 +2784,8 @@ static void menu_apply_cb(void)
                   &vol, &mic, &digi, &sq, &step, &bw, &att, &band, &mode, &usb, &zoom,
                   &ext_alc, &rfpwr, &ext_pa, &ext_pa_dly, &ext_pa_drv,
                   &tx_low, &tx_high, &rxshift, &notch_en, &notch_f,
-                  &vox_en, &vox_gain, &vox_delay, &cw_dec,
+                  &vox_en, &vox_gain, &vox_delay, &cw_dec, &rtty_dec,
+                  &rtty_baud, &rtty_shift,
                   &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
                   &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream,
                   &tx_src_new, &nb_level, &nr_level, &bc, &marker_trk,
@@ -2776,6 +2895,20 @@ static void menu_apply_cb(void)
     g_sdr.cw_decode_on = effective;
     SDR_UI_SetCWDecActive(effective);
     if (!effective) SDR_UI_ClearCWText();
+  }
+  if (rtty_dec != g_sdr.rtty_decode_on) {
+    /* RTTY decode only works in the linear sideband modes */
+    bool effective = rtty_dec && csdr_rtty_mode(g_sdr.mode);
+    g_sdr.rtty_decode_on = effective;
+    if (csdr_rtty_mode(g_sdr.mode)) SDR_UI_SetCWDecActive(effective);
+    if (!effective) SDR_UI_ClearCWText();
+    RTTY_Reset();
+  }
+  if (rtty_baud != g_sdr.rtty_baud_idx || rtty_shift != g_sdr.rtty_shift_idx) {
+    g_sdr.rtty_baud_idx  = rtty_baud;
+    g_sdr.rtty_shift_idx = rtty_shift;
+    RTTY_Configure(g_rtty_baud_x100[rtty_baud], g_rtty_shift_hz[rtty_shift]);
+    csdr_rtty_update_ui_tones();   /* space marker follows the shift */
   }
   /* CW settings apply.  Pitch/reverse also move the eff_if pre-shift that
    * centres the IF LPF on the tuned signal — recompute nco_if in CW mode. */

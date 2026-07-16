@@ -152,20 +152,10 @@ uint16_t USB_Audio_ReadRXPacket(USB_Audio_Handle_t *au, uint8_t *dst);
 void USB_Audio_WriteTX(USB_Audio_Handle_t *au,
                         const uint8_t *src, uint16_t len);
 
-/**
-  * @brief  Đọc samples từ TX ring để đẩy vào SAI DMA buffer.
-  *         Gọi từ HAL_SAI_TxHalfCpltCallback / HAL_SAI_TxCpltCallback.
-  * @param  au        Handle
-  * @param  dst       SAI DMA buffer (int32_t)
-  * @param  samples   Số sample pairs yêu cầu
-  */
-void USB_Audio_ReadTX(USB_Audio_Handle_t *au,
-                       int32_t *dst, uint16_t samples);
-
-/**
-  * @brief  Gọi từ main loop: monitor streaming state.
-  */
-void USB_Audio_Process(USB_Audio_Handle_t *au);
+/* NOTE: USB_Audio_ReadTX / USB_Audio_Process were removed (audit F-06).
+ * The TX ring is consumed directly by DSP_ProcessTX (sdr_dsp.c) using a
+ * snapshot + atomic-subtract pattern; ReadTX duplicated that job with an
+ * unprotected read-modify-write on tx_count that would race the USB IRQ. */
 
 /**
   * @brief  Bật/tắt USB Audio streaming.

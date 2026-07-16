@@ -188,7 +188,10 @@ typedef struct {
   /* ── SI5351 per-band calibration (future) — tail carved for Ext PA
    *    (array was [32], never written → old blobs read 0 in the new
    *    fields; offsets of everything after are unchanged) ─────────── */
-  uint8_t    si5351_cal[27];
+  uint8_t    si5351_cal[25];
+  uint8_t    rtty_baud_idx;      /* g_rtty_baud_x100 index (0=45.45 Bd); carved
+                                    from si5351_cal tail, old blobs read 0    */
+  uint8_t    rtty_shift_idx;     /* g_rtty_shift_hz index (0=170 Hz); same    */
   int8_t     utc_offset_h;       /* Múi giờ hiển thị: RTC = UTC + offset giờ,
                                     -12..+14; 0 cũng = blob cũ → UTC+0.
                                     Carved thêm từ si5351_cal tail        */
@@ -233,9 +236,11 @@ typedef struct {
   int8_t     bass_db;            /* RX bass shelf gain dB: -10..+10; also the
                                     pre-tone-control blob padding value (0=flat) */
   int8_t     treble_db;          /* RX treble shelf gain dB: -10..+10; same padding */
-  uint8_t    ft8_reserved;       /* was ft8_decode_on (background decode toggle,
-                                    removed — decode runs only in the FT8 app);
-                                    kept as padding so the blob layout is stable */
+  uint8_t    rtty_decode_on;     /* RTTY decoder enable: 1=on, 0=off.  Reuses the
+                                    ft8_reserved byte (originally ft8_decode_on,
+                                    then dead padding) — every old blob wrote 0
+                                    here, so the layout AND semantics stay
+                                    backward-compatible with no settings reset  */
   char       ft8_call[12];       /* FT8 TX callsign, NUL-terminated; [0]=0 = unset */
   char       ft8_grid[5];        /* FT8 TX 4-char grid, NUL-terminated             */
 
@@ -291,6 +296,23 @@ HAL_StatusTypeDef Flash_SaveSettings(W25Q_Handle_t *dev,
                                       const Flash_Settings_t *s);
 HAL_StatusTypeDef Flash_LoadSettings(W25Q_Handle_t *dev,
                                       Flash_Settings_t *s);
+
+/* Async settings save — main-loop friendly replacement for Flash_SaveSettings.
+ * The synchronous path blocks 45–400 ms on the sector erase (audio/CAT/key
+ * stall); this engine issues each flash op without waiting and advances one
+ * step per Flash_SaveTick() call, polling BUSY with a single SR1 read (~µs).
+ *   Flash_SaveSettingsAsync: snapshot *s (magic+CRC applied) and start.
+ *     A request while a save is in flight is queued (latest wins) and starts
+ *     as soon as the current one finishes.
+ *   Flash_SaveTick : call once per main-loop iteration; no-op when idle.
+ *   Flash_SaveFlush: block until idle (shutdown path only).
+ *   Flash_SaveBusy : true while a save is erasing/programming/queued —
+ *     other W25Q users that must not interleave (usb_flash_proto) check this. */
+HAL_StatusTypeDef Flash_SaveSettingsAsync(W25Q_Handle_t *dev,
+                                           const Flash_Settings_t *s);
+void Flash_SaveTick(W25Q_Handle_t *dev);
+void Flash_SaveFlush(W25Q_Handle_t *dev);
+bool Flash_SaveBusy(void);
 
 /* Per-band calibration API — reads/writes FLASH_ADDR_BAND_CAL.
  * Flash_LoadBandCal: on magic/CRC failure, writes safe defaults (swr_scale=100)

@@ -332,4 +332,157 @@ HAL_StatusTypeDef Flash_SaveBandCal(W25Q_Handle_t *dev,
                     (const uint8_t*)&blk, sizeof(blk));
 }
 
+/* ── Async settings save ──────────────────────────────────────────────────
+ * State machine driven by Flash_SaveTick() from the main loop.  Each tick
+ * costs one SR1 read (2-byte SPI transaction) while the flash is BUSY; the
+ * erase command and each page program are issued without the internal
+ * WaitBusy of the synchronous API, so the main loop never blocks on tERASE
+ * (45–400 ms) or tPP (0.7–3 ms).
+ *
+ * Interleaving with the synchronous W25Q API is safe by construction: every
+ * sync op begins with W25Q_WaitBusy, so it simply waits out an in-flight
+ * async step (old blocking behaviour, no corruption).  usb_flash_proto is
+ * the one caller that must not slip a command between async steps on the
+ * same sector — it defers on Flash_SaveBusy(). */
+typedef enum {
+  FSAVE_IDLE = 0,
+  FSAVE_ERASE,      /* sector erase issued, waiting for BUSY to clear     */
+  FSAVE_PROGRAM,    /* page program issued, waiting; s_fsave_off advanced */
+} FSave_State_t;
+
+static FSave_State_t    s_fsave_state = FSAVE_IDLE;
+static Flash_Settings_t s_fsave_blob;        /* blob being written        */
+static Flash_Settings_t s_fsave_next;        /* queued request (latest)   */
+static bool             s_fsave_have_next;
+static uint32_t         s_fsave_off;         /* bytes programmed so far   */
+static uint32_t         s_fsave_t0;          /* per-step timeout anchor   */
+
+volatile uint32_t dbg_fsave_started  = 0U;
+volatile uint32_t dbg_fsave_done     = 0U;
+volatile uint32_t dbg_fsave_errors   = 0U;
+volatile uint32_t dbg_fsave_queued   = 0U;
+
+/* Issue the sector erase without waiting for completion. */
+static HAL_StatusTypeDef fsave_start_erase(W25Q_Handle_t *dev)
+{
+  HAL_StatusTypeDef r = w25q_write_enable(dev);
+  if (r != HAL_OK) return r;
+  uint8_t b[4] = { W25Q_CMD_SECTOR_ERASE,
+                   (uint8_t)(FLASH_ADDR_SETTINGS >> 16),
+                   (uint8_t)(FLASH_ADDR_SETTINGS >> 8),
+                   (uint8_t)FLASH_ADDR_SETTINGS };
+  _CS_L(dev); r = spi_tx(dev, b, 4U); _CS_H(dev);
+  s_fsave_t0 = HAL_GetTick();
+  return r;
+}
+
+/* Program the next page-bounded chunk without waiting for completion.
+ * The SPI transfer itself (≤260 B) is synchronous but takes only tens of µs. */
+static HAL_StatusTypeDef fsave_program_chunk(W25Q_Handle_t *dev)
+{
+  uint32_t addr  = FLASH_ADDR_SETTINGS + s_fsave_off;
+  uint32_t chunk = W25Q_PAGE_SIZE - (addr % W25Q_PAGE_SIZE);
+  uint32_t left  = sizeof(s_fsave_blob) - s_fsave_off;
+  if (chunk > left) chunk = left;
+
+  HAL_StatusTypeDef r = w25q_write_enable(dev);
+  if (r != HAL_OK) return r;
+  uint8_t hdr[4] = { W25Q_CMD_PAGE_PROGRAM,
+                     (uint8_t)(addr >> 16), (uint8_t)(addr >> 8), (uint8_t)addr };
+  _CS_L(dev);
+  r = spi_tx(dev, hdr, 4U);
+  if (r == HAL_OK)
+    r = spi_tx(dev, (const uint8_t *)&s_fsave_blob + s_fsave_off, (uint16_t)chunk);
+  _CS_H(dev);
+  if (r == HAL_OK) s_fsave_off += chunk;
+  s_fsave_t0 = HAL_GetTick();
+  return r;
+}
+
+static void fsave_abort(void)
+{
+  dbg_fsave_errors++;
+  s_fsave_state     = FSAVE_IDLE;
+  s_fsave_have_next = false;   /* sector state unknown — drop queued blob too;
+                                  the next save request rewrites everything */
+}
+
+HAL_StatusTypeDef Flash_SaveSettingsAsync(W25Q_Handle_t *dev,
+                                           const Flash_Settings_t *s)
+{
+  if (!dev->present) return HAL_ERROR;
+
+  Flash_Settings_t tmp;
+  memcpy(&tmp, s, sizeof(tmp));
+  tmp.magic = FLASH_SETTINGS_MAGIC;
+  tmp.crc32 = crc32_simple((const uint8_t *)&tmp,
+                           sizeof(tmp) - sizeof(tmp.crc32));
+
+  if (s_fsave_state != FSAVE_IDLE) {
+    /* Save in flight: queue this snapshot; latest request wins.  Never touch
+     * s_fsave_blob mid-write — pages already programmed came from it. */
+    memcpy(&s_fsave_next, &tmp, sizeof(tmp));
+    s_fsave_have_next = true;
+    dbg_fsave_queued++;
+    return HAL_OK;
+  }
+
+  memcpy(&s_fsave_blob, &tmp, sizeof(tmp));
+  s_fsave_off = 0U;
+  if (fsave_start_erase(dev) != HAL_OK) { fsave_abort(); return HAL_ERROR; }
+  s_fsave_state = FSAVE_ERASE;
+  dbg_fsave_started++;
+  return HAL_OK;
+}
+
+void Flash_SaveTick(W25Q_Handle_t *dev)
+{
+  if (s_fsave_state == FSAVE_IDLE) return;
+
+  uint8_t sr = 0U;
+  if (W25Q_ReadSR1(dev, &sr) != HAL_OK) { fsave_abort(); return; }
+  if (sr & W25Q_SR1_BUSY) {
+    /* Still working — bail with a per-step timeout guard.  Erase max 400 ms,
+     * page program max ~3 ms; a stuck BUSY beyond that means a wedged chip. */
+    uint32_t lim = (s_fsave_state == FSAVE_ERASE) ? 500U : 20U;
+    if ((HAL_GetTick() - s_fsave_t0) > lim) fsave_abort();
+    return;
+  }
+
+  /* BUSY clear: erase finished (state ERASE) or previous page finished
+   * (state PROGRAM) — issue the next page, or finish. */
+  if (s_fsave_off < sizeof(s_fsave_blob)) {
+    if (fsave_program_chunk(dev) != HAL_OK) { fsave_abort(); return; }
+    s_fsave_state = FSAVE_PROGRAM;
+    return;
+  }
+
+  /* Last page confirmed done (BUSY clear, nothing left to program). */
+  dbg_fsave_done++;
+  s_fsave_state = FSAVE_IDLE;
+  if (s_fsave_have_next) {
+    s_fsave_have_next = false;
+    memcpy(&s_fsave_blob, &s_fsave_next, sizeof(s_fsave_blob));
+    s_fsave_off = 0U;
+    if (fsave_start_erase(dev) != HAL_OK) { fsave_abort(); return; }
+    s_fsave_state = FSAVE_ERASE;
+    dbg_fsave_started++;
+  }
+}
+
+void Flash_SaveFlush(W25Q_Handle_t *dev)
+{
+  /* Shutdown path only: drive the state machine to completion.  Bounded by
+   * the per-step timeouts in Flash_SaveTick (worst ≈ 2 saves ≈ 1 s). */
+  while (s_fsave_state != FSAVE_IDLE) {
+    Flash_SaveTick(dev);
+    if (s_fsave_state != FSAVE_IDLE) HAL_Delay(1U);
+  }
+}
+
+bool Flash_SaveBusy(void)
+{
+  return s_fsave_state != FSAVE_IDLE;
+}
+
 /* USER CODE END 1 */

@@ -520,6 +520,12 @@ void SDR_UI_SetFooterFreq(uint32_t freq_hz, uint32_t step_hz);
  * 0 = centered (Fix mode). Passband shading + carrier marker follow it. */
 void SDR_UI_SetSpecMarker(int32_t offset_hz);
 
+/* RTTY tuning markers: two dashed amber hairlines at the mark/space tone
+ * offsets (Hz, signed — negative = below the carrier, LSB convention) so the
+ * operator can drop the tone pair onto them.  They follow the carrier column
+ * (incl. Track-mode shift) and zoom.  0/0 = off. */
+void SDR_UI_SetRttyTones(int32_t tone1_hz, int32_t tone2_hz);
+
 /* Spectrum delta-skip counters */
 void SDR_UI_GetSpecSkipStats(uint32_t *skip_hits, uint32_t *draw_hits);
 

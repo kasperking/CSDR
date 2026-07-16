@@ -10,7 +10,10 @@
 
 #if HAS_PCA9555
 
-#define PCA9555_TIMEOUT_MS  5U
+/* 10 ms: một transaction 3 byte @100 kHz chỉ ~0.3 ms, nhưng timeout HAL có
+ * độ phân giải 1 ms tick và main loop bị USB OTG/SAI/LCD ISR chen — 5 ms
+ * từng bị vượt lúc stream USB audio, kéo theo blackout phím ở input_scan. */
+#define PCA9555_TIMEOUT_MS  10U
 
 /**
   * @brief  Configure all 16 PCA9555 pins as inputs.

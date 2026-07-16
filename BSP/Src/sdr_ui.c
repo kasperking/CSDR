@@ -165,6 +165,7 @@ static int16_t  s_rssi_db            = -200;
 static uint16_t s_spec_py_prev[SPEC_W];
 static bool     s_spec_py_valid = false;
 static int32_t  s_spec_marker_hz = 0;   /* Track-mode demod offset from center, Hz */
+static int32_t  s_rtty_tone_hz[2] = {0, 0};  /* RTTY mark/space tuning markers, 0/0 = off */
 
 static uint32_t s_spec_skip_hits    = 0U;
 static uint32_t s_spec_draw_hits    = 0U;
@@ -2586,6 +2587,21 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
   uint16_t pb_sw        = SWAP16(UI_SPEC_PASS);
   uint16_t cx_sw        = SWAP16(0xFFFFU);   /* bright white centre pixel     */
   uint16_t dot_sw       = SWAP16(UI_SPEC_GRID);
+  uint16_t rtty_sw      = SWAP16(0xFC00U);   /* amber-orange: RTTY tone marks */
+
+  /* RTTY tone markers: same Hz→px mapping as the bw ratios / track marker,
+   * anchored on the carrier column cx.  -1 = off/off-screen. */
+  int32_t rtty_px[2] = { -1, -1 };
+  if ((s_rtty_tone_hz[0] != 0 || s_rtty_tone_hz[1] != 0) && s_spec_orig_sr > 0U) {
+    float scale = (float)SPEC_W * cscale * zoom_corr / (float)s_spec_orig_sr;
+    for (uint8_t i = 0U; i < 2U; i++) {
+      if (s_rtty_tone_hz[i] == 0) continue;
+      float   px_f = (float)s_rtty_tone_hz[i] * scale;
+      int32_t px   = (int32_t)cx
+                   + (int32_t)(px_f >= 0.0f ? px_f + 0.5f : px_f - 0.5f);
+      if (px >= 0 && px < (int32_t)SPEC_W) rtty_px[i] = px;
+    }
+  }
 
   /* Passband shaded region: pb_l..pb_r as computed above.
    * USB: center→right | LSB: left→center | AM/FM: left→right
@@ -2606,6 +2622,12 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     if (do_shade) {
       for (uint16_t bx = pb_x0; bx <= pb_x1 && bx < SPEC_W; bx++)
         row[bx] = pb_sw;
+    }
+    /* RTTY tuning markers: dashed (2-on/2-off) amber hairlines behind the
+     * trace — visually distinct from the solid white carrier marker. */
+    if ((y & 2U) == 0U) {
+      if (rtty_px[0] >= 0) row[rtty_px[0]] = rtty_sw;
+      if (rtty_px[1] >= 0) row[rtty_px[1]] = rtty_sw;
     }
     /* Center carrier marker: single white pixel. No black flanks — they cause
      * a dark slot across the empty spectrum portion above the noise floor. */
@@ -2797,6 +2819,14 @@ void SDR_UI_SetSpecMarker(int32_t offset_hz)
   /* Force a full spectrum redraw so the marker column moves even when the
    * spectrum content itself is below the delta-skip threshold. */
   s_spec_py_valid = false;
+}
+
+void SDR_UI_SetRttyTones(int32_t tone1_hz, int32_t tone2_hz)
+{
+  if (tone1_hz == s_rtty_tone_hz[0] && tone2_hz == s_rtty_tone_hz[1]) return;
+  s_rtty_tone_hz[0] = tone1_hz;
+  s_rtty_tone_hz[1] = tone2_hz;
+  s_spec_py_valid = false;   /* same full-redraw forcing as SetSpecMarker */
 }
 
 /* ── Spectrum skip statistics ─────────────────────────────────────────────── */

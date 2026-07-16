@@ -274,6 +274,12 @@ void FlashProto_Process(void)
         return;
     }
 
+    /* An async settings save owns the chip (erase/program in flight) —
+     * defer the host command until it completes; the frame stays PENDING. */
+    if (Flash_SaveBusy()) {
+        return;
+    }
+
     execute();
 
     /* Wait for CDC TX to clear (max 50 ms — safe for any pending CAT frame). */

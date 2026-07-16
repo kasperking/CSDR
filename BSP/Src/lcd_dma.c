@@ -33,6 +33,7 @@ static volatile bool     s_dma_busy     = false;
 static volatile uint32_t s_cyc_start    = 0U;
 static volatile uint32_t s_max_lat_us   = 0U;
 static volatile uint32_t s_queued_count = 0U;
+static volatile uint32_t s_wait_timeouts = 0U;  /* LCD_Wait 10 ms guard hits */
 
 /* ── Transfer-Complete callback ──────────────────────────────────────────── */
 
@@ -128,8 +129,22 @@ void LCD_Wait(void)
     /* Cooperative poll: cheap NOP loop.  Audio and USB ISRs preempt freely at
      * their higher priorities throughout the wait.  Typical duration:
      *   Waterfall row  : ≤ 112 µs  (480 px × 2 B × 117 ns)
-     *   Spectrum strip : ≤ 900 µs  (8 rows × 480 px × 2 B × 117 ns) */
-    while (s_dma_busy) { __NOP(); }
+     *   Spectrum strip : ≤ 900 µs  (8 rows × 480 px × 2 B × 117 ns)
+     *
+     * 10 ms timeout guard: TC and TE callbacks both clear the flag, but if
+     * the DMA2 IRQ is ever lost (e.g. HAL_BUSY on a restart inside an error
+     * chain) an unbounded spin would hard-hang the radio.  Abort the stream
+     * and release — worst case is one corrupted LCD strip. */
+    uint32_t t0 = HAL_GetTick();
+    while (s_dma_busy) {
+        if ((HAL_GetTick() - t0) > 10U) {
+            HAL_DMA_Abort(&s_hdma_lcd);
+            s_dma_busy = false;
+            s_wait_timeouts++;
+            break;
+        }
+        __NOP();
+    }
 }
 
 /* ── LCD_PushWindowAsync ─────────────────────────────────────────────────── */

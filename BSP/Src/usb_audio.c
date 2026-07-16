@@ -202,57 +202,10 @@ void USB_Audio_WriteTX(USB_Audio_Handle_t *au,
   /* USER CODE END USB_Audio_WriteTX_0 */
 }
 
-/**
-  * @brief  Đọc samples từ TX ring → SAI DMA buffer.
-  *         USB int16 → SAI int32 left-aligned.
-  *         Nếu ring trống → zero-fill (silence).
-  */
-void USB_Audio_ReadTX(USB_Audio_Handle_t *au,
-                       int32_t *dst, uint16_t samples)
-{
-  /* USER CODE BEGIN USB_Audio_ReadTX_0 */
-  uint16_t bytes = (uint16_t)(samples * USB_AUDIO_CHANNELS * USB_AUDIO_BYTES_PER_SAMPLE);
-
-  if (au->tx_count < bytes) {
-    au->tx_underrun++;
-    memset(dst, 0, (size_t)samples * USB_AUDIO_CHANNELS * sizeof(int32_t));
-    return;
-  }
-
-  for (uint16_t i = 0U; i < samples; i++)
-  {
-    /* Read I (left) */
-    uint8_t lo = au->tx_ring[au->tx_rd];
-    au->tx_rd = (uint16_t)((au->tx_rd + 1U) % USB_AUDIO_RING_SIZE);
-    uint8_t hi = au->tx_ring[au->tx_rd];
-    au->tx_rd = (uint16_t)((au->tx_rd + 1U) % USB_AUDIO_RING_SIZE);
-    int16_t i_samp = (int16_t)((uint16_t)hi << 8U | lo);
-
-    /* Read Q (right) */
-    lo = au->tx_ring[au->tx_rd];
-    au->tx_rd = (uint16_t)((au->tx_rd + 1U) % USB_AUDIO_RING_SIZE);
-    hi = au->tx_ring[au->tx_rd];
-    au->tx_rd = (uint16_t)((au->tx_rd + 1U) % USB_AUDIO_RING_SIZE);
-    int16_t q_samp = (int16_t)((uint16_t)hi << 8U | lo);
-
-    /* SAI TX: 16-bit data right-justified in bits[15:0]. */
-    dst[i * 2U]       = (int32_t)(int16_t)i_samp;
-    dst[i * 2U + 1U]  = (int32_t)(int16_t)q_samp;
-  }
-  au->tx_count = (uint16_t)(au->tx_count - bytes);
-  /* USER CODE END USB_Audio_ReadTX_0 */
-}
-
-void USB_Audio_Process(USB_Audio_Handle_t *au)
-{
-  /* USER CODE BEGIN USB_Audio_Process_0 */
-  /* Overflow management has been moved into USB_Audio_ReadRXPacket (USB IRQ
-   * context) so that rx_rd has a single owner and no critical section is
-   * needed there.  This function intentionally does nothing now; the call
-   * site in CSDR_Loop may be left in place without harm. */
-  (void)au;
-  /* USER CODE END USB_Audio_Process_0 */
-}
+/* USB_Audio_ReadTX / USB_Audio_Process removed (audit F-06): the TX ring is
+ * consumed directly by DSP_ProcessTX (sdr_dsp.c) with a snapshot + atomic
+ * subtract; ReadTX duplicated that with an unprotected RMW on tx_count that
+ * would race USB_Audio_WriteTX (USB IRQ) if it ever gained a caller. */
 
 /* USER CODE BEGIN 1 */
 /* USER CODE END 1 */

@@ -20,7 +20,6 @@
 
 #define GPSNMEA_IRQ_PRIO   12U        /* dưới audio DMA (0) — như gps_cal   */
 #define GPSNMEA_BAUD       9600U      /* mặc định NEO-6M/7M/8M/M10          */
-#define GPSNMEA_KERNEL_HZ  120000000U /* USART234578 = rcc_pclk1 (theo .ioc) */
 #define GPSNMEA_LINE_MAX   90U        /* NMEA tối đa 82 ký tự               */
 #define GPSNMEA_STALE_MS   3000U      /* không byte/fix > 3 s → NO_DATA/NO_FIX */
 #define GPSNMEA_DIFF_MIN_S 2          /* lệch RTC tối thiểu mới ghi lại     */
@@ -81,7 +80,10 @@ void GPS_NMEA_Init(void)
   USART2->CR1 = 0U;                       /* UE=0 trước khi cấu hình        */
   USART2->CR2 = 0U;
   USART2->CR3 = 0U;
-  USART2->BRR = GPSNMEA_KERNEL_HZ / GPSNMEA_BAUD;   /* 12500 — chia chẵn   */
+  /* Kernel clock đọc runtime (rcc_pclk1 = 120 MHz với cấu hình hiện tại,
+   * BRR = 12500).  Hằng cứng ở đây từng là bẫy: đổi clock tree qua
+   * hw_config.py sẽ làm sai baud âm thầm và GPS chết không báo. */
+  USART2->BRR = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_USART2) / GPSNMEA_BAUD;
   USART2->ICR = 0xFFFFFFFFU;
   USART2->CR1 = USART_CR1_RE | USART_CR1_RXNEIE_RXFNEIE | USART_CR1_UE;
 

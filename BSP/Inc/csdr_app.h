@@ -158,6 +158,10 @@ typedef struct {
   uint16_t    vox_delay;         /*!< VOX hang time ms: 100-2000 */
   /* CW decode */
   bool        cw_decode_on;      /*!< CW decoder active (RX, CW mode only)         */
+  /* RTTY decode */
+  bool        rtty_decode_on;    /*!< RTTY decoder active (RX, USB/LSB/DIGU/DIGL)  */
+  uint8_t     rtty_baud_idx;     /*!< g_rtty_baud_x100 index: 0=45.45 1=50 2=75 Bd */
+  uint8_t     rtty_shift_idx;    /*!< g_rtty_shift_hz index: 0=170 1=425 2=850 Hz  */
   /* FT8 station (decode runs only inside the full-screen FT8 app) */
   char        ft8_call[12];      /*!< Station callsign for FT8 TX (empty = unset)  */
   char        ft8_grid[5];       /*!< 4-char Maidenhead grid for FT8 TX            */
