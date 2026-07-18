@@ -46,9 +46,11 @@ static int32_t _bass_val, _treble_val;
 static int32_t _step_val, _band_val, _mode_val, _marker_val;
 
 /* TX group */
-static int32_t _rfpwr_val, _alc_val, _tx_low_val, _tx_high_val;
+static int32_t _rfpwr_val, _tx_low_val, _tx_high_val;
 static int32_t _vox_val, _voxgain_val, _voxdelay_val;
-static int32_t _extpa_val, _extpadly_val, _extpadrv_val;
+
+/* PA group */
+static int32_t _alc_val, _extpa_val, _extpadly_val, _extpadrv_val;
 static int32_t _biassrc_val, _bias1_val, _bias2_val, _idqtgt_val;
 
 /* System group */
@@ -129,9 +131,9 @@ static void render_item(Menu_Handle_t *m, uint8_t vi, uint16_t abs_y)
   bool sel         = (vi == m->cursor);
   bool is_group    = (it->type == MENU_TYPE_GROUP);
 
-  uint16_t bg = sel ? MENU_SEL_COLOR
-              : is_group ? MENU_GROUP_COLOR
-              : MENU_BG_COLOR;
+  /* Groups share the normal dark background and white text like every other
+   * row; only the trailing " >" marks them. */
+  uint16_t bg = sel ? MENU_SEL_COLOR : MENU_BG_COLOR;
 
   char val[24];
   if (is_group) {
@@ -173,7 +175,7 @@ static void render_item(Menu_Handle_t *m, uint8_t vi, uint16_t abs_y)
     else                             { memcpy(lbl_buf, it->label, n + 1U); }
   }
 
-  uint16_t lbl_clr = is_group ? 0x0000U : MENU_LBL_COLOR;
+  uint16_t lbl_clr = MENU_FG_COLOR;
 
   for (uint16_t fr = 0U; fr < (uint16_t)MENU_ITEM_H; fr++) {
     uint16_t *ln = LN;
@@ -210,10 +212,7 @@ static void render_item(Menu_Handle_t *m, uint8_t vi, uint16_t abs_y)
             LCD_LineStr(ln, (uint16_t)(val_x + (field_off[f] + 2U) * fw), row, ":", &Font6x8, MENU_LBL_COLOR, bg);
         }
       } else {
-        uint16_t vcol = (sel && m->editing)           ? MENU_EDIT_COLOR
-                      : (it->type == MENU_TYPE_INFO)  ? MENU_LBL_COLOR
-                      : MENU_VAL_COLOR;
-        if (is_group) vcol = 0x0000U;
+        uint16_t vcol = (sel && m->editing) ? MENU_EDIT_COLOR : MENU_VAL_COLOR;
         LCD_LineStr(ln, val_x, row, val, &Font6x8, vcol, bg);
       }
     }
@@ -299,23 +298,6 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[31] = (MenuItem_t){ "VOX Delay",MENU_TYPE_INT,100,2000,100, &_voxdelay_val,NULL,      0U,NULL,"ms",3 };
   m->items[32] = (MenuItem_t){ "TX Low",   MENU_TYPE_INT, 100,500,50,  &_tx_low_val,  NULL,      0U,NULL,"Hz",3 };
   m->items[33] = (MenuItem_t){ "TX High",  MENU_TYPE_INT,2200,3500,100,&_tx_high_val, NULL,      0U,NULL,"Hz",3 };
-  /* Ext-PA block: toggle + its two sub-settings + the amp's ALC input.
-   * Slots 57-59 keep old indices stable; view order within the TX group is
-   * ascending slot, so these render right after TX High. */
-  m->items[34] = (MenuItem_t){ "Ext PA",    MENU_TYPE_ENUM, 0,0,0,     &_extpa_val,   onoff_strs,2U,NULL,NULL,3 };
-  m->items[57] = (MenuItem_t){ "PA Key Dly",MENU_TYPE_INT,  0,50,5,    &_extpadly_val,NULL,      0U,NULL,"ms",3 };
-  m->items[58] = (MenuItem_t){ "PA Drv Max",MENU_TYPE_INT,  5,100,5,   &_extpadrv_val,NULL,      0U,NULL,"%", 3 };
-  m->items[59] = (MenuItem_t){ "Ext ALC",   MENU_TYPE_ENUM, 0,0,0,     &_alc_val,     onoff_strs,2U,NULL,NULL,3 };
-  /* PA bias block (pa_bias.h): Bias 1/2 là mức DAC 0..200 (0.5% FS/bước
-   * ≈ 26 mV tại gate) — chỉnh sống giữa TX để cân Idq theo INA226. */
-  m->items[67] = (MenuItem_t){ "Bias Src",  MENU_TYPE_ENUM, 0,0,0,     &_biassrc_val, bias_src_strs,2U,NULL,NULL,3 };
-  m->items[68] = (MenuItem_t){ "Bias 1",    MENU_TYPE_INT,  0,200,1,   &_bias1_val,   NULL,      0U,NULL,NULL,3 };
-  m->items[69] = (MenuItem_t){ "Bias 2",    MENU_TYPE_INT,  0,200,1,   &_bias2_val,   NULL,      0U,NULL,NULL,3 };
-  /* Auto-cal Idq: đích cho closed-loop (INA226) + action khởi chạy —
-   * dispatch theo label trong csdr_handle_keys, giống SWR Scan/FT8 */
-  m->items[70] = (MenuItem_t){ "Idq Trgt",  MENU_TYPE_INT,  50,2000,50,&_idqtgt_val,  NULL,      0U,NULL,"mA",3 };
-  m->items[71] = (MenuItem_t){ "Bias Cal",  MENU_TYPE_ACTION,0,0,0,    NULL,NULL,               0U,NULL,NULL,3 };
-
   /* ── CW group (parent = 4) ──────────────────────────────── */
   m->items[35] = (MenuItem_t){ "CW Decode",MENU_TYPE_ENUM, 0,0,0,    &_cwdec_val,    onoff_strs,2U, NULL,NULL,4 };
   m->items[36] = (MenuItem_t){ "Pitch",    MENU_TYPE_INT,  300,900,50,&_cw_pitch_val, NULL,      0U, NULL,"Hz",4 };
@@ -328,22 +310,43 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[43] = (MenuItem_t){ "Paddle Rev",MENU_TYPE_ENUM,0,0,0,    &_paddlerev_val,onoff_strs,2U, NULL,NULL,4 };
   m->items[44] = (MenuItem_t){ "Filter",   MENU_TYPE_INT,  50,500,50,&_cwfilter_val, NULL,      0U, NULL,"Hz",4 };
 
-  /* ── System group (parent = 5) ──────────────────────────── */
+  /* ── System group (parent = 5) — high-impact / calibration-type settings
+   *    live here (PA sub-group).  View order is ascending slot:
+   *    45..48, 49, 50, Clock(55), About(72). ─────────────── */
   m->items[45] = (MenuItem_t){ "Backlight",   MENU_TYPE_INT,   0,100,10,&_bl_val,        NULL,          0U,NULL,NULL,5 };
   m->items[46] = (MenuItem_t){ "USB",         MENU_TYPE_ENUM,  0,0,0,   &_usb_val,       usb_strs,      2U,NULL,NULL,5 };
   m->items[47] = (MenuItem_t){ "USB Stream",  MENU_TYPE_ENUM,  0,0,0,   &_iq_stream_val, iq_stream_strs,2U,NULL,NULL,5 };
-  m->items[48] = (MenuItem_t){ "Calibration", MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
-  m->items[49] = (MenuItem_t){ "Factory Reset",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[48] = (MenuItem_t){ "PA",          MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[49] = (MenuItem_t){ "Calibration", MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[50] = (MenuItem_t){ "Factory Reset",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
   m->items[55] = (MenuItem_t){ "Clock",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
-  m->items[50] = (MenuItem_t){ "About",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[72] = (MenuItem_t){ "About",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+
+  /* ── PA sub-group (parent = 48, System → PA) ────────────── */
+  /* Ext-PA block: toggle + its two sub-settings + the amp's ALC input.
+   * Child slots keep old indices stable; view order within the group is
+   * ascending slot, so these render before the bias block. */
+  m->items[34] = (MenuItem_t){ "External PA", MENU_TYPE_ENUM, 0,0,0,     &_extpa_val,   onoff_strs,2U,NULL,NULL,48 };
+  m->items[57] = (MenuItem_t){ "PA Key Delay",MENU_TYPE_INT,  0,50,5,    &_extpadly_val,NULL,      0U,NULL,"ms",48 };
+  m->items[58] = (MenuItem_t){ "PA Drive Max",MENU_TYPE_INT,  5,100,5,   &_extpadrv_val,NULL,      0U,NULL,"%", 48 };
+  m->items[59] = (MenuItem_t){ "External ALC",MENU_TYPE_ENUM, 0,0,0,     &_alc_val,     onoff_strs,2U,NULL,NULL,48 };
+  /* PA bias block (pa_bias.h): Bias 1/2 là mức DAC 0..200 (0.5% FS/bước
+   * ≈ 26 mV tại gate) — chỉnh sống giữa TX để cân Idq theo INA226. */
+  m->items[67] = (MenuItem_t){ "Bias Source", MENU_TYPE_ENUM, 0,0,0,     &_biassrc_val, bias_src_strs,2U,NULL,NULL,48 };
+  m->items[68] = (MenuItem_t){ "Bias 1",      MENU_TYPE_INT,  0,200,1,   &_bias1_val,   NULL,      0U,NULL,NULL,48 };
+  m->items[69] = (MenuItem_t){ "Bias 2",      MENU_TYPE_INT,  0,200,1,   &_bias2_val,   NULL,      0U,NULL,NULL,48 };
+  /* Auto-cal Idq: đích cho closed-loop (INA226) + action khởi chạy —
+   * dispatch theo label trong csdr_handle_keys, giống SWR Scan/FT8 */
+  m->items[70] = (MenuItem_t){ "Idq Target",  MENU_TYPE_INT,  50,2000,50,&_idqtgt_val,  NULL,      0U,NULL,"mA",48 };
+  m->items[71] = (MenuItem_t){ "Bias Calibration",MENU_TYPE_ACTION,0,0,0,NULL,NULL,               0U,NULL,NULL,48 };
 
   /* ── Clock sub-group (parent = 55) ──────────────────────── */
   m->items[61] = (MenuItem_t){ "Set Time",  MENU_TYPE_TIME, 0,86399,1,&_clk_val,   NULL,0U,apply_clock, NULL,55 };
   m->items[62] = (MenuItem_t){ "Time Zone", MENU_TYPE_INT,  -12,14,1, &_utcofs_val,NULL,0U,apply_utcofs,"h", 55 };
 
-  /* ── About sub-group (parent = 50) ──────────────────────── */
-  m->items[51] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,50 };
-  m->items[52] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,50 };
+  /* ── About sub-group (parent = 72) ──────────────────────── */
+  m->items[51] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,72 };
+  m->items[52] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,72 };
 
   /* ── Root actions (parent = -1) — highest slots so they render after all
    *    root groups (view order is ascending slot; RTTY group sits at 53) ── */

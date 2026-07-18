@@ -18,9 +18,11 @@
   *   ├─ [RX]     → BW / AGC / ATT / Squelch / Span / NR / NR Level / NB / NB Level / Notch / Notch Hz / Beat Cxl / RIT / RX Shift
   *   ├─ [Audio]  → Volume / Bass / Treble / Mic Gain / Digi Drive / Mic In
   *   ├─ [Tuning] → Step / Band / Mode / Marker
-  *   ├─ [TX]     → RF Power / VOX / VOX Gain / VOX Delay / TX Low / TX High / Ext PA / PA Key Dly / PA Drv Max / Ext ALC
+  *   ├─ [TX]     → RF Power / VOX / VOX Gain / VOX Delay / TX Low / TX High
   *   ├─ [CW]     → CW Decode / Pitch / Speed / Keyer / Sidetone / BK-IN / BK Delay / CW Rev / Paddle Rev / Filter
-  *   ├─ [System] → Backlight / USB / USB Stream / Calibration / Factory Reset / Clock / About
+  *   ├─ [System] → Backlight / USB / USB Stream / PA / Calibration / Factory Reset / Clock / About
+  *   │                ├─ [PA]    → External PA / PA Key Delay / PA Drive Max / External ALC
+  *   │                │            / Bias Source / Bias 1 / Bias 2 / Idq Target / Bias Calibration
   *   │                └─ [About] → Version / Build Date
   *   ├─ SWR Scan  (root action)
   *   └─ FT8       (root action — full-screen app; FT8 decode runs only inside it)
@@ -46,14 +48,14 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      72U   /* slots 0..71, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
+#define MENU_ITEM_COUNT      73U   /* slots 0..72, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
 #define MENU_W  (LCD_W - 2U * MENU_X)  /* adaptive: 460 on ST7796, 220 on ST7789 */
 #define MENU_Y               ZONE_SPEC_Y   /* Overlay on spectrum  */
 #define MENU_HEADER_BG      0xF800U
-#define MENU_GROUP_COLOR    0x07FFU   /* Cyan for group rows  */
+#define MENU_GROUP_COLOR    0x07FFU   /* (unused — groups render like items, all text white) */
 #define MENU_BG_COLOR       0x0843U   /* Dark blue-gray       */
 #define MENU_FG_COLOR       0xFFFFU   /* White text           */
 #define MENU_SEL_COLOR      0xF800U   /* Red highlight        */

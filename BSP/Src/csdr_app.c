@@ -2301,7 +2301,7 @@ static void csdr_handle_encoder(void)
           SWR_Scan_Run();
         } else if (strcmp(name, "FT8") == 0) {
           csdr_ft8_app_launch();
-        } else if (strcmp(name, "Bias Cal") == 0) {
+        } else if (strcmp(name, "Bias Calibration") == 0) {
           if (PA_BiasCal_Start(g_sdr.pa_idq_ma))
             SDR_UI_DrawCWText("IDQ CAL RUNNING...");
           else
@@ -2494,7 +2494,7 @@ static void csdr_handle_keys(void)
             SWR_Scan_Run();
           } else if (strcmp(name, "FT8") == 0) {
             csdr_ft8_app_launch();
-          } else if (strcmp(name, "Bias Cal") == 0) {
+          } else if (strcmp(name, "Bias Calibration") == 0) {
             if (PA_BiasCal_Start(g_sdr.pa_idq_ma))
               SDR_UI_DrawCWText("IDQ CAL RUNNING...");
             else
