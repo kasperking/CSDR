@@ -9,6 +9,7 @@
 #include "pa_overcurrent.h"
 #include "csdr_app.h"   /* g_sdr.tx_mode, g_sdr.cat_tx_dirty, g_sdr.display_dirty */
 #include "hw_fault.h"
+#include "pa_bias.h"    /* PA_Bias_OnFault: DAC về 0 trước khi xóa latch */
 #include <string.h>
 
 PA_OC_State_t g_pa_oc = { 0 };
@@ -127,6 +128,11 @@ bool PA_OC_HandleFaultInLoop(void)
     if ((HAL_GetTick() - g_pa_oc.fault_tick_ms) < 200U) return true;
 
     g_pa_oc.fault_pending = false;
+
+    /* DAC bias về 0 TRƯỚC khi nhả latch: khi ALERT lên HIGH và Q1 dẫn lại,
+     * nguồn bias phía sau đã là 0 V — không slam-back kể cả khi PA_BIAS_EN
+     * kẹt HIGH vì lỗi khác.  Lần TX sau ramp lại từ 0 (PA_Bias_OnTxStart). */
+    PA_Bias_OnFault();
 
     /* Xóa INA226 alert latch → ALERT pin trở về HIGH → Q1 gate pull-up kích hoạt.
      * PA chỉ phát lại được khi người dùng nhấn PTT sau khi TX đã tắt. */

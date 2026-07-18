@@ -49,6 +49,7 @@ static int32_t _step_val, _band_val, _mode_val, _marker_val;
 static int32_t _rfpwr_val, _alc_val, _tx_low_val, _tx_high_val;
 static int32_t _vox_val, _voxgain_val, _voxdelay_val;
 static int32_t _extpa_val, _extpadly_val, _extpadrv_val;
+static int32_t _biassrc_val, _bias1_val, _bias2_val, _idqtgt_val;
 
 /* System group */
 static int32_t _bl_val, _usb_val, _iq_stream_val, _tx_src_val;
@@ -73,6 +74,7 @@ static const char *iq_stream_strs[] = { "IQ","Demod" };
 static const char *tx_src_strs[]    = { "USB","MIC" };
 static const char *zoom_strs[] = { "+/-24k","+/-12k","+/-6k","+/-3k" };
 static const char *marker_strs[] = { "FIX", "TRACK" };
+static const char *bias_src_strs[] = { "FIXED", "DAC" };
 /* Keep in sync with g_rtty_baud_x100 / g_rtty_shift_hz (rtty_decode.c) */
 static const char *rtty_baud_strs[]  = { "45.45", "50", "75" };
 static const char *rtty_shift_strs[] = { "170", "425", "850" };
@@ -304,6 +306,15 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[57] = (MenuItem_t){ "PA Key Dly",MENU_TYPE_INT,  0,50,5,    &_extpadly_val,NULL,      0U,NULL,"ms",3 };
   m->items[58] = (MenuItem_t){ "PA Drv Max",MENU_TYPE_INT,  5,100,5,   &_extpadrv_val,NULL,      0U,NULL,"%", 3 };
   m->items[59] = (MenuItem_t){ "Ext ALC",   MENU_TYPE_ENUM, 0,0,0,     &_alc_val,     onoff_strs,2U,NULL,NULL,3 };
+  /* PA bias block (pa_bias.h): Bias 1/2 là mức DAC 0..200 (0.5% FS/bước
+   * ≈ 26 mV tại gate) — chỉnh sống giữa TX để cân Idq theo INA226. */
+  m->items[67] = (MenuItem_t){ "Bias Src",  MENU_TYPE_ENUM, 0,0,0,     &_biassrc_val, bias_src_strs,2U,NULL,NULL,3 };
+  m->items[68] = (MenuItem_t){ "Bias 1",    MENU_TYPE_INT,  0,200,1,   &_bias1_val,   NULL,      0U,NULL,NULL,3 };
+  m->items[69] = (MenuItem_t){ "Bias 2",    MENU_TYPE_INT,  0,200,1,   &_bias2_val,   NULL,      0U,NULL,NULL,3 };
+  /* Auto-cal Idq: đích cho closed-loop (INA226) + action khởi chạy —
+   * dispatch theo label trong csdr_handle_keys, giống SWR Scan/FT8 */
+  m->items[70] = (MenuItem_t){ "Idq Trgt",  MENU_TYPE_INT,  50,2000,50,&_idqtgt_val,  NULL,      0U,NULL,"mA",3 };
+  m->items[71] = (MenuItem_t){ "Bias Cal",  MENU_TYPE_ACTION,0,0,0,    NULL,NULL,               0U,NULL,NULL,3 };
 
   /* ── CW group (parent = 4) ──────────────────────────────── */
   m->items[35] = (MenuItem_t){ "CW Decode",MENU_TYPE_ENUM, 0,0,0,    &_cwdec_val,    onoff_strs,2U, NULL,NULL,4 };
@@ -587,6 +598,8 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t bc_mode,
                        uint8_t marker_track,
                        int8_t bass_db, int8_t treble_db,
+                       uint8_t pa_bias_src, uint8_t pa_bias1, uint8_t pa_bias2,
+                       uint16_t pa_idq_ma,
                        MenuApplyFn apply_cb)
 {
   /* USER CODE BEGIN Menu_LoadFromSDR_0 */
@@ -623,6 +636,10 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
   _extpadly_val = (ext_pa_delay_ms <= 50U) ? (int32_t)ext_pa_delay_ms : 25;
   _extpadrv_val = (ext_pa_max_drive >= 5U && ext_pa_max_drive <= 100U)
                   ? (int32_t)ext_pa_max_drive : 50;
+  _biassrc_val  = (pa_bias_src == 1U) ? 1 : 0;
+  _bias1_val    = (pa_bias1 <= 200U) ? (int32_t)pa_bias1 : 0;
+  _bias2_val    = (pa_bias2 <= 200U) ? (int32_t)pa_bias2 : 0;
+  _idqtgt_val   = (pa_idq_ma >= 50U && pa_idq_ma <= 2000U) ? (int32_t)pa_idq_ma : 500;
 
   _tx_low_val  = (tx_audio_low_hz  >= 100U && tx_audio_low_hz  <= 500U)  ? (int32_t)tx_audio_low_hz  : 200;
   _tx_high_val = (tx_audio_high_hz >= 2200U && tx_audio_high_hz <= 3500U) ? (int32_t)tx_audio_high_hz : 2800;
@@ -695,7 +712,9 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *nr_level,
                      uint8_t *bc_mode,
                      uint8_t *marker_track,
-                     int8_t *bass_db, int8_t *treble_db)
+                     int8_t *bass_db, int8_t *treble_db,
+                     uint8_t *pa_bias_src, uint8_t *pa_bias1, uint8_t *pa_bias2,
+                     uint16_t *pa_idq_ma)
 {
   /* USER CODE BEGIN Menu_SaveToSDR_0 */
   (void)m;
@@ -730,6 +749,10 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
   *ext_pa           = (_extpa_val != 0);
   *ext_pa_delay_ms  = (uint8_t)(_extpadly_val >= 0 && _extpadly_val <= 50 ? _extpadly_val : 25);
   *ext_pa_max_drive = (uint8_t)(_extpadrv_val >= 5 && _extpadrv_val <= 100 ? _extpadrv_val : 50);
+  *pa_bias_src      = (uint8_t)(_biassrc_val != 0 ? 1U : 0U);
+  *pa_bias1         = (uint8_t)(_bias1_val >= 0 && _bias1_val <= 200 ? _bias1_val : 0);
+  *pa_bias2         = (uint8_t)(_bias2_val >= 0 && _bias2_val <= 200 ? _bias2_val : 0);
+  *pa_idq_ma        = (uint16_t)(_idqtgt_val >= 50 && _idqtgt_val <= 2000 ? _idqtgt_val : 500);
   if (s_pa_watts > 0U) {
     int32_t w = (_rfpwr_val >= 1) ? _rfpwr_val : 1;
     uint32_t pct = (uint32_t)w * 100U / s_pa_watts;

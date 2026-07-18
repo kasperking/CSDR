@@ -46,7 +46,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      67U   /* slots 0..66, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
+#define MENU_ITEM_COUNT      72U   /* slots 0..71, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -166,6 +166,8 @@ void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t bc_mode,
                        uint8_t marker_track,
                        int8_t bass_db, int8_t treble_db,
+                       uint8_t pa_bias_src, uint8_t pa_bias1, uint8_t pa_bias2,
+                       uint16_t pa_idq_ma,
                        MenuApplyFn apply_cb);
 
 /**
@@ -196,7 +198,9 @@ void Menu_SaveToSDR(Menu_Handle_t *m,
                      uint8_t *nr_level,
                      uint8_t *bc_mode,
                      uint8_t *marker_track,
-                     int8_t *bass_db, int8_t *treble_db);
+                     int8_t *bass_db, int8_t *treble_db,
+                     uint8_t *pa_bias_src, uint8_t *pa_bias1, uint8_t *pa_bias2,
+                     uint16_t *pa_idq_ma);
 
 #ifdef __cplusplus
 }

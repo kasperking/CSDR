@@ -143,6 +143,11 @@ typedef struct {
   bool        ext_pa_on;        /*!< Ext PA fitted: arms TX keying gate + drive cap            */
   uint8_t     ext_pa_delay_ms;  /*!< RF hold-off after T/R asserts, 0-50 ms (amp relay settle) */
   uint8_t     ext_pa_max_drive; /*!< tx_power cap % while ext_pa_on (amp input protection), 5-100 */
+  /* PA gate bias (pa_bias.h — fixed trimmer or MCP4822 DAC on SPI3) */
+  uint8_t     pa_bias_src;      /*!< 0=FIXED (trimmer), 1=DAC (MCP4822)       */
+  uint8_t     pa_bias1;         /*!< DAC ch A (final)  0-200 = 0-100% FS      */
+  uint8_t     pa_bias2;         /*!< DAC ch B (driver) 0-200 = 0-100% FS      */
+  uint16_t    pa_idq_ma;        /*!< Idq đích cho auto-cal Bias 1: 50-2000 mA */
   /* TX audio passband */
   uint16_t    tx_audio_low_hz;   /*!< TX Low-cut (HPF) Hz: 100-500  */
   uint16_t    tx_audio_high_hz;  /*!< TX High-cut (LPF) Hz: 2200-3500 */

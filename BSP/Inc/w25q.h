@@ -188,7 +188,16 @@ typedef struct {
   /* ── SI5351 per-band calibration (future) — tail carved for Ext PA
    *    (array was [32], never written → old blobs read 0 in the new
    *    fields; offsets of everything after are unchanged) ─────────── */
-  uint8_t    si5351_cal[25];
+  uint8_t    si5351_cal[21];
+  uint8_t    pa_idq_t10;         /* Idq target ÷10 mA: 5..200 = 50..2000 mA;
+                                    0 = blob cũ → default 50 (500 mA).
+                                    Carved từ si5351_cal tail               */
+  uint8_t    pa_bias_src;        /* PA bias source: 0=FIXED (trimmer, cũng là
+                                    blob cũ), 1=DAC (MCP4822).  Carved từ
+                                    si5351_cal tail                       */
+  uint8_t    pa_bias1_p1;        /* DAC bias A (final), lưu level+1: 1..201 =
+                                    0..200; 0 = blob cũ → default 0 (OFF) */
+  uint8_t    pa_bias2_p1;        /* DAC bias B (driver), cùng encoding    */
   uint8_t    rtty_baud_idx;      /* g_rtty_baud_x100 index (0=45.45 Bd); carved
                                     from si5351_cal tail, old blobs read 0    */
   uint8_t    rtty_shift_idx;     /* g_rtty_shift_hz index (0=170 Hz); same    */

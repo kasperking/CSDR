@@ -31,6 +31,7 @@
 #include "rf_agc.h"
 #include "pa_overcurrent.h"
 #include "pa_protect.h"
+#include "pa_bias.h"
 #include "usb_flash_proto.h"
 #include "selftest.h"
 #include "hw_fault.h"
@@ -43,6 +44,7 @@
 #include "ft8_app.h"
 #include "rtty_decode.h"
 #include <string.h>
+#include <stdio.h>
 #include <math.h>
 
 /* ══════════════════════════════════════════════════════════
@@ -365,6 +367,10 @@ static void csdr_save_settings(void)
   fs.ext_pa_on       = g_sdr.ext_pa_on ? 1U : 0U;
   fs.ext_pa_delay_p1 = (uint8_t)(g_sdr.ext_pa_delay_ms + 1U); /* ms+1: 0 = old blob */
   fs.ext_pa_drv      = g_sdr.ext_pa_max_drive;
+  fs.pa_bias_src     = g_sdr.pa_bias_src;
+  fs.pa_bias1_p1     = (uint8_t)(g_sdr.pa_bias1 + 1U);  /* level+1: 0 = old blob */
+  fs.pa_bias2_p1     = (uint8_t)(g_sdr.pa_bias2 + 1U);
+  fs.pa_idq_t10      = (uint8_t)(g_sdr.pa_idq_ma / 10U);
 
   /* TX / audio */
   fs.mic_gain        = g_sdr.mic_gain;
@@ -507,6 +513,14 @@ void CSDR_Init(void)
                                ? (uint8_t)(fs.ext_pa_delay_p1 - 1U) : 25U;
       g_sdr.ext_pa_max_drive = (fs.ext_pa_drv >= 5U && fs.ext_pa_drv <= 100U)
                                ? fs.ext_pa_drv : 50U;
+      /* PA bias: carved từ si5351_cal tail — 0 = blob cũ → FIXED/level 0 */
+      g_sdr.pa_bias_src = (fs.pa_bias_src == 1U) ? 1U : 0U;
+      g_sdr.pa_bias1    = (fs.pa_bias1_p1 >= 1U && fs.pa_bias1_p1 <= 201U)
+                          ? (uint8_t)(fs.pa_bias1_p1 - 1U) : 0U;
+      g_sdr.pa_bias2    = (fs.pa_bias2_p1 >= 1U && fs.pa_bias2_p1 <= 201U)
+                          ? (uint8_t)(fs.pa_bias2_p1 - 1U) : 0U;
+      g_sdr.pa_idq_ma   = (fs.pa_idq_t10 >= 5U && fs.pa_idq_t10 <= 200U)
+                          ? (uint16_t)(fs.pa_idq_t10 * 10U) : 500U;
       /* TX / audio */
       g_sdr.mic_gain      = fs.mic_gain;
       g_sdr.digi_gain     = fs.digi_gain;
@@ -643,6 +657,13 @@ void CSDR_Init(void)
   RFAGC_Init(&g_rfagc);
   g_rfagc.target_x2 = g_att.current_atten_x2;   /* no step-change on first update */
   RFAGC_SetEnabled(&g_rfagc, g_sdr.rf_agc_on, g_att.current_atten_x2);
+
+  /* PA bias source: fixed trimmer hoặc MCP4822 trên SPI3 (share W25Q).
+   * Init ép DAC về 0 (soft-reset không reset DAC), rồi nạp cấu hình đã load. */
+  PA_Bias_Init(&hspi3);
+  PA_Bias_Configure(g_sdr.pa_bias_src, g_sdr.pa_bias1, g_sdr.pa_bias2);
+  if (g_sdr.pa_idq_ma < 50U || g_sdr.pa_idq_ma > 2000U)
+    g_sdr.pa_idq_ma = 500U;   /* no-blob boot path: g_sdr zero-init */
 
   /* PA overcurrent protection: INA226 trên I2C2, ALERT hardware-gate bias line */
   PA_OC_Init(&hi2c2);
@@ -1853,6 +1874,27 @@ void CSDR_Loop(void)
    * No-op when idle; one 2-byte SR1 read per tick while a save is in flight. */
   Flash_SaveTick(&g_flash);
 
+  /* DAC bias ramp + bù nhiệt — no-op khi FIXED hoặc đã tới target */
+  PA_Bias_Tick();
+
+  /* Auto-cal Idq: bơm máy trạng thái; khi xong commit mức mới + arm save.
+   * Kết quả in ra dòng INFO (CW text) — decoder sẽ ghi đè sau. */
+  PA_BiasCal_Tick();
+  { uint8_t _lvl;
+    uint8_t _st = PA_BiasCal_Poll(&_lvl);
+    if (_st == 1U) {
+      g_sdr.pa_bias1 = _lvl;
+      PA_Bias_Configure(g_sdr.pa_bias_src, g_sdr.pa_bias1, g_sdr.pa_bias2);
+      s_freq_save_tick = HAL_GetTick();  /* arm debounced save */
+      char _msg[28];
+      snprintf(_msg, sizeof(_msg), "IDQ CAL OK: BIAS1=%u", (unsigned)_lvl);
+      SDR_UI_DrawCWText(_msg);
+      g_sdr.display_dirty |= DIRTY_ALL;
+    } else if (_st == 2U) {
+      SDR_UI_DrawCWText("IDQ CAL FAILED");
+      g_sdr.display_dirty |= DIRTY_ALL;
+    } }
+
   /* Flash protocol: execute any pending command and send response.
    * Runs before CAT_FlushTX so the CDC TX is free when CAT needs it. */
   FlashProto_Process();
@@ -2259,6 +2301,11 @@ static void csdr_handle_encoder(void)
           SWR_Scan_Run();
         } else if (strcmp(name, "FT8") == 0) {
           csdr_ft8_app_launch();
+        } else if (strcmp(name, "Bias Cal") == 0) {
+          if (PA_BiasCal_Start(g_sdr.pa_idq_ma))
+            SDR_UI_DrawCWText("IDQ CAL RUNNING...");
+          else
+            SDR_UI_DrawCWText("IDQ CAL: NEED DAC MODE+INA226");
         } else if (strcmp(name, "Factory Reset") == 0) {
           csdr_factory_reset();
         }
@@ -2322,6 +2369,8 @@ static void csdr_handle_keys(void)
         g_sdr.bc_mode,
         g_sdr.marker_track ? 1U : 0U,
         g_sdr.bass_db, g_sdr.treble_db,
+        g_sdr.pa_bias_src, g_sdr.pa_bias1, g_sdr.pa_bias2,
+        g_sdr.pa_idq_ma,
         menu_apply_cb);
     Menu_Toggle(&g_menu);
     if (!Menu_IsOpen(&g_menu)) g_sdr.display_dirty |= DIRTY_ALL;
@@ -2445,6 +2494,11 @@ static void csdr_handle_keys(void)
             SWR_Scan_Run();
           } else if (strcmp(name, "FT8") == 0) {
             csdr_ft8_app_launch();
+          } else if (strcmp(name, "Bias Cal") == 0) {
+            if (PA_BiasCal_Start(g_sdr.pa_idq_ma))
+              SDR_UI_DrawCWText("IDQ CAL RUNNING...");
+            else
+              SDR_UI_DrawCWText("IDQ CAL: NEED DAC MODE+INA226");
           } else if (strcmp(name, "Factory Reset") == 0) {
             csdr_factory_reset();
           }
@@ -2780,6 +2834,7 @@ static void menu_apply_cb(void)
   uint8_t nb_level, nr_level, nr, bc, marker_trk;
   bool ext_pa; uint8_t ext_pa_dly, ext_pa_drv;
   int8_t bass_db, treble_db;
+  uint8_t bias_src, bias1, bias2; uint16_t idq_ma;
   Menu_SaveToSDR(&g_menu, &agc_speed, &nb, &nr, &rit,
                   &vol, &mic, &digi, &sq, &step, &bw, &att, &band, &mode, &usb, &zoom,
                   &ext_alc, &rfpwr, &ext_pa, &ext_pa_dly, &ext_pa_drv,
@@ -2789,7 +2844,8 @@ static void menu_apply_cb(void)
                   &cw_pitch, &cw_wpm, &keyer_mode, &paddle_rev,
                   &sidetone, &cw_bkin, &cw_bk_delay, &cw_rev, &cw_filter, &iq_stream,
                   &tx_src_new, &nb_level, &nr_level, &bc, &marker_trk,
-                  &bass_db, &treble_db);
+                  &bass_db, &treble_db,
+                  &bias_src, &bias1, &bias2, &idq_ma);
   if (bass_db != g_sdr.bass_db || treble_db != g_sdr.treble_db) {
     g_sdr.bass_db   = bass_db;
     g_sdr.treble_db = treble_db;
@@ -2826,6 +2882,19 @@ static void menu_apply_cb(void)
   g_sdr.ext_pa_on        = ext_pa;
   g_sdr.ext_pa_delay_ms  = ext_pa_dly;
   g_sdr.ext_pa_max_drive = ext_pa_drv;
+  /* PA bias: Configure cập nhật target sống — chỉnh Bias 1/2 giữa TX ramp
+   * ngay tới mức mới (workflow cân Idq theo INA226). */
+  if (bias_src != g_sdr.pa_bias_src || bias1 != g_sdr.pa_bias1 ||
+      bias2 != g_sdr.pa_bias2) {
+    g_sdr.pa_bias_src = bias_src;
+    g_sdr.pa_bias1    = bias1;
+    g_sdr.pa_bias2    = bias2;
+    PA_Bias_Configure(bias_src, bias1, bias2);
+    /* Đang TX mà chưa armed (TX bắt đầu lúc còn FIXED rồi đổi sang DAC):
+     * re-arm để ramp chạy ngay, không phải nhả PTT. No-op khi FIXED/cal. */
+    if (g_sdr.tx_mode) PA_Bias_OnTxStart();
+  }
+  g_sdr.pa_idq_ma = idq_ma;
   if (rfpwr != g_sdr.tx_power) {
     g_sdr.tx_power = rfpwr;
     g_sdr.display_dirty |= DIRTY_SBR;
@@ -3332,6 +3401,7 @@ static void csdr_finish_rx_hw(void)
 {
   bool pa_fitted = (g_sdr.pa_watts != 0U);
   PA_Protect_OnTxStop();
+  PA_Bias_OnRxFinish();   /* DAC bias về 0 — sau drain, trước khi relay nhả */
   if (pa_fitted) {
     HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
     BPF_SetMode(RF_MODE_RX);
@@ -3360,6 +3430,7 @@ static void csdr_finish_rx_hw(void)
  * idempotently, so both this and the CSDR_Loop block may run. */
 void CSDR_PollTxSequencing(void)
 {
+  PA_Bias_Tick();   /* bias ramp phải tiếp tục khi app toàn màn hình giữ loop */
   uint32_t now = HAL_GetTick();
   if (s_rf_gate_pending) {
     if (!g_sdr.tx_mode) {
@@ -3416,6 +3487,18 @@ static void csdr_apply_tx(void)
    * init.  SWR scan (sdr_scan.c) drives the relays directly but never touches
    * g_sdr.tx_mode and restores RX itself, so it cannot desync this. */
   static bool s_tx_applied = false;
+
+  /* INA226 chết I2C → ALERT open-drain thả nổi → pullup giữ Q1 ON → lớp cắt
+   * cứng OC biến mất KHÔNG dấu hiệu.  Policy: chặn TX MỚI khi PA có gắn.
+   * TX đang chạy dở không bị ngắt giữa chừng (SWR/temp qua ADC vẫn còn, và
+   * PA_OC_ReadCurrent retry 5 s có thể khôi phục); một chốt duy nhất ở đây
+   * phủ mọi nguồn keying: PTT, CAT, VOX, keyer, TUNE, FT8 app, bias cal. */
+  if (g_sdr.tx_mode && !s_tx_applied && pa_fitted && !g_pa_oc.ina_ok) {
+    g_sdr.tx_mode = false;
+    SDR_UI_DrawCWText("TX BLOCKED: INA226 FAULT");
+    g_sdr.display_dirty |= DIRTY_ALL;
+  }
+
   bool tx_transition = (g_sdr.tx_mode != s_tx_applied);
   s_tx_applied = g_sdr.tx_mode;
 
@@ -3435,6 +3518,9 @@ static void csdr_apply_tx(void)
                    (g_sdr.mode == MODE_DIGU || g_sdr.mode == MODE_DIGL)   ? base - 0.3f : base;
       if (lim < 1.0f) lim = 1.0f;
       PA_OC_SetCurrentLimit(lim); }
+    /* DAC bias ramp 0→target (~32 ms) — sau khi ngưỡng INA226 đã nạp, nằm
+     * trong blanking 100 ms của pa_protect.  No-op khi pa_bias_src=FIXED. */
+    PA_Bias_OnTxStart();
     /* RX → TX: switch WM8731 input nếu tx_src==MIC, shutdown headphone amp (non-CW).
      * DACMU is NOT used here: the same WM8731 DAC output (SAI1 Block A1 / s_tx_buf)
      * that feeds the headphone jack also feeds the QSE mixer during TX (see
@@ -3518,8 +3604,10 @@ static void csdr_apply_tx(void)
     float g = drive * ((float)gain_src_pct * (1.0f / 100.0f));
     if (g > 1.0f) g = 1.0f;
     /* Ext-PA keying gate active: relays still settling — hold RF at zero.
-     * CSDR_Loop re-enters this block via cat_tx_dirty when the gate expires. */
-    if (s_rf_gate_pending && g_sdr.tx_mode) { g = 0.0f; drive = 0.0f; }
+     * CSDR_Loop re-enters this block via cat_tx_dirty when the gate expires.
+     * Idq auto-cal: TX keyed nhưng RF phải bằng 0 tuyệt đối suốt phiên cal. */
+    if ((s_rf_gate_pending || PA_BiasCal_Active()) && g_sdr.tx_mode)
+      { g = 0.0f; drive = 0.0f; }
     g_dsp.tx.audio_gain = g;
     g_dsp.tx.drive_gain = drive;
   }
