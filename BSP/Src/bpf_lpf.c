@@ -10,8 +10,8 @@
 /* USER CODE BEGIN 0 */
 /* All pins from Core/Inc/main.h (CubeMX generated):
  *  BPF: BPF_S0=PA4 (S0/bit0), BPF_S1=PA5 (S1/bit1) — relay select
- *       BPF_OE1=PA6 — active-HIGH, enables TX relay bank (2B1..2B4)
- *       BPF_OE2=PA7 — active-HIGH, enables RX relay bank (1B1..1B4)
+ *       BPF_OE1=PA6 — active-HIGH, enables TX relay bank (1B1..1B4)
+ *       BPF_OE2=PA7 — active-HIGH, enables RX relay bank (2B1..2B4)
  *       OE1 and OE2 must ALWAYS be complementary (never both HIGH).
  *  LPF: LPF_A0=PA0, LPF_A1=PA1, LPF_A2=PA2 (74HC238 address)
  *  T/R: T_R_SW=PB2 (relay control) */

@@ -300,6 +300,7 @@ static uint32_t default_bw_for_mode(SDR_Mode_t m);
 static uint32_t csdr_lo_offset_now(void);
 static void csdr_apply_nco_if(void);
 static int32_t csdr_marker_limit_hz(void);
+static void csdr_marker_bounds(int32_t *lo, int32_t *hi);
 static void csdr_marker_recenter(void);
 static void csdr_marker_clamp_span(void);
 static void csdr_vfo_swap(void);
@@ -1212,11 +1213,20 @@ static void csdr_rtty_update_ui_tones(void)
 /* Called after any DSP_SetMode to sync CW decoder + UI strip */
 static void csdr_on_mode_changed(SDR_Mode_t old_mode)
 {
-    /* AM low-IF: entering or leaving AM moves the RX LO by AM_LOW_IF_HZ.
-     * DSP NCO first (cheap), then SI5351 (blocking I2C — all callers are
-     * main-loop context).  Skipped during TX: the LO is parked on the
-     * carrier; csdr_finish_rx_hw re-derives the RX LO on release. */
+    /* AM low-IF: entering or leaving AM moves the RX LO by AM_LOW_IF_HZ,
+     * which shifts the raw-ADC-safe marker window too (csdr_marker_bounds)
+     * — reclamp first so a marker parked near the old window's edge can't
+     * land in the alias zone once the LO moves, then retune nco_if/DSP NCO
+     * (cheap) and finally SI5351 (blocking I2C — all callers are main-loop
+     * context).  Skipped during TX: the LO is parked on the carrier;
+     * csdr_finish_rx_hw re-derives the RX LO on release. */
     if ((old_mode == MODE_AM) != (g_sdr.mode == MODE_AM)) {
+        int32_t lo_lim, hi_lim;
+        csdr_marker_bounds(&lo_lim, &hi_lim);
+        if (g_sdr.marker_offset_hz > hi_lim) g_sdr.marker_offset_hz = hi_lim;
+        if (g_sdr.marker_offset_hz < lo_lim) g_sdr.marker_offset_hz = lo_lim;
+        SDR_UI_SetSpecMarker(g_sdr.marker_offset_hz);
+        csdr_apply_nco_if();
         DSP_SetFrequency(&g_dsp, CSDR_RxLoOffset(), CSDR_AUDIO_SAMPLE_RATE);
         if (g_sdr.si5351_ok && !g_sdr.tx_mode)
             SI5351_SetQSDFrequency(&g_si5351,
@@ -2198,9 +2208,10 @@ static void csdr_handle_encoder(void)
       int32_t new_off = g_sdr.marker_offset_hz
                       + (int32_t)(f - (int64_t)g_sdr.freq_hz);
       g_sdr.freq_hz = (uint32_t)f;
-      int32_t lim = csdr_marker_limit_hz();
-      if (new_off >  lim) new_off =  lim;
-      if (new_off < -lim) new_off = -lim;
+      int32_t lo_lim, hi_lim;
+      csdr_marker_bounds(&lo_lim, &hi_lim);
+      if (new_off >  hi_lim) new_off =  hi_lim;
+      if (new_off < lo_lim)  new_off =  lo_lim;
       g_sdr.marker_offset_hz = new_off;
       uint32_t lo_new = (uint32_t)((int32_t)g_sdr.freq_hz - new_off);
       if (lo_new != lo_old && g_sdr.si5351_ok)
@@ -3122,6 +3133,24 @@ static int32_t csdr_marker_limit_hz(void)
   return half - half / 8;
 }
 
+/* Marker offset bounds — asymmetric in AM.  The raw ADC frequency of the
+ * tuned signal is (marker_offset − CSDR_RxLoOffset()'s AM term), not
+ * marker_offset itself, because in AM the LO is parked AM_LOW_IF_HZ above
+ * the tuned frequency (see CSDR_RxLoOffset).  Keeping that raw offset
+ * within ±csdr_marker_limit_hz() therefore shifts the whole allowed
+ * marker_offset window right by AM_LOW_IF_HZ instead of the usual
+ * symmetric ±limit: without this, dragging the marker toward the low side
+ * in AM clips well short of Nyquist (and aliases badly past the clip
+ * point) while the high side sits on unused headroom — visibly lopsided.
+ * Non-AM modes get the original symmetric window (am_shift = 0). */
+static void csdr_marker_bounds(int32_t *lo, int32_t *hi)
+{
+  int32_t lim      = csdr_marker_limit_hz();
+  int32_t am_shift = (g_sdr.mode == MODE_AM) ? (int32_t)AM_LOW_IF_HZ : 0;
+  *lo = am_shift - lim;
+  *hi = am_shift + lim;
+}
+
 /* Retune the LO to the listening frequency and zero the marker.
  * Main-loop context only (blocking I2C). */
 static void csdr_marker_recenter(void)
@@ -3140,10 +3169,11 @@ static void csdr_marker_recenter(void)
  * audio) stays put, no center jump.  Main-loop context only (I2C). */
 static void csdr_marker_clamp_span(void)
 {
-  int32_t lim = csdr_marker_limit_hz();
+  int32_t lo_lim, hi_lim;
+  csdr_marker_bounds(&lo_lim, &hi_lim);
   int32_t off = g_sdr.marker_offset_hz;
-  if (off >  lim) off =  lim;
-  if (off < -lim) off = -lim;
+  if (off >  hi_lim) off =  hi_lim;
+  if (off < lo_lim)  off =  lo_lim;
   if (off == g_sdr.marker_offset_hz) return;
   g_sdr.marker_offset_hz = off;
   if (g_sdr.si5351_ok)
@@ -3270,8 +3300,9 @@ static void     cat_set_freq(uint32_t f)
      * no SI5351 retune.  Out-of-span jumps fall through to a re-center. */
     int32_t off = (int32_t)((int64_t)f
                 - ((int64_t)g_sdr.freq_hz - g_sdr.marker_offset_hz));
-    int32_t lim = csdr_marker_limit_hz();
-    if (off >= -lim && off <= lim) {
+    int32_t lo_lim, hi_lim;
+    csdr_marker_bounds(&lo_lim, &hi_lim);
+    if (off >= lo_lim && off <= hi_lim) {
       g_sdr.freq_hz = f;
       g_sdr.marker_offset_hz = off;
       g_sdr.cat_rit_dirty = true; /* nco_if recomputed with marker term by CSDR_Loop */

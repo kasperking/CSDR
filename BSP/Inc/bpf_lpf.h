@@ -7,8 +7,8 @@
   *  ── BPF (FST3253 Analog Multiplexer) ────────────────────
   *  PA4 BPF_S1  – relay select bit 0 (S0)
   *  PA5 BPF_S2  – relay select bit 1 (S1)
-  *  PA6 BPF_OE1 – active-HIGH enable, TX relay bank (2B1..2B4)
-  *  PA7 BPF_OE2 – active-HIGH enable, RX relay bank (1B1..1B4)
+  *  PA6 BPF_OE1 – active-HIGH enable, TX relay bank (1B1..1B4)
+  *  PA7 BPF_OE2 – active-HIGH enable, RX relay bank (2B1..2B4)
   *  OE1 and OE2 are ALWAYS complementary — never both HIGH.
   *
   *  S1:S0 = 00 → filter 0: 20/30m
@@ -125,8 +125,8 @@ void BPF_LPF_Init(void);
   *   4. Assert OE1 (TX) or OE2 (RX) — never both.
   *
   *  Truth table enforced:
-  *   TX: OE1=1, OE2=0 — engages TX relay bank (2B1..2B4).
-  *   RX: OE1=0, OE2=1 — engages RX relay bank (1B1..1B4).
+  *   TX: OE1=1, OE2=0 — engages TX relay bank (1B1..1B4).
+  *   RX: OE1=0, OE2=1 — engages RX relay bank (2B1..2B4).
   *
   * @param  mode    RF_MODE_TX or RF_MODE_RX
   * @param  filter  BPF_20_30M / BPF_40M / BPF_15_10M / BPF_80M
