@@ -305,7 +305,9 @@ HAL_StatusTypeDef Flash_LoadBandCal(W25Q_Handle_t *dev,
             && (crc32_simple((const uint8_t*)&blk,
                               sizeof(blk) - sizeof(blk.crc32)) == blk.crc32);
   if (ok) {
-    memcpy(band, blk.band, sizeof(blk.band));
+    /* Copy only the live bands; stored slots BAND_COUNT..BAND_CAL_SLOTS-1
+     * (former 6m) are ignored. */
+    memcpy(band, blk.band, BAND_COUNT * sizeof(BandCal_t));
   } else {
     /* Defaults: no gain trim, swr_scale=100 (×1.0 = no scaling) */
     for (uint8_t i = 0; i < BAND_COUNT; i++) {
@@ -323,7 +325,15 @@ HAL_StatusTypeDef Flash_SaveBandCal(W25Q_Handle_t *dev,
 {
   BandCalBlock_t blk;
   blk.magic = BAND_CAL_MAGIC;
-  memcpy(blk.band, band, sizeof(blk.band));
+  memcpy(blk.band, band, BAND_COUNT * sizeof(BandCal_t));
+  /* Unused tail slots (former 6m): write defaults so the block is fully
+   * initialised and the CRC is deterministic. */
+  for (uint8_t i = BAND_COUNT; i < BAND_CAL_SLOTS; i++) {
+    blk.band[i].rx_gain_trim    = 0;
+    blk.band[i].noise_floor_off = 0;
+    blk.band[i].tx_drive_trim   = 0;
+    blk.band[i].swr_scale       = 100;
+  }
   blk.crc32 = crc32_simple((const uint8_t*)&blk,
                              sizeof(blk) - sizeof(blk.crc32));
   HAL_StatusTypeDef r = W25Q_SectorErase(dev, FLASH_ADDR_BAND_CAL);

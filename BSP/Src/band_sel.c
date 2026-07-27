@@ -14,7 +14,7 @@
 /* ── Layout constants ─────────────────────────────────────────────────────── */
 #define BS_MARGIN    8U
 #define BS_COLS      4U
-#define BS_ROWS_G    3U                                 /* 4×3 = 12 ≥ 11 bands */
+#define BS_ROWS_G    3U                                 /* 4×3 = 12 ≥ 10 bands */
 #define BS_W         ((uint16_t)(LCD_W - 2U * BS_MARGIN))
 #define BS_COL_W     ((uint16_t)(BS_W / BS_COLS))
 #define BS_TITLE_H   16U
@@ -47,7 +47,7 @@ static inline uint16_t sw16(uint16_t c)
 /* Band name char count (avoids string.h in inner loop) */
 static inline uint16_t band_name_chars(uint8_t idx)
 {
-  return (idx == 0U) ? 4U : (idx == 10U) ? 2U : 3U;
+  return (idx == 0U) ? 4U : 3U;
 }
 
 /* ════ Public API ════════════════════════════════════════════════════════════ */

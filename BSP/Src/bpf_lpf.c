@@ -32,14 +32,12 @@ static const bpf_filter_t bpf_map[BAND_COUNT] = {
   BPF_15_10M,   /* 15m  — 21.0 MHz */
   BPF_15_10M,   /* 12m  — 24.9 MHz */
   BPF_15_10M,   /* 10m  — 28.0 MHz */
-  BPF_15_10M,   /* 6m   — 50.0 MHz */
 };
 
 /* Cached LPF state — skip redundant relay cycling */
 static lpf_band_t s_lpf_band = LPF_OFF;
 
-/* LPF per band: band_idx → lpf_band_t (= 74HC238 A2:A1:A0 address)
- * 6m (50 MHz) has no dedicated filter; LPF_17_32M is the closest available. */
+/* LPF per band: band_idx → lpf_band_t (= 74HC238 A2:A1:A0 address) */
 static const lpf_band_t lpf_map[BAND_COUNT] = {
   LPF_1M8,     /* 160m — 1.8 MHz  → Y0 */
   LPF_3M5,     /* 80m  — 3.5 MHz  → Y1 */
@@ -51,17 +49,16 @@ static const lpf_band_t lpf_map[BAND_COUNT] = {
   LPF_17_32M,  /* 15m  — 21.0 MHz → Y4 */
   LPF_17_32M,  /* 12m  — 24.9 MHz → Y4 */
   LPF_17_32M,  /* 10m  — 28.0 MHz → Y4 */
-  LPF_17_32M,  /* 6m   — 50.0 MHz → Y4 (no adequate filter; hardware limit) */
 };
 
 /* Default frequency per band */
 static const uint32_t band_default_freq[BAND_COUNT] = {
   1825000UL, 3650000UL, 5357500UL, 7100000UL, 10125000UL,
-  14200000UL,18100000UL,21200000UL,24940000UL, 28500000UL, 50200000UL
+  14200000UL,18100000UL,21200000UL,24940000UL, 28500000UL
 };
 
 static const char *const band_names[BAND_COUNT] = {
-  "160m","80m","60m","40m","30m","20m","17m","15m","12m","10m","6m"
+  "160m","80m","60m","40m","30m","20m","17m","15m","12m","10m"
 };
 
 const char *BPF_BandName(uint8_t idx) {

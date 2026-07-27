@@ -1,0 +1,440 @@
+<title>CSDR — Bố cục mặt máy</title>
+<style>
+  :root{
+    --bg:#eef1f3;
+    --sheet:#ffffff;
+    --grid:#dde3e7;
+    --grid-strong:#c7cfd4;
+    --line:#1b2226;
+    --line-dim:#57646c;
+    --accent:#c97a1e;      /* amber — lấy từ UI_MODE_DIGU/CW-decode trong sdr_ui.h */
+    --accent-2:#2e8fa3;    /* cyan — đường tín hiệu RF/anten */
+    --accent-soft:#c97a1e22;
+    --text:#1b2226;
+    --text-dim:#57646c;
+    --text-faint:#8b979e;
+    --mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, "Roboto Mono", monospace;
+    --sans: ui-sans-serif, "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f1417;
+      --sheet:#171d22;
+      --grid:#212a30;
+      --grid-strong:#2c3740;
+      --line:#dde5ea;
+      --line-dim:#8b979e;
+      --accent:#e8983b;
+      --accent-2:#5fb8c9;
+      --accent-soft:#e8983b26;
+      --text:#e4eaee;
+      --text-dim:#9aa6ad;
+      --text-faint:#5b666c;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0f1417; --sheet:#171d22; --grid:#212a30; --grid-strong:#2c3740;
+    --line:#dde5ea; --line-dim:#8b979e; --accent:#e8983b; --accent-2:#5fb8c9;
+    --accent-soft:#e8983b26; --text:#e4eaee; --text-dim:#9aa6ad; --text-faint:#5b666c;
+  }
+  :root[data-theme="light"]{
+    --bg:#eef1f3; --sheet:#ffffff; --grid:#dde3e7; --grid-strong:#c7cfd4;
+    --line:#1b2226; --line-dim:#57646c; --accent:#c97a1e; --accent-2:#2e8fa3;
+    --accent-soft:#c97a1e22; --text:#1b2226; --text-dim:#57646c; --text-faint:#8b979e;
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+  }
+  .page{ max-width:1180px; margin:0 auto; padding:48px 24px 80px; }
+
+  header.hero{ margin-bottom:40px; }
+  .eyebrow{
+    font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 10px;
+  }
+  h1{
+    font-family:var(--sans); font-weight:700; font-size:clamp(26px,4vw,36px);
+    line-height:1.15; margin:0 0 12px; text-wrap:balance; letter-spacing:-0.01em;
+  }
+  .lede{
+    font-size:15.5px; line-height:1.65; color:var(--text-dim); max-width:68ch; margin:0 0 6px;
+  }
+  .lede b{ color:var(--text); font-weight:600; }
+  .specline{
+    font-family:var(--mono); font-size:12.5px; color:var(--text-faint);
+    margin-top:14px; display:flex; gap:22px; flex-wrap:wrap;
+  }
+  .specline span b{ color:var(--accent-2); font-weight:600; }
+
+  section.sheet{ margin-top:56px; }
+  .sheet-head{
+    display:flex; align-items:baseline; justify-content:space-between; gap:16px;
+    border-bottom:1px solid var(--grid-strong); padding-bottom:10px; margin-bottom:20px;
+    flex-wrap:wrap;
+  }
+  .sheet-head h2{
+    font-family:var(--mono); font-size:13px; letter-spacing:.08em; text-transform:uppercase;
+    font-weight:600; margin:0; color:var(--text);
+  }
+  .sheet-head h2 em{ font-style:normal; color:var(--accent); }
+  .sheet-head .scale-note{ font-family:var(--mono); font-size:11px; color:var(--text-faint); }
+
+  .drawing{
+    background:var(--sheet); border:1px solid var(--grid-strong); border-radius:4px;
+    padding:18px; overflow-x:auto;
+  }
+  .drawing svg{ display:block; width:100%; height:auto; min-width:640px; }
+
+  .grid-line{ stroke:var(--grid); stroke-width:0.3; }
+  .grid-line-strong{ stroke:var(--grid-strong); stroke-width:0.3; }
+  .outline{ fill:none; stroke:var(--line); stroke-width:0.7; }
+  .cutout{ fill:var(--accent-soft); stroke:var(--accent-2); stroke-width:0.5; }
+  .ctrl{ fill:none; stroke:var(--line); stroke-width:0.55; }
+  .ctrl-fill{ fill:var(--grid); stroke:var(--line); stroke-width:0.55; }
+  .knob{ fill:var(--grid); stroke:var(--line); stroke-width:0.7; }
+  .knob-mark{ stroke:var(--accent); stroke-width:1; }
+  .led{ fill:var(--accent); }
+  .dim{ stroke:var(--text-faint); stroke-width:0.25; fill:none; }
+  .dim-text{ font-family:var(--mono); font-size:3.4px; fill:var(--text-dim); }
+  .lbl{ font-family:var(--mono); font-size:3.1px; fill:var(--text); text-anchor:middle; letter-spacing:.02em; }
+  .lbl-sub{ font-family:var(--mono); font-size:2.4px; fill:var(--text-faint); text-anchor:middle; }
+  .lbl-big{ font-family:var(--mono); font-size:4.6px; fill:var(--text-dim); letter-spacing:.14em; }
+  .grille line{ stroke:var(--line-dim); stroke-width:0.4; }
+
+  table.legend{
+    width:100%; border-collapse:collapse; margin-top:18px; font-size:13px;
+  }
+  table.legend caption{
+    text-align:left; font-family:var(--mono); font-size:11px; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--text-faint); margin-bottom:8px;
+  }
+  table.legend th{
+    text-align:left; font-family:var(--mono); font-size:10.5px; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--text-faint); font-weight:500;
+    padding:6px 12px 6px 0; border-bottom:1px solid var(--grid-strong);
+  }
+  table.legend td{
+    padding:8px 12px 8px 0; border-bottom:1px solid var(--grid);
+    vertical-align:top; line-height:1.5;
+  }
+  table.legend td:first-child{ font-family:var(--mono); font-weight:600; color:var(--accent); white-space:nowrap; }
+  table.legend td.src{ font-family:var(--mono); font-size:12px; color:var(--text-faint); white-space:nowrap; }
+  table.legend tr:last-child td{ border-bottom:none; }
+  .wrap-table{ overflow-x:auto; }
+
+  .note{
+    margin-top:14px; font-size:13px; line-height:1.6; color:var(--text-dim);
+    border-left:2px solid var(--accent-2); padding:2px 0 2px 14px;
+  }
+
+  footer{
+    margin-top:64px; padding-top:20px; border-top:1px solid var(--grid-strong);
+    font-size:12.5px; color:var(--text-faint); line-height:1.7;
+  }
+  footer b{ color:var(--text-dim); }
+</style>
+
+<div class="page">
+
+  <header class="hero">
+    <p class="eyebrow">Cơ khí mặt máy · Bản vẽ tỉ lệ</p>
+    <h1>Bố cục mặt trước / mặt sau — CSDR HF SDR Transceiver</h1>
+    <p class="lede">
+      Suy ra từ <b>LCD ST7796 480×320</b> (vùng hiển thị thực <b>73.44 × 48.96&nbsp;mm</b>,
+      đúng tỉ lệ 3:2 theo đề bài) trong <code>lcd_panel_config.h</code>, và toàn bộ nút bấm /
+      encoder / cổng kết nối đọc trực tiếp từ <code>input_scan.h</code>, <code>main.h</code>.
+      Mặt máy đề xuất <b>160 × 100&nbsp;mm</b>, đủ chỗ cho 8 phím PCA9555 + encoder VFO mà
+      không phải đoán thêm phần cứng chưa có trong code.
+    </p>
+    <div class="specline">
+      <span>LCD active <b>73.44×48.96mm</b></span>
+      <span>Panel <b>160×100mm</b></span>
+      <span>8 phím PCA9555 + 1 encoder</span>
+      <span>Đơn vị <b>mm</b>, gốc toạ độ góc trên-trái</span>
+    </div>
+  </header>
+
+  <!-- ══════════════════════ SHEET 1 — FRONT PANEL ══════════════════════ -->
+  <section class="sheet">
+    <div class="sheet-head">
+      <h2>Sheet 01 — <em>Mặt trước</em></h2>
+      <span class="scale-note">160 × 100 mm — lưới nền 10 mm</span>
+    </div>
+
+    <div class="drawing">
+      <svg viewBox="-26 -16 212 148" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" viewBox="0 0 8 8" refX="4" refY="4" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+            <path d="M0,0 L8,4 L0,8 Z" fill="var(--text-faint)"></path>
+          </marker>
+        </defs>
+
+        <!-- grid 10mm, clipped to panel -->
+        <clipPath id="panelClip"><rect x="0" y="0" width="160" height="100" rx="3" ry="3"></rect></clipPath>
+        <g clip-path="url(#panelClip)">
+          <rect x="0" y="0" width="160" height="100" fill="var(--sheet)"></rect>
+          <g>
+            <!-- vertical grid -->
+            <line x1="10" y1="0" x2="10" y2="100" class="grid-line"></line>
+            <line x1="20" y1="0" x2="20" y2="100" class="grid-line"></line>
+            <line x1="30" y1="0" x2="30" y2="100" class="grid-line"></line>
+            <line x1="40" y1="0" x2="40" y2="100" class="grid-line"></line>
+            <line x1="50" y1="0" x2="50" y2="100" class="grid-line"></line>
+            <line x1="60" y1="0" x2="60" y2="100" class="grid-line"></line>
+            <line x1="70" y1="0" x2="70" y2="100" class="grid-line"></line>
+            <line x1="80" y1="0" x2="80" y2="100" class="grid-line-strong"></line>
+            <line x1="90" y1="0" x2="90" y2="100" class="grid-line"></line>
+            <line x1="100" y1="0" x2="100" y2="100" class="grid-line"></line>
+            <line x1="110" y1="0" x2="110" y2="100" class="grid-line"></line>
+            <line x1="120" y1="0" x2="120" y2="100" class="grid-line"></line>
+            <line x1="130" y1="0" x2="130" y2="100" class="grid-line"></line>
+            <line x1="140" y1="0" x2="140" y2="100" class="grid-line"></line>
+            <line x1="150" y1="0" x2="150" y2="100" class="grid-line"></line>
+            <!-- horizontal grid -->
+            <line x1="0" y1="10" x2="160" y2="10" class="grid-line"></line>
+            <line x1="0" y1="20" x2="160" y2="20" class="grid-line"></line>
+            <line x1="0" y1="30" x2="160" y2="30" class="grid-line"></line>
+            <line x1="0" y1="40" x2="160" y2="40" class="grid-line"></line>
+            <line x1="0" y1="50" x2="160" y2="50" class="grid-line-strong"></line>
+            <line x1="0" y1="60" x2="160" y2="60" class="grid-line"></line>
+            <line x1="0" y1="70" x2="160" y2="70" class="grid-line"></line>
+            <line x1="0" y1="80" x2="160" y2="80" class="grid-line"></line>
+            <line x1="0" y1="90" x2="160" y2="90" class="grid-line"></line>
+          </g>
+        </g>
+
+        <!-- panel outline -->
+        <rect x="0" y="0" width="160" height="100" rx="3" ry="3" class="outline"></rect>
+
+        <!-- nameplate -->
+        <text x="80" y="5.5" text-anchor="middle" class="lbl-sub" style="font-size:2.6px;letter-spacing:.15em;">CSDR · HF SDR TRANSCEIVER</text>
+
+        <!-- LCD cutout (bezel opening, 80x56, 3mm reveal) -->
+        <rect x="37" y="22" width="80" height="56" class="ctrl"></rect>
+        <!-- LCD active area 73.44 x 48.96, centered -->
+        <rect x="40.28" y="25.52" width="73.44" height="48.96" class="cutout"></rect>
+        <text x="77" y="52" text-anchor="middle" class="lbl" style="font-size:3.6px;">LCD 480×320</text>
+        <text x="77" y="57" text-anchor="middle" class="lbl-sub">ST7796 · FMC 8080</text>
+
+        <!-- LCD active-area dimensions -->
+        <line x1="40.28" y1="20" x2="40.28" y2="18" class="dim"></line>
+        <line x1="113.72" y1="20" x2="113.72" y2="18" class="dim"></line>
+        <line x1="40.28" y1="19" x2="113.72" y2="19" class="dim" marker-start="url(#arrow)" marker-end="url(#arrow)"></line>
+        <text x="77" y="17.2" text-anchor="middle" class="dim-text">73.44</text>
+
+        <line x1="119" y1="25.52" x2="121" y2="25.52" class="dim"></line>
+        <line x1="119" y1="74.48" x2="121" y2="74.48" class="dim"></line>
+        <line x1="120" y1="25.52" x2="120" y2="74.48" class="dim" marker-start="url(#arrow)" marker-end="url(#arrow)"></line>
+        <text x="124.5" y="51" text-anchor="middle" class="dim-text" transform="rotate(90 124.5 51)">48.96</text>
+
+        <!-- POWER -->
+        <rect x="8" y="8" width="24" height="14" rx="1.2" class="ctrl-fill"></rect>
+        <text x="20" y="16.5" text-anchor="middle" class="lbl">PWR</text>
+        <text x="20" y="20.2" text-anchor="middle" class="lbl-sub">giữ 1s</text>
+
+        <!-- MENU / BAND / MODE -->
+        <rect x="8" y="22" width="24" height="14" rx="1.2" class="ctrl-fill"></rect>
+        <text x="20" y="30.5" text-anchor="middle" class="lbl">MENU</text>
+
+        <rect x="8" y="43" width="24" height="14" rx="1.2" class="ctrl-fill"></rect>
+        <text x="20" y="51.5" text-anchor="middle" class="lbl">BAND</text>
+
+        <rect x="8" y="64" width="24" height="14" rx="1.2" class="ctrl-fill"></rect>
+        <text x="20" y="72.5" text-anchor="middle" class="lbl">MODE</text>
+
+        <!-- speaker grille -->
+        <rect x="8" y="78" width="24" height="14" rx="1.2" class="ctrl"></rect>
+        <g class="grille">
+          <line x1="11" y1="81" x2="29" y2="81"></line>
+          <line x1="11" y1="83.5" x2="29" y2="83.5"></line>
+          <line x1="11" y1="86" x2="29" y2="86"></line>
+          <line x1="11" y1="88.5" x2="29" y2="88.5"></line>
+        </g>
+        <text x="20" y="97" text-anchor="middle" class="lbl-sub">LOA GIÁM SÁT</text>
+
+        <!-- F1..F4 row under LCD -->
+        <rect x="43" y="78" width="14" height="10" rx="1" class="ctrl-fill"></rect>
+        <text x="50" y="84.5" text-anchor="middle" class="lbl" style="font-size:2.8px;">F1</text>
+        <rect x="61" y="78" width="14" height="10" rx="1" class="ctrl-fill"></rect>
+        <text x="68" y="84.5" text-anchor="middle" class="lbl" style="font-size:2.8px;">F2</text>
+        <rect x="79" y="78" width="14" height="10" rx="1" class="ctrl-fill"></rect>
+        <text x="86" y="84.5" text-anchor="middle" class="lbl" style="font-size:2.8px;">F3</text>
+        <rect x="97" y="78" width="14" height="10" rx="1" class="ctrl-fill"></rect>
+        <text x="104" y="84.5" text-anchor="middle" class="lbl" style="font-size:2.8px;">F4</text>
+        <text x="77" y="96.5" text-anchor="middle" class="lbl-sub">SOFTKEY · điều hướng menu</text>
+
+        <!-- nameplate top-right -->
+        <rect x="130" y="8" width="22" height="14" rx="1.2" class="ctrl"></rect>
+        <text x="141" y="16.5" text-anchor="middle" class="lbl-sub" style="font-size:2.6px;">S/N · MODEL</text>
+
+        <!-- encoder -->
+        <circle cx="137" cy="40" r="15" class="knob"></circle>
+        <circle cx="137" cy="40" r="15" fill="none" stroke="var(--grid-strong)" stroke-width="0.4" stroke-dasharray="1.4 1.4"></circle>
+        <line x1="137" y1="40" x2="137" y2="27" class="knob-mark"></line>
+        <text x="137" y="41.2" text-anchor="middle" class="lbl" style="font-size:3.4px;">VFO</text>
+        <text x="137" y="60.5" text-anchor="middle" class="dim-text">⌀30</text>
+
+        <!-- TUNE -->
+        <rect x="122" y="61" width="30" height="13" rx="1.2" class="ctrl-fill"></rect>
+        <text x="137" y="69" text-anchor="middle" class="lbl">TUNE</text>
+
+        <!-- TX/RX led -->
+        <circle cx="137" cy="84" r="1.6" class="led"></circle>
+        <text x="137" y="90.5" text-anchor="middle" class="lbl-sub">TX/RX LED*</text>
+
+        <!-- overall width dimension -->
+        <line x1="0" y1="102" x2="0" y2="108" class="dim"></line>
+        <line x1="160" y1="102" x2="160" y2="108" class="dim"></line>
+        <line x1="0" y1="107" x2="160" y2="107" class="dim" marker-start="url(#arrow)" marker-end="url(#arrow)"></line>
+        <text x="80" y="112" text-anchor="middle" class="dim-text" style="font-size:4px;">160 mm</text>
+
+        <!-- overall height dimension -->
+        <line x1="-8" y1="0" x2="-14" y2="0" class="dim"></line>
+        <line x1="-8" y1="100" x2="-14" y2="100" class="dim"></line>
+        <line x1="-13" y1="0" x2="-13" y2="100" class="dim" marker-start="url(#arrow)" marker-end="url(#arrow)"></line>
+        <text x="-16.5" y="50" text-anchor="middle" class="dim-text" style="font-size:4px;" transform="rotate(-90 -16.5 50)">100 mm</text>
+      </svg>
+    </div>
+
+    <div class="wrap-table">
+      <table class="legend">
+        <caption>Chú giải mặt trước — nguồn tham chiếu trong code</caption>
+        <thead><tr><th>Nút / vùng</th><th>Chức năng</th><th>Nguồn</th></tr></thead>
+        <tbody>
+          <tr><td>PWR</td><td>Nguồn on/off — nhấn giữ mềm (soft-latch), không phải công tắc cơ khí</td><td class="src">main.h · PW_Pin PD12, PW_HOLD PB1</td></tr>
+          <tr><td>MENU</td><td>Vào/thoát menu cài đặt</td><td class="src">input_scan.h · PCA_BIT_MENU (P0.0)</td></tr>
+          <tr><td>BAND</td><td>Đổi băng tần — giữ để mở bảng chọn băng</td><td class="src">band_sel.h · PCA_BIT_BAND (P0.1)</td></tr>
+          <tr><td>MODE</td><td>Đổi mode thu/phát (USB/LSB/AM/FM/CW/DIGI)</td><td class="src">mode_sel.h · PCA_BIT_MODE (P0.2)</td></tr>
+          <tr><td>F1–F4</td><td>Phím mềm theo ngữ cảnh — cuộn menu, xác nhận, back, quét SWR nhanh</td><td class="src">csdr_app.c · PCA_BIT_F1..F4 (P0.3–P0.6)</td></tr>
+          <tr><td>TUNE</td><td>Phím riêng — push-to-tune, giữ để dò ATU</td><td class="src">input_scan.h · PCA_BIT_TUNE (P0.7)</td></tr>
+          <tr><td>VFO</td><td>Encoder xoay chỉnh tần số + nhấn để chọn bước nhảy</td><td class="src">encoder.h · TIM3 PB4/PB5, ENC_SW PB3</td></tr>
+          <tr><td>LCD</td><td>ST7796S 480×320, vùng hiển thị 73.44×48.96mm, bus FMC 8080</td><td class="src">lcd_panel_config.h · sdr_ui.h</td></tr>
+          <tr><td>LOA</td><td>Loa giám sát nội bộ (không tắt được bằng AUDIO_SD, chỉ codec shutdown)</td><td class="src">wm8731.h · AUDIO_SD PC13</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      * <b>TX/RX LED</b> và tấm <b>S/N·MODEL</b> góc trên-phải <u>không có chân GPIO tương ứng</u> trong <code>main.h</code> —
+      firmware hiện chỉ báo TX/RX bằng màu nền LCD (<code>UI_TX_BG</code>/<code>UI_RX_BG</code> trong sdr_ui.h).
+      Đây là đề xuất thêm phần cứng, không phải suy ra từ code.
+    </p>
+  </section>
+
+  <!-- ══════════════════════ SHEET 2 — REAR PANEL ══════════════════════ -->
+  <section class="sheet">
+    <div class="sheet-head">
+      <h2>Sheet 02 — <em>Mặt sau</em></h2>
+      <span class="scale-note">160 × 55 mm — cùng bề rộng khung máy</span>
+    </div>
+
+    <div class="drawing">
+      <svg viewBox="-14 -14 190 96" xmlns="http://www.w3.org/2000/svg">
+        <clipPath id="rearClip"><rect x="0" y="0" width="160" height="55" rx="3" ry="3"></rect></clipPath>
+        <g clip-path="url(#rearClip)">
+          <rect x="0" y="0" width="160" height="55" fill="var(--sheet)"></rect>
+          <g>
+            <line x1="20" y1="0" x2="20" y2="55" class="grid-line"></line>
+            <line x1="40" y1="0" x2="40" y2="55" class="grid-line"></line>
+            <line x1="60" y1="0" x2="60" y2="55" class="grid-line"></line>
+            <line x1="80" y1="0" x2="80" y2="55" class="grid-line-strong"></line>
+            <line x1="100" y1="0" x2="100" y2="55" class="grid-line"></line>
+            <line x1="120" y1="0" x2="120" y2="55" class="grid-line"></line>
+            <line x1="140" y1="0" x2="140" y2="55" class="grid-line"></line>
+            <line x1="0" y1="20" x2="160" y2="20" class="grid-line"></line>
+            <line x1="0" y1="30" x2="160" y2="30" class="grid-line-strong"></line>
+            <line x1="0" y1="40" x2="160" y2="40" class="grid-line"></line>
+          </g>
+        </g>
+        <rect x="0" y="0" width="160" height="55" rx="3" ry="3" class="outline"></rect>
+        <text x="80" y="5.5" text-anchor="middle" class="lbl-sub" style="font-size:2.6px;letter-spacing:.15em;">MẶT SAU — CỔNG KẾT NỐI</text>
+
+        <!-- ANT (SO-239) -->
+        <circle cx="22" cy="28" r="8" class="ctrl"></circle>
+        <circle cx="22" cy="28" r="3" class="ctrl-fill"></circle>
+        <text x="22" y="41" text-anchor="middle" class="lbl">ANT</text>
+        <text x="22" y="44.5" text-anchor="middle" class="lbl-sub">SO-239</text>
+
+        <!-- DC IN -->
+        <rect x="34" y="21" width="14" height="14" rx="1.5" class="ctrl-fill"></rect>
+        <text x="41" y="41" text-anchor="middle" class="lbl">DC IN</text>
+        <text x="41" y="44.5" text-anchor="middle" class="lbl-sub">13.8V</text>
+
+        <!-- FAN vent -->
+        <rect x="53" y="18" width="26" height="20" rx="2" class="ctrl"></rect>
+        <g class="grille">
+          <line x1="56" y1="21" x2="76" y2="21"></line>
+          <line x1="56" y1="24" x2="76" y2="24"></line>
+          <line x1="56" y1="27" x2="76" y2="27"></line>
+          <line x1="56" y1="30" x2="76" y2="30"></line>
+          <line x1="56" y1="33" x2="76" y2="33"></line>
+          <line x1="56" y1="36" x2="76" y2="36"></line>
+        </g>
+        <text x="66" y="41" text-anchor="middle" class="lbl">FAN</text>
+        <text x="66" y="44.5" text-anchor="middle" class="lbl-sub">thoát nhiệt PA</text>
+
+        <!-- USB-C -->
+        <rect x="75" y="26" width="10" height="4" rx="1.6" class="ctrl-fill" transform="translate(0,0)"></rect>
+        <rect x="90" y="24" width="10" height="4.5" rx="1.8" class="ctrl-fill"></rect>
+        <text x="95" y="41" text-anchor="middle" class="lbl">USB-C</text>
+        <text x="95" y="44.5" text-anchor="middle" class="lbl-sub">CAT+audio+flash</text>
+
+        <!-- MIC RJ45 -->
+        <rect x="108" y="19" width="16" height="13.5" rx="1" class="ctrl"></rect>
+        <text x="116" y="41" text-anchor="middle" class="lbl">MIC</text>
+        <text x="116" y="44.5" text-anchor="middle" class="lbl-sub">RJ45 8P8P</text>
+
+        <!-- KEY 3.5mm -->
+        <circle cx="134" cy="27" r="4" class="ctrl"></circle>
+        <circle cx="134" cy="27" r="1.4" class="ctrl-fill"></circle>
+        <text x="134" y="41" text-anchor="middle" class="lbl">KEY</text>
+        <text x="134" y="44.5" text-anchor="middle" class="lbl-sub">bug/paddle</text>
+
+        <!-- PHONES 3.5mm -->
+        <circle cx="150" cy="27" r="4" class="ctrl"></circle>
+        <circle cx="150" cy="27" r="1.4" class="ctrl-fill"></circle>
+        <text x="150" y="41" text-anchor="middle" class="lbl">PHONES</text>
+        <text x="150" y="44.5" text-anchor="middle" class="lbl-sub">TRS 3.5mm</text>
+
+        <!-- overall width -->
+        <line x1="0" y1="57" x2="0" y2="62" class="dim"></line>
+        <line x1="160" y1="57" x2="160" y2="62" class="dim"></line>
+        <line x1="0" y1="61" x2="160" y2="61" class="dim" marker-start="url(#arrow)" marker-end="url(#arrow)"></line>
+        <text x="80" y="67" text-anchor="middle" class="dim-text" style="font-size:4px;">160 mm</text>
+      </svg>
+    </div>
+
+    <div class="wrap-table">
+      <table class="legend">
+        <caption>Chú giải mặt sau — nguồn tham chiếu trong code</caption>
+        <thead><tr><th>Cổng</th><th>Chức năng</th><th>Nguồn</th></tr></thead>
+        <tbody>
+          <tr><td>ANT</td><td>Anten HF — đường RF qua bộ đo SWR + relay LPF/BPF</td><td class="src">main.h · SWR_FOR PC2, SWR_REF PC3, BPF/LPF PA0-2/PA4-7</td></tr>
+          <tr><td>DC IN</td><td>Nguồn 13.8V ngoài — có cảm biến áp trên board</td><td class="src">main.h · VOLTAGE_IN_METER PA3</td></tr>
+          <tr><td>FAN</td><td>Quạt tản nhiệt tầng PA, điều khiển theo nhiệt độ</td><td class="src">main.h · FAN_Pin PB9</td></tr>
+          <tr><td>USB-C</td><td>CAT (TS-2000), USB Audio, nạp firmware/NOR flash qua CDC</td><td class="src">usb_cat.h · usb_audio.h · usb_flash_proto.h</td></tr>
+          <tr><td>MIC</td><td>Mic + PTT (RJ45 kiểu Kenwood/Yaesu 8 chân)</td><td class="src">main.h · PTT_Pin PB12</td></tr>
+          <tr><td>KEY</td><td>Manipulator CW — bug thẳng hoặc paddle iambic</td><td class="src">main.h · DIT_Pin PB13, DAH_Pin PB14</td></tr>
+          <tr><td>PHONES</td><td>Tai nghe / loa ngoài, đường audio ra codec</td><td class="src">wm8731.h · SAI + AUDIO_SD PC13</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      Chiều cao mặt sau (55mm) và vị trí cổng mang tính minh hoạ — code không cho biết độ sâu khung máy
+      hay công suất PA thực tế lắp trong máy (memory dự án có nhắc 20/45/100W tuỳ cấu hình + "Ext PA" rời),
+      nên kích thước tản nhiệt/quạt cần khớp lại với PA thực tế trước khi cắt khung.
+    </p>
+  </section>
+
+  <footer>
+    <p><b>Giả định thiết kế:</b> mặt máy 160×100mm chọn theo tỉ lệ ~2.2× vùng LCD để đủ chỗ thao tác một tay
+    (nút ≥10mm, khoảng cách tâm ≥14mm) — không có con số này trong code, đây là lựa chọn công thái học.
+    Bezel LCD 3mm mỗi cạnh là biên an toàn cho dung sai module ST7796 rời (kính hiển thị thực tế thường lớn hơn vùng active).</p>
+    <p><b>Điều nên xác nhận thêm trước khi lên khung CNC/in 3D:</b> độ sâu khung máy (phụ thuộc board RF + tản nhiệt PA),
+    có lắp GPS anten ngoài hay không (USART2 PD6 + 1PPS PA8/PA9 — nếu có cần thêm 1 SMA phụ), và có bổ sung LED TX/RX
+    hay để LCD tự báo màu như hiện tại.</p>
+  </footer>
+
+</div>

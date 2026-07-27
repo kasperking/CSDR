@@ -272,11 +272,17 @@ typedef struct {
   int16_t swr_scale;          /* ×0.01 unit: 100 = ×1.0 (no scaling) */
 } BandCal_t;                  /* 8 bytes */
 
+/* EEPROM layout FROZEN at 11 slots (slot 10 = former 6m band, now unused).
+ * Keeping the stored block at 11 entries preserves the size and CRC of
+ * every existing blob when BAND_COUNT shrinks — no cal reset on upgrade.
+ * Must always be ≥ BAND_COUNT; the RAM array g_band_cal[] stays BAND_COUNT. */
+#define BAND_CAL_SLOTS  11U
+
 typedef struct {
-  uint32_t  magic;             /* BAND_CAL_MAGIC when valid            */
-  BandCal_t band[BAND_COUNT];  /* BAND_COUNT×8 = 88 bytes              */
-  uint32_t  crc32;             /* CRC covers all bytes before this     */
-} BandCalBlock_t;              /* 4 + 88 + 4 = 96 bytes                */
+  uint32_t  magic;                 /* BAND_CAL_MAGIC when valid            */
+  BandCal_t band[BAND_CAL_SLOTS];  /* BAND_CAL_SLOTS×8 = 88 bytes          */
+  uint32_t  crc32;                 /* CRC covers all bytes before this     */
+} BandCalBlock_t;                  /* 4 + 88 + 4 = 96 bytes                */
 
 #define BAND_CAL_MAGIC  0xCA1BCA1BUL
 

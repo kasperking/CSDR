@@ -58,17 +58,19 @@ extern "C" {
 #define BAND_15M     7U
 #define BAND_12M     8U
 #define BAND_10M     9U
-#define BAND_6M      10U
-#define BAND_COUNT   11U
+/* 6m removed: LO ×4 architecture caps CLK0 at 150 MHz → LO ≤ 37.5 MHz
+ * (SI5351_CalcMSDiv ms_div ≥ 6).  EEPROM BandCalBlock_t keeps 11 slots
+ * (BAND_CAL_SLOTS in w25q.h) so stored per-band cal stays valid. */
+#define BAND_COUNT   10U
 
 /* Band frequency edges (Hz) */
 static const uint32_t BAND_FREQ_MIN[BAND_COUNT] = {
   1800000UL,  3500000UL,  5330000UL,  7000000UL, 10100000UL,
- 14000000UL, 18068000UL, 21000000UL, 24890000UL, 28000000UL, 50000000UL
+ 14000000UL, 18068000UL, 21000000UL, 24890000UL, 28000000UL
 };
 static const uint32_t BAND_FREQ_MAX[BAND_COUNT] = {
   2000000UL,  4000000UL,  5410000UL,  7300000UL, 10150000UL,
- 14350000UL, 18168000UL, 21450000UL, 24990000UL, 29700000UL, 54000000UL
+ 14350000UL, 18168000UL, 21450000UL, 24990000UL, 29700000UL
 };
 
 /* BPF filter select channel (S1:S0) — matches truth table exactly.

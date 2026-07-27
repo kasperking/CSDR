@@ -69,7 +69,7 @@ static const char *keyer_strs[] = { "STRAIGHT", "IAMBIC-A", "IAMBIC-B" };
 static const char *bkin_strs[]  = { "OFF", "SEMI", "FULL" };
 static const char *step_strs[] = { "1Hz","10Hz","100Hz","1KHz","10KHz","100KHz" };
 static const char *band_strs[] = { "160m","80m","60m","40m","30m",
-                                    "20m","17m","15m","12m","10m","6m" };
+                                    "20m","17m","15m","12m","10m" };
 static const char *mode_strs[] = { "AM","FM","USB","LSB","CW","DIGU","DIGL" };
 static const char *usb_strs[]       = { "Off","On" };
 static const char *iq_stream_strs[] = { "IQ","Demod" };
@@ -287,7 +287,7 @@ void Menu_Init(Menu_Handle_t *m)
 
   /* ── Tuning group (parent = 2) ──────────────────────────── */
   m->items[25] = (MenuItem_t){ "Step",MENU_TYPE_ENUM,0,0,0,&_step_val,step_strs,6U, NULL,NULL,2 };
-  m->items[26] = (MenuItem_t){ "Band",MENU_TYPE_ENUM,0,0,0,&_band_val,band_strs,11U,NULL,NULL,2 };
+  m->items[26] = (MenuItem_t){ "Band",MENU_TYPE_ENUM,0,0,0,&_band_val,band_strs,10U,NULL,NULL,2 };
   m->items[27] = (MenuItem_t){ "Mode",MENU_TYPE_ENUM,0,0,0,&_mode_val,mode_strs,7U, NULL,NULL,2 };
   m->items[56] = (MenuItem_t){ "Marker",MENU_TYPE_ENUM,0,0,0,&_marker_val,marker_strs,2U,NULL,NULL,2 };
 
