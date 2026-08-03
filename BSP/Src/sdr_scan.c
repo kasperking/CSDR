@@ -105,8 +105,8 @@ static uint16_t swr_to_y(uint16_t swr_x100)
  * ════════════════════════════════════════════════ */
 static void scan_tx_on(uint32_t freq_hz)
 {
-    /* Switch BPF relay bank to TX (OE1=1, OE2=0) before closing T/R relay.
-     * BPF_SetMode() includes the 2 ms relay-release gap internally. */
+    /* Switch BPF mux to the TX side (OE1=1, OE2=0, active-LOW OEs) before
+     * closing the T/R relay.  BPF_SetMode() is break-before-make internally. */
     PA_Protect_OnTxStart();
     BPF_SetMode(RF_MODE_TX);
     if (g_sdr.si5351_ok)
@@ -117,7 +117,7 @@ static void scan_tx_on(uint32_t freq_hz)
 static void scan_tx_off(uint32_t restore_rx_hz)
 {
     HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
-    /* Switch BPF relay bank back to RX (OE1=0, OE2=1). */
+    /* Switch BPF mux back to the RX side (OE1=0, OE2=1). */
     BPF_SetMode(RF_MODE_RX);
     if (g_sdr.si5351_ok)
         SI5351_SetQSDFrequency(&g_si5351, restore_rx_hz + CSDR_RxLoOffset());

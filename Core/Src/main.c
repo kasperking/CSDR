@@ -1150,7 +1150,11 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, LPF_A0_Pin|LPF_A1_Pin|LPF_A2_Pin|BPF_S1_Pin
-                          |BPF_S2_Pin|BPF_OE1_Pin|BPF_OE2_Pin|FLASH_CS_Pin, GPIO_PIN_RESET);
+                          |BPF_S2_Pin|FLASH_CS_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level — BPF OEs are active-LOW: park both HIGH
+    (both mux sides off, TX/RX paths isolated) until BPF_LPF_Init selects RX */
+  HAL_GPIO_WritePin(GPIOA, BPF_OE1_Pin|BPF_OE2_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, ATT_DAT_Pin|ATT_CLK_Pin, GPIO_PIN_RESET);

@@ -345,7 +345,11 @@ Keeps QSD/QSE off the exact receive frequency → suppresses LO self-reception a
 
 ## 11. RF Front-End
 
-### Band-Pass Filter (BPF) — FST3253 analog mux
+### Band-Pass Filter (BPF) — 2× SN74CBT3253 dual 4:1 FET mux
+
+Two chips bracket the four LC filters: U7 on the QSD/QSE side, U8 on the
+antenna side.  Side 1 (1A/1B1..1B4) is the RX path, side 2 (2A/2B1..2B4)
+is the TX path; S0/S1 select the filter for both sides at once.
 
 | S1:S0 | Pins | Filter |
 |-------|------|--------|
@@ -354,7 +358,8 @@ Keeps QSD/QSE off the exact receive frequency → suppresses LO self-reception a
 | 10 | | 15–10 m |
 | 11 | | 80 m |
 
-PA6=OE1 (TX path), PA7=OE2 (RX path) — always complementary.
+PA6=OE1 (RX side 1), PA7=OE2 (TX side 2) — **active-LOW**, always
+complementary (both LOW would join the TX and RX paths).
 
 ### Low-Pass Filter (LPF) — 74HC238 3-to-8 decoder
 

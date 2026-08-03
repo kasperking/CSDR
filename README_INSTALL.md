@@ -319,7 +319,7 @@ CSDR/
 │   │   ├── lcd_panel_config.h  ← Panel select (ST7796/ST7789)
 │   │   ├── lcd_test_fmc.h      ← FMC bus test (dev only)
 │   │   ├── hw_config_active.h  ← AUTO-GENERATED bởi hw_config.py
-│   │   ├── bpf_lpf.h           ← BPF FST3253 + LPF 74HC238
+│   │   ├── bpf_lpf.h           ← BPF SN74CBT3253 + LPF 74HC238
 │   │   ├── boot_dfu.h          ← DFU bootloader entry
 │   │   ├── cal.h               ← Calibration parameters
 │   │   ├── diag.h              ← Debug/diagnostic vars
@@ -415,7 +415,7 @@ CSDR/
 | I2C1 — WM8731 + Si5351 | PB6 (SCL), PB7 (SDA) |
 | I2C2 — PCA9555 keys | PB10 (SCL), PB11 (SDA) |
 | Encoder TIM3 quadrature | PB4 (CH1), PB5 (CH2), PA10 (SW) |
-| BPF FST3253 | PA4 (S1), PA5 (S2), PA6 (OE1/TX), PA7 (OE2/RX) |
+| BPF SN74CBT3253 ×2 | PA4 (S0), PA5 (S1), PA6 (OE1/RX, active-LOW), PA7 (OE2/TX, active-LOW) |
 | LPF 74HC238 | PA0 (A0), PA1 (A1), PA2 (A2) |
 | PE4302 ATT (bit-bang SPI) | PC4 (DATA), PC5 (CLK), PB0 (LATCH) |
 | Flash W25Q128 (SPI3) | PC10 (SCK), PC11 (MISO), PC12 (MOSI), PA15 (CS) |

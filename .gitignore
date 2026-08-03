@@ -9,3 +9,4 @@ Release/
 *.su
 *.jlink
 summerize.txt
+.history/

@@ -2,14 +2,15 @@
 /**
   ******************************************************************************
   * @file    bpf_lpf.h
-  * @brief   Band-Pass Filter (FST3253) + Low-Pass Filter (74HC238) Driver
+  * @brief   Band-Pass Filter (SN74CBT3253) + Low-Pass Filter (74HC238) Driver
   *
-  *  ── BPF (FST3253 Analog Multiplexer) ────────────────────
-  *  PA4 BPF_S1  – relay select bit 0 (S0)
-  *  PA5 BPF_S2  – relay select bit 1 (S1)
-  *  PA6 BPF_OE1 – active-HIGH enable, TX relay bank (1B1..1B4)
-  *  PA7 BPF_OE2 – active-HIGH enable, RX relay bank (2B1..2B4)
-  *  OE1 and OE2 are ALWAYS complementary — never both HIGH.
+  *  ── BPF (2× SN74CBT3253 dual 4:1 FET mux, U7 QSD-side / U8 ant-side) ──
+  *  PA4 BPF_S1  – channel select bit 0 → S0 pin (both chips)
+  *  PA5 BPF_S2  – channel select bit 1 → S1 pin (both chips)
+  *  PA6 BPF_OE1 – active-LOW enable, RX side 1 (1B1..1B4; 1A=RX_QSD_IN/RX_IN)
+  *  PA7 BPF_OE2 – active-LOW enable, TX side 2 (2B1..2B4; 2A=TX_BPF_IN/TX_PRE_IN)
+  *  OE1 and OE2 are ALWAYS complementary — never both LOW
+  *  (both LOW would join the TX and RX paths through the filters).
   *
   *  S1:S0 = 00 → filter 0: 20/30m
   *  S1:S0 = 01 → filter 1: 40m
@@ -90,8 +91,8 @@ typedef enum {
 } bpf_filter_t;
 
 typedef enum {
-  RF_MODE_RX = 0U,    /* OE1=0, OE2=1 (RX relay bank active)  */
-  RF_MODE_TX = 1U,    /* OE1=1, OE2=0 (TX relay bank active)  */
+  RF_MODE_RX = 0U,    /* OE1=0, OE2=1 — side 1 on (RX path), active-LOW */
+  RF_MODE_TX = 1U,    /* OE1=1, OE2=0 — side 2 on (TX path), active-LOW */
 } rf_mode_t;
 
 /* ── LPF decoder band enum ──────────────────────────────────
@@ -113,22 +114,22 @@ typedef enum {
 /**
   * @brief  Initialise BPF and LPF GPIO.
   *         Default: RF_MODE_RX, BPF_20_30M filter.
-  *         OE1=0 (TX bank off), OE2=1 (RX bank on), T_R_SW=LOW.
+  *         OE1=0 (RX side on), OE2=1 (TX side off), T_R_SW=LOW.
   */
 void BPF_LPF_Init(void);
 
 /**
-  * @brief  Central BPF relay control — the ONLY place OE1/OE2 are written.
+  * @brief  Central BPF mux control — the ONLY place OE1/OE2 are written.
   *
-  *  Glitch-free sequence:
-  *   1. Disable both OEs (both relay banks released).
-  *   2. HAL_Delay(2 ms) — relay release time.
-  *   3. Set S1:S0 select bits for requested filter.
-  *   4. Assert OE1 (TX) or OE2 (RX) — never both.
+  *  Break-before-make sequence (OEs are active-LOW):
+  *   1. Drive both OEs HIGH — both mux sides off, filters isolated.
+  *   2. Set S1:S0 select bits for requested filter.
+  *   3. Drive exactly one OE LOW: OE2 (TX) or OE1 (RX) — never both.
+  *  No settle delay needed — CBT3253 FET switches in nanoseconds.
   *
   *  Truth table enforced:
-  *   TX: OE1=1, OE2=0 — engages TX relay bank (1B1..1B4).
-  *   RX: OE1=0, OE2=1 — engages RX relay bank (2B1..2B4).
+  *   TX: OE1=1, OE2=0 — side 2 on (2B1..2B4, TX path).
+  *   RX: OE1=0, OE2=1 — side 1 on (1B1..1B4, RX path).
   *
   * @param  mode    RF_MODE_TX or RF_MODE_RX
   * @param  filter  BPF_20_30M / BPF_40M / BPF_15_10M / BPF_80M

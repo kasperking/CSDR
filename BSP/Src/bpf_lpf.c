@@ -1,7 +1,7 @@
 /* USER CODE BEGIN Header */
 /**
   * @file bpf_lpf.c
-  * @brief FST3253 BPF + 74HC238 LPF band switching
+  * @brief SN74CBT3253 BPF mux + 74HC238 LPF band switching
   */
 /* USER CODE END Header */
 #include "bpf_lpf.h"
@@ -9,10 +9,11 @@
 
 /* USER CODE BEGIN 0 */
 /* All pins from Core/Inc/main.h (CubeMX generated):
- *  BPF: BPF_S0=PA4 (S0/bit0), BPF_S1=PA5 (S1/bit1) — relay select
- *       BPF_OE1=PA6 — active-HIGH, enables TX relay bank (1B1..1B4)
- *       BPF_OE2=PA7 — active-HIGH, enables RX relay bank (2B1..2B4)
- *       OE1 and OE2 must ALWAYS be complementary (never both HIGH).
+ *  BPF: BPF_S0=PA4 (S0/bit0), BPF_S1=PA5 (S1/bit1) — mux channel select
+ *       BPF_OE1=PA6 — active-LOW, enables RX side 1 (1B1..1B4)
+ *       BPF_OE2=PA7 — active-LOW, enables TX side 2 (2B1..2B4)
+ *       OE1 and OE2 must ALWAYS be complementary (never both LOW —
+ *       that would join the TX and RX paths through the filters).
  *  LPF: LPF_A0=PA0, LPF_A1=PA1, LPF_A2=PA2 (74HC238 address)
  *  T/R: T_R_SW=PB2 (relay control) */
 
@@ -92,13 +93,13 @@ static void set_lpf_ch(uint8_t ch)
 void BPF_LPF_Init(void)
 {
   /* USER CODE BEGIN BPF_LPF_Init_0 */
-  /* BPF: start in RX mode, first filter.
-   * OE1=LOW (TX bank off), OE2=HIGH (RX bank on). */
+  /* BPF: start in RX mode, first filter.  OEs are active-LOW:
+   * OE1=LOW (RX side 1 on), OE2=HIGH (TX side 2 off). */
   s_bpf_filter = BPF_20_30M;
   s_rf_mode    = RF_MODE_RX;
   set_bpf_ch((uint8_t)BPF_20_30M);
-  HAL_GPIO_WritePin(BPF_OE1_GPIO_Port, BPF_OE1_Pin, GPIO_PIN_RESET); /* TX bank off */
-  HAL_GPIO_WritePin(BPF_OE2_GPIO_Port, BPF_OE2_Pin, GPIO_PIN_SET);   /* RX bank on  */
+  HAL_GPIO_WritePin(BPF_OE2_GPIO_Port, BPF_OE2_Pin, GPIO_PIN_SET);   /* TX side off */
+  HAL_GPIO_WritePin(BPF_OE1_GPIO_Port, BPF_OE1_Pin, GPIO_PIN_RESET); /* RX side on  */
 
   /* LPF: select Y7 (LPF_OFF) — all relay coils released at power-on */
   s_lpf_band = LPF_OFF;
@@ -112,24 +113,24 @@ void BPF_LPF_Init(void)
 void BPF_Set(rf_mode_t mode, bpf_filter_t filter)
 {
   /* USER CODE BEGIN BPF_Set_0 */
-  /* Step 1: de-energise both relay banks to prevent crowbar during switching */
-  HAL_GPIO_WritePin(BPF_OE1_GPIO_Port, BPF_OE1_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(BPF_OE2_GPIO_Port, BPF_OE2_Pin, GPIO_PIN_RESET);
+  /* Step 1: break-before-make — both OEs HIGH (active-LOW → both sides off),
+   * so the select-bit change below cannot momentarily route a wrong channel
+   * and the TX/RX paths are never joined. */
+  HAL_GPIO_WritePin(BPF_OE1_GPIO_Port, BPF_OE1_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(BPF_OE2_GPIO_Port, BPF_OE2_Pin, GPIO_PIN_SET);
 
-  /* Step 2: wait for relay armatures to release */
-  HAL_Delay(2U);
-
-  /* Step 3: set filter select bits before energising */
+  /* Step 2: set filter select bits while both sides are off.
+   * No settle delay needed — CBT3253 FET switches in nanoseconds. */
   set_bpf_ch((uint8_t)filter);
   s_bpf_filter = filter;
 
-  /* Step 4: assert exactly one OE — TX→OE1=HIGH, RX→OE2=HIGH */
+  /* Step 3: drive exactly one OE LOW — TX→OE2 (side 2), RX→OE1 (side 1) */
   if (mode == RF_MODE_TX) {
-    HAL_GPIO_WritePin(BPF_OE1_GPIO_Port, BPF_OE1_Pin, GPIO_PIN_SET);
-    /* OE2 remains RESET */
+    HAL_GPIO_WritePin(BPF_OE2_GPIO_Port, BPF_OE2_Pin, GPIO_PIN_RESET);
+    /* OE1 remains HIGH (RX side off) */
   } else {
-    HAL_GPIO_WritePin(BPF_OE2_GPIO_Port, BPF_OE2_Pin, GPIO_PIN_SET);
-    /* OE1 remains RESET */
+    HAL_GPIO_WritePin(BPF_OE1_GPIO_Port, BPF_OE1_Pin, GPIO_PIN_RESET);
+    /* OE2 remains HIGH (TX side off) */
   }
   s_rf_mode = mode;
   /* USER CODE END BPF_Set_0 */
