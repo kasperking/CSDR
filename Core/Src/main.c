@@ -1149,12 +1149,14 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, LPF_A0_Pin|LPF_A1_Pin|LPF_A2_Pin|BPF_S1_Pin
-                          |BPF_S2_Pin|FLASH_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, LPF_A0_Pin|LPF_A1_Pin|LPF_A2_Pin|BPF_SRCLK_Pin
+                          |BPF_RCLK_Pin|BPF_SER_Pin|FLASH_CS_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level — BPF OEs are active-LOW: park both HIGH
-    (both mux sides off, TX/RX paths isolated) until BPF_LPF_Init selects RX */
-  HAL_GPIO_WritePin(GPIOA, BPF_OE1_Pin|BPF_OE2_Pin, GPIO_PIN_SET);
+  /*Configure GPIO pin Output Level — 74AHC595 OE is active-LOW and tri-states
+    Q0-Q7 when HIGH: park HIGH at boot so the 3253 OE pull-ups hold every mux
+    side off (isolated) until BPF_LPF_Init shifts a valid word in and pulls
+    this LOW. Do not rely on the GPIO reset default — regen can revert it. */
+  HAL_GPIO_WritePin(GPIOA, BPF_OE_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, ATT_DAT_Pin|ATT_CLK_Pin, GPIO_PIN_RESET);
@@ -1165,10 +1167,10 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level — LCD_RESET deasserted high before FMC/LCD init */
   HAL_GPIO_WritePin(LCD_RESET_GPIO_Port, LCD_RESET_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pins : LPF_A0_Pin LPF_A1_Pin LPF_A2_Pin BPF_S1_Pin
-                           BPF_S2_Pin BPF_OE1_Pin BPF_OE2_Pin FLASH_CS_Pin */
-  GPIO_InitStruct.Pin = LPF_A0_Pin|LPF_A1_Pin|LPF_A2_Pin|BPF_S1_Pin
-                          |BPF_S2_Pin|BPF_OE1_Pin|BPF_OE2_Pin|FLASH_CS_Pin;
+  /*Configure GPIO pins : LPF_A0_Pin LPF_A1_Pin LPF_A2_Pin BPF_SRCLK_Pin
+                           BPF_RCLK_Pin BPF_OE_Pin BPF_SER_Pin FLASH_CS_Pin */
+  GPIO_InitStruct.Pin = LPF_A0_Pin|LPF_A1_Pin|LPF_A2_Pin|BPF_SRCLK_Pin
+                          |BPF_RCLK_Pin|BPF_OE_Pin|BPF_SER_Pin|FLASH_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;

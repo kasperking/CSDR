@@ -2,20 +2,43 @@
 /**
   ******************************************************************************
   * @file    bpf_lpf.h
-  * @brief   Band-Pass Filter (SN74CBT3253) + Low-Pass Filter (74HC238) Driver
+  * @brief   Band-Pass Filter (4× SN74CBT3253 via 74AHC595) + Low-Pass Filter
+  *          (74HC238) Driver
   *
-  *  ── BPF (2× SN74CBT3253 dual 4:1 FET mux, U7 QSD-side / U8 ant-side) ──
-  *  PA4 BPF_S1  – channel select bit 0 → S0 pin (both chips)
-  *  PA5 BPF_S2  – channel select bit 1 → S1 pin (both chips)
-  *  PA6 BPF_OE1 – active-LOW enable, RX side 1 (1B1..1B4; 1A=RX_QSD_IN/RX_IN)
-  *  PA7 BPF_OE2 – active-LOW enable, TX side 2 (2B1..2B4; 2A=TX_BPF_IN/TX_PRE_IN)
-  *  OE1 and OE2 are ALWAYS complementary — never both LOW
-  *  (both LOW would join the TX and RX paths through the filters).
+  *  ── BPF (4× SN74CBT3253 dual 4:1 FET mux, 2 banks of {QSD-side, ant-side}
+  *         pair, driven by one 74AHC595 shift register — NOT direct GPIO) ──
+  *  PA4 BPF_SRCLK – 595 shift clock
+  *  PA5 BPF_RCLK  – 595 storage-register latch (pulse HIGH then LOW to commit)
+  *  PA6 BPF_OE    – 595 chip output-enable, active-LOW. Tri-states Q0..Q7
+  *                  (all mux OE pins float) when HIGH. Pull-ups on the 3253
+  *                  OE nets hold every mux side OFF while floating, so this
+  *                  pin must be driven HIGH by the time the MCU takes over
+  *                  and must stay HIGH until the first valid word has been
+  *                  shifted + latched — see BPF_LPF_Init().
+  *  PA7 BPF_SER   – 595 serial data in
   *
-  *  S1:S0 = 00 → filter 0: 20/30m
-  *  S1:S0 = 01 → filter 1: 40m
-  *  S1:S0 = 10 → filter 2: 15-10m
-  *  S1:S0 = 11 → filter 3: 80m
+  *  595 output bit → function (see bpf_lpf.c bpf595_shift() / BPF595_BIT_*):
+  *    QA (bit0) = S0   — filter channel select bit 0, shared by all 4 chips
+  *    QB (bit1) = S1   — filter channel select bit 1, shared by all 4 chips
+  *    QC (bit2) = OE_1.1 — bank A (chip pair 1) RX side enable, active-LOW
+  *    QD (bit3) = OE_1.2 — bank A (chip pair 1) TX side enable, active-LOW
+  *    QE (bit4) = OE_2.1 — bank B (chip pair 2) RX side enable, active-LOW
+  *    QF (bit5) = OE_2.2 — bank B (chip pair 2) TX side enable, active-LOW
+  *    QG, QH    = unused (reserved for future expansion)
+  *  Exactly one of OE_1.1/OE_1.2/OE_2.1/OE_2.2 may be LOW at a time — never
+  *  two at once (would join TX/RX paths, or join bank A/B, through the
+  *  filters). BPF_Set() enforces this with a break-before-make shift+latch.
+  *
+  *  channel = (bank << 2) | (S1 << 1) | S0 — 7 of 8 populated, redesigned
+  *  2026-08-05 to give each band its own (or near-own) filter:
+  *   ch0  bank A S1=0 S0=0 — 1.5-2.5 MHz   (160m)
+  *   ch1  bank A S1=0 S0=1 — 2.4-4.5 MHz   (80m)
+  *   ch2  bank A S1=1 S0=0 — 4.6-7.5 MHz   (60m, 40m)
+  *   ch3  bank A S1=1 S0=1 — 7.5-12.3 MHz  (30m)
+  *   ch4  bank B S1=0 S0=0 — 11-14.8 MHz   (20m)
+  *   ch5  bank B S1=0 S0=1 — 13.8-22.1 MHz (17m)
+  *   ch6  bank B S1=1 S0=0 — 19-32 MHz     (15m, 12m, 10m)
+  *   ch7  bank B S1=1 S0=1 — not populated (spare)
   *
   *  ── LPF (74HC238 3-to-8 Decoder) ────────────────────────
   *  PA0 LPF_A0, PA1 LPF_A1, PA2 LPF_A2 – decoder address (A2:A1:A0)
@@ -74,25 +97,23 @@ static const uint32_t BAND_FREQ_MAX[BAND_COUNT] = {
  14350000UL, 18168000UL, 21450000UL, 24990000UL, 29700000UL
 };
 
-/* BPF filter select channel (S1:S0) — matches truth table exactly.
- * ch = (S1 << 1) | S0; written to BPF_S2_Pin (bit1) / BPF_S1_Pin (bit0). */
-#define BPF_CH_20_30M   0U  /* S1=0 S0=0 */
-#define BPF_CH_40M      1U  /* S1=0 S0=1 */
-#define BPF_CH_15_10M   2U  /* S1=1 S0=0 */
-#define BPF_CH_80M      3U  /* S1=1 S0=1 */
-
 /* ── RF mode / filter enums ─────────────────────────────── */
 
+/* bpf_filter_t value = (bank << 2) | (S1 << 1) | S0 — see header comment
+ * above for the full ch0-ch7 frequency table. ch7 not populated. */
 typedef enum {
-  BPF_20_30M  = 0U,   /* ch0: S1=0 S0=0 — 14/10 MHz  */
-  BPF_40M     = 1U,   /* ch1: S1=0 S0=1 — 7 MHz       */
-  BPF_15_10M  = 2U,   /* ch2: S1=1 S0=0 — 21-28 MHz   */
-  BPF_80M     = 3U,   /* ch3: S1=1 S0=1 — 3.5 MHz     */
+  BPF_160M   = 0U,   /* bankA ch0: S1=0 S0=0 — 1.5-2.5 MHz   (160m) */
+  BPF_80M    = 1U,   /* bankA ch1: S1=0 S0=1 — 2.4-4.5 MHz   (80m)  */
+  BPF_40M    = 2U,   /* bankA ch2: S1=1 S0=0 — 4.6-7.5 MHz   (60m, 40m) */
+  BPF_30M    = 3U,   /* bankA ch3: S1=1 S0=1 — 7.5-12.3 MHz  (30m)  */
+  BPF_20M    = 4U,   /* bankB ch0: S1=0 S0=0 — 11-14.8 MHz   (20m)  */
+  BPF_17M    = 5U,   /* bankB ch1: S1=0 S0=1 — 13.8-22.1 MHz (17m)  */
+  BPF_15_10M = 6U,   /* bankB ch2: S1=1 S0=0 — 19-32 MHz (15m, 12m, 10m) */
 } bpf_filter_t;
 
 typedef enum {
-  RF_MODE_RX = 0U,    /* OE1=0, OE2=1 — side 1 on (RX path), active-LOW */
-  RF_MODE_TX = 1U,    /* OE1=1, OE2=0 — side 2 on (TX path), active-LOW */
+  RF_MODE_RX = 0U,    /* enables the bank's side-1 (RX) OE, active-LOW */
+  RF_MODE_TX = 1U,    /* enables the bank's side-2 (TX) OE, active-LOW */
 } rf_mode_t;
 
 /* ── LPF decoder band enum ──────────────────────────────────
@@ -112,27 +133,30 @@ typedef enum {
 /* Exported functions prototypes ---------------------------------------------*/
 
 /**
-  * @brief  Initialise BPF and LPF GPIO.
-  *         Default: RF_MODE_RX, BPF_20_30M filter.
-  *         OE1=0 (RX side on), OE2=1 (TX side off), T_R_SW=LOW.
+  * @brief  Initialise BPF and LPF GPIO, and bring up the 595 shift chain.
+  *         Default: RF_MODE_RX, BPF_160M filter.
+  *         Shifts the RX/filter-0 word into the 595 storage register while
+  *         BPF_OE is still HIGH (595 outputs Hi-Z), then pulls BPF_OE LOW —
+  *         the 3253 mux sides never see anything but the intended word.
+  *         T_R_SW=LOW.
   */
 void BPF_LPF_Init(void);
 
 /**
-  * @brief  Central BPF mux control — the ONLY place OE1/OE2 are written.
+  * @brief  Central BPF mux control — the ONLY place the 595 word is built
+  *         and shifted out.
   *
-  *  Break-before-make sequence (OEs are active-LOW):
-  *   1. Drive both OEs HIGH — both mux sides off, filters isolated.
-  *   2. Set S1:S0 select bits for requested filter.
-  *   3. Drive exactly one OE LOW: OE2 (TX) or OE1 (RX) — never both.
-  *  No settle delay needed — CBT3253 FET switches in nanoseconds.
-  *
-  *  Truth table enforced:
-  *   TX: OE1=1, OE2=0 — side 2 on (2B1..2B4, TX path).
-  *   RX: OE1=0, OE2=1 — side 1 on (1B1..1B4, RX path).
+  *  Break-before-make sequence, done as two shift+latch cycles:
+  *   1. Shift+latch a word with all 4 OE bits HIGH — every mux side off,
+  *      filters isolated (bank A and bank B, RX and TX, all disabled).
+  *   2. Shift+latch a word with S1:S0 set for the requested filter and
+  *      exactly one OE bit LOW (the bank/side being requested).
+  *  No settle delay needed between the two latches — CBT3253 FET switches
+  *  in nanoseconds and the 595 storage register updates atomically on RCLK.
   *
   * @param  mode    RF_MODE_TX or RF_MODE_RX
-  * @param  filter  BPF_20_30M / BPF_40M / BPF_15_10M / BPF_80M
+  * @param  filter  BPF_160M / BPF_80M / BPF_40M / BPF_30M / BPF_20M /
+  *                 BPF_17M / BPF_15_10M
   */
 void BPF_Set(rf_mode_t mode, bpf_filter_t filter);
 

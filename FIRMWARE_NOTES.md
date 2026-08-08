@@ -345,21 +345,42 @@ Keeps QSD/QSE off the exact receive frequency → suppresses LO self-reception a
 
 ## 11. RF Front-End
 
-### Band-Pass Filter (BPF) — 2× SN74CBT3253 dual 4:1 FET mux
+### Band-Pass Filter (BPF) — 4× SN74CBT3253 dual 4:1 FET mux via 74AHC595
 
-Two chips bracket the four LC filters: U7 on the QSD/QSE side, U8 on the
-antenna side.  Side 1 (1A/1B1..1B4) is the RX path, side 2 (2A/2B1..2B4)
-is the TX path; S0/S1 select the filter for both sides at once.
+Two banks of chip pairs bracket the seven LC filters (bank A: U8 QSD-side +
+U10 ant-side; bank B: U9 QSD-side + U11 ant-side).  Side 1 (1A/1B1..1B4) is
+the RX path, side 2 (2A/2B1..2B4) is the TX path; S0/S1 select the filter
+within the enabled bank for both sides at once.
 
-| S1:S0 | Pins | Filter |
-|-------|------|--------|
-| 00 | PA4:PA5 | 20/30 m |
-| 01 | | 40 m |
-| 10 | | 15–10 m |
-| 11 | | 80 m |
+All control lines come from one 74AHC595 shift register (U7), not direct
+GPIO: PA4=BPF_SRCLK, PA5=BPF_RCLK, PA7=BPF_SER, PA6=BPF_OE (the 595's own
+active-LOW output enable — held HIGH at boot so the outputs stay Hi-Z until
+the first valid word is latched; pull-ups on the 3253 OE nets keep every
+mux side off while floating).
 
-PA6=OE1 (RX side 1), PA7=OE2 (TX side 2) — **active-LOW**, always
-complementary (both LOW would join the TX and RX paths).
+| 595 bit | Signal | Function |
+|---------|--------|----------|
+| QA | S0 | select bit 0, all 4 chips |
+| QB | S1 | select bit 1, all 4 chips |
+| QC | OE_1.1 | bank A RX enable, active-LOW |
+| QD | OE_1.2 | bank A TX enable, active-LOW |
+| QE | OE_2.1 | bank B RX enable, active-LOW |
+| QF | OE_2.2 | bank B TX enable, active-LOW |
+
+Exactly one OE bit LOW at any time (two at once would join TX/RX paths or
+bank A/B).  `BPF_Set()` shifts an all-off word, then the target word
+(break-before-make).
+
+| ch | Bank | S1:S0 | Passband | Bands |
+|----|------|-------|----------|-------|
+| 0 | A | 00 | 1.5–2.5 MHz | 160 m |
+| 1 | A | 01 | 2.4–4.5 MHz | 80 m |
+| 2 | A | 10 | 4.6–7.5 MHz | 60/40 m |
+| 3 | A | 11 | 7.5–12.3 MHz | 30 m |
+| 4 | B | 00 | 11–14.8 MHz | 20 m |
+| 5 | B | 01 | 13.8–22.1 MHz | 17 m |
+| 6 | B | 10 | 19–32 MHz | 15/12/10 m |
+| 7 | B | 11 | *(not populated)* | — |
 
 ### Low-Pass Filter (LPF) — 74HC238 3-to-8 decoder
 
