@@ -31,9 +31,9 @@
 #include <math.h>
 
 /* ── Key sampling ────────────────────────────────────────────────────────
- * ENC_SW: direct MCU input (PB3) — use main.h macros.
+ * ENC_SW: direct MCU input (PB15) — use main.h macros.
  * F1/F2/F4: PCA9555 expander — use Key_InitPCA with g_pca9555_raw cache. */
-extern TIM_HandleTypeDef htim3;   /* encoder timer (TIM3_CH1/CH2 = PB4/PB5) */
+extern TIM_HandleTypeDef htim4;   /* encoder timer (TIM4_CH1/CH2 = PD12/PD13) */
 
 /* DSP pointer set by Cal_Run — used by all auto-cal routines */
 static DSP_State_t *s_dsp;
@@ -748,18 +748,18 @@ static uint32_t s_enc_last = 0U;
 
 static int32_t enc_read_delta(void)
 {
-  uint32_t cnt = __HAL_TIM_GET_COUNTER(&htim3);
+  uint32_t cnt = __HAL_TIM_GET_COUNTER(&htim4);
   int32_t  d   = (int32_t)(cnt - s_enc_last);
   if (d >  2) { s_enc_last = cnt; return  1; }
   if (d < -2) { s_enc_last = cnt; return -1; }
   return 0;
 }
 
-/* Discard accumulated counts: TIM3 keeps counting outside these loops (main
+/* Discard accumulated counts: TIM4 keeps counting outside these loops (main
  * tuning), and pressing the ENC shaft button jiggles it by 1-2 counts. */
 static void enc_flush(void)
 {
-  s_enc_last = __HAL_TIM_GET_COUNTER(&htim3);
+  s_enc_last = __HAL_TIM_GET_COUNTER(&htim4);
 }
 
 /* ── Sub-level loop ─────────────────────────────────────────────────────── */
@@ -934,7 +934,7 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
   Key_Init   (&k_enc, ENC_SW_GPIO_Port, ENC_SW_Pin);
   Key_InitPCA(&k_f4,  &g_pca9555_raw,  PCA_BIT_F4);
   /* The key press that opened the Cal menu may still be held — swallow it,
-   * and drop TIM3 counts accumulated while the main app was tuning. */
+   * and drop TIM4 counts accumulated while the main app was tuning. */
   Key_Sync(&k_enc); Key_Sync(&k_f4);
   enc_flush();
 

@@ -27,14 +27,14 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 typedef struct {
-  TIM_HandleTypeDef *htim;          /*!< TIM3 handle (hardware quadrature) */
+  TIM_HandleTypeDef *htim;          /*!< TIM4 handle (hardware quadrature) */
   uint16_t           cnt_prev;      /*!< Giá trị CNT lần đọc trước         */
   int32_t            raw_accum;     /*!< Bộ tích raw counts (debounce EC11) */
   int32_t            delta;         /*!< Delta tích lũy kể từ GetDelta()   */
   uint32_t           accel_count;   /*!< Bộ đếm gia tốc                    */
   int32_t            accel_mult;    /*!< Hệ số nhân                         */
   uint32_t           last_tick;     /*!< Tick lần đọc trước                 */
-  /* Nút nhấn (polling PB3) */
+  /* Nút nhấn (polling PB15) */
   volatile bool      btn_pressed;   /*!< Nhấn ngắn pending (ISR→main)       */
   volatile bool      btn_long;      /*!< Nhấn dài pending  (ISR→main)       */
   uint32_t           btn_down_tick; /*!< Tick khi press ổn định (sau debounce) */

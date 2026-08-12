@@ -478,29 +478,29 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* hspi)
 void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef* htim_encoder)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  if(htim_encoder->Instance==TIM3)
+  if(htim_encoder->Instance==TIM4)
   {
-    /* USER CODE BEGIN TIM3_MspInit 0 */
+    /* USER CODE BEGIN TIM4_MspInit 0 */
 
-    /* USER CODE END TIM3_MspInit 0 */
+    /* USER CODE END TIM4_MspInit 0 */
     /* Peripheral clock enable */
-    __HAL_RCC_TIM3_CLK_ENABLE();
+    __HAL_RCC_TIM4_CLK_ENABLE();
 
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    /**TIM3 GPIO Configuration
-    PB4 (NJTRST)  ------> TIM3_CH1  (ENC_CH1)
-    PB5           ------> TIM3_CH2  (ENC_CH2)
+    __HAL_RCC_GPIOD_CLK_ENABLE();
+    /**TIM4 GPIO Configuration
+    PD12    ------> TIM4_CH1  (ENC_CH1)
+    PD13    ------> TIM4_CH2  (ENC_CH2)
     */
     GPIO_InitStruct.Pin = ENC_CH1_Pin|ENC_CH2_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
+    HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-    /* USER CODE BEGIN TIM3_MspInit 1 */
+    /* USER CODE BEGIN TIM4_MspInit 1 */
 
-    /* USER CODE END TIM3_MspInit 1 */
+    /* USER CODE END TIM4_MspInit 1 */
 
   }
 
@@ -590,23 +590,23 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim)
   */
 void HAL_TIM_Encoder_MspDeInit(TIM_HandleTypeDef* htim_encoder)
 {
-  if(htim_encoder->Instance==TIM3)
+  if(htim_encoder->Instance==TIM4)
   {
-    /* USER CODE BEGIN TIM3_MspDeInit 0 */
+    /* USER CODE BEGIN TIM4_MspDeInit 0 */
 
-    /* USER CODE END TIM3_MspDeInit 0 */
+    /* USER CODE END TIM4_MspDeInit 0 */
     /* Peripheral clock disable */
-    __HAL_RCC_TIM3_CLK_DISABLE();
+    __HAL_RCC_TIM4_CLK_DISABLE();
 
-    /**TIM3 GPIO Configuration
-    PB4 (NJTRST)  ------> TIM3_CH1  (ENC_CH1)
-    PB5           ------> TIM3_CH2  (ENC_CH2)
+    /**TIM4 GPIO Configuration
+    PD12    ------> TIM4_CH1  (ENC_CH1)
+    PD13    ------> TIM4_CH2  (ENC_CH2)
     */
-    HAL_GPIO_DeInit(GPIOB, ENC_CH1_Pin|ENC_CH2_Pin);
+    HAL_GPIO_DeInit(GPIOD, ENC_CH1_Pin|ENC_CH2_Pin);
 
-    /* USER CODE BEGIN TIM3_MspDeInit 1 */
+    /* USER CODE BEGIN TIM4_MspDeInit 1 */
 
-    /* USER CODE END TIM3_MspDeInit 1 */
+    /* USER CODE END TIM4_MspDeInit 1 */
   }
 
 }

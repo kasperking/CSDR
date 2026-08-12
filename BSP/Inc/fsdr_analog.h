@@ -3,9 +3,9 @@
   ******************************************************************************
   * @file    fsdr_analog.h
   * @brief   FSDR Analog subsystems:
-  *          - Power Management (PB12/PB13 soft on/off)
+  *          - Power Management (PB12 nút PW + PB1 PW_HOLD soft on/off)
   *          - SWR / ALC / Voltage measurement (ADC1/2/3)
-  *          - Fan control + NTC temperature (TIM3_CH1 + ADC1_INP10)
+  *          - Fan control + NTC temperature (TIM17_CH1 + ADC1_INP10)
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -24,7 +24,7 @@ extern "C" {
 
 /* ══════════════════════════════════════════════════════════
  *  POWER MANAGEMENT
- *  PD12 PW      – Power button input (INPUT_PULLUP; LOW = button held)
+ *  PB12 PW      – Power button input (INPUT_PULLUP; LOW = button held)
  *  PB1  PW_HOLD – Power latch output (drive HIGH = keep ON, LOW = cut power)
  *
  *  Sequence bật nguồn:
@@ -106,18 +106,14 @@ uint16_t Analog_Calc_SWR_x100(uint16_t vfor, uint16_t vref);
 
 /* ══════════════════════════════════════════════════════════
  *  FAN CONTROL
- *  PB1 → TIM3_CH4 PWM quạt làm mát
+ *  PB9 → TIM17_CH1 PWM quạt làm mát
  *
  *  Logic:
  *   Temp < FAN_TEMP_START_C  → duty = 0 (tắt)
  *   Temp >= FAN_TEMP_START_C → duty tuyến tính từ MIN→MAX
  *   Temp >= FAN_TEMP_FULL_C  → duty = MAX (full speed)
  *   Temp >= 75°C             → cảnh báo, giảm công suất TX
- *
- *  PWM: TIM3_CH1, period=999 (1kHz @ APB1=120MHz, PSC=119)
  * ══════════════════════════════════════════════════════════ */
-
-extern TIM_HandleTypeDef htim3;
 
 void Fan_Init(void);
 

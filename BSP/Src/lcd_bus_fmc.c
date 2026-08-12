@@ -20,7 +20,7 @@
 
 #include "lcd_bus_fmc.h"
 #include "stm32h7xx_hal.h"
-#include "main.h"      /* LCD_RESET_Pin / LCD_RESET_GPIO_Port (PD13 from .ioc) */
+#include "main.h"      /* LCD_RESET_Pin / LCD_RESET_GPIO_Port (PC8 from .ioc) */
 
 /* ── MPU region 1: FMC LCD space, Strongly-Ordered ──────────────────────── */
 static void fmc_lcd_mpu_config(void)

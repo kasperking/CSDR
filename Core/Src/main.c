@@ -60,7 +60,7 @@ DMA_HandleTypeDef hdma_sai1_b;
 
 SPI_HandleTypeDef hspi3;
 
-TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim8;
 TIM_HandleTypeDef htim17;
 
@@ -84,7 +84,7 @@ static void MX_ADC3_Init(void);
 static void MX_SPI3_Init(void);
 static void MX_FMC_Init(void);
 static void MX_I2C2_Init(void);
-static void MX_TIM3_Init(void);
+static void MX_TIM4_Init(void);
 static void MX_TIM8_Init(void);
 static void MX_TIM17_Init(void);
 /* USER CODE BEGIN PFP */
@@ -290,7 +290,7 @@ int main(void)
    * so all application state is ready before USB IRQs can fire CDC callbacks. */
   MX_FMC_Init();
   MX_I2C2_Init();
-  MX_TIM3_Init();
+  MX_TIM4_Init();
   MX_TIM8_Init();
   MX_TIM17_Init();
   /* USER CODE BEGIN 2 */
@@ -960,29 +960,29 @@ static void MX_TIM17_Init(void)
 }
 
 /**
-  * @brief TIM3 Initialization Function — quadrature encoder (TIM3_CH1=PB4, TIM3_CH2=PB5)
+  * @brief TIM4 Initialization Function — quadrature encoder (TIM4_CH1=PD12, TIM4_CH2=PD13)
   * @param None
   * @retval None
   */
-static void MX_TIM3_Init(void)
+static void MX_TIM4_Init(void)
 {
 
-  /* USER CODE BEGIN TIM3_Init 0 */
+  /* USER CODE BEGIN TIM4_Init 0 */
 
-  /* USER CODE END TIM3_Init 0 */
+  /* USER CODE END TIM4_Init 0 */
 
   TIM_Encoder_InitTypeDef sConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-  /* USER CODE BEGIN TIM3_Init 1 */
+  /* USER CODE BEGIN TIM4_Init 1 */
 
-  /* USER CODE END TIM3_Init 1 */
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
@@ -992,19 +992,19 @@ static void MX_TIM3_Init(void)
   sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
   sConfig.IC2Filter = 10;
-  if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
+  if (HAL_TIM_Encoder_Init(&htim4, &sConfig) != HAL_OK)
   {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN TIM3_Init 2 */
+  /* USER CODE BEGIN TIM4_Init 2 */
 
-  /* USER CODE END TIM3_Init 2 */
+  /* USER CODE END TIM4_Init 2 */
 
 }
 
@@ -1190,31 +1190,24 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PTT_Pin DIT_Pin DAH_Pin */
-  GPIO_InitStruct.Pin = PTT_Pin|DIT_Pin|DAH_Pin;
+  /*Configure GPIO pins : DAH_Pin (PB8) PW_Pin (PB12) ENC_SW_Pin (PB15) */
+  GPIO_InitStruct.Pin = DAH_Pin|PW_Pin|ENC_SW_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PW_Pin PW_HOLD_Pin */
-  GPIO_InitStruct.Pin = PW_Pin|PW_HOLD_Pin;
+  /*Configure GPIO pins : DIT_Pin (PE0) PTT_Pin (PE1) */
+  GPIO_InitStruct.Pin = DIT_Pin|PTT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LCD_RESET_Pin (PD13) */
+  /*Configure GPIO pin : LCD_RESET_Pin (PC8) */
   GPIO_InitStruct.Pin = LCD_RESET_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(LCD_RESET_GPIO_Port, &GPIO_InitStruct);
-
-
-  /*Configure GPIO pin : ENC_SW_Pin */
-  GPIO_InitStruct.Pin = ENC_SW_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(ENC_SW_GPIO_Port, &GPIO_InitStruct);
 
   /*AnalogSwitch Config */
   HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PA0, SYSCFG_SWITCH_PA0_CLOSE);
@@ -1223,8 +1216,8 @@ static void MX_GPIO_Init(void)
   HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PA1, SYSCFG_SWITCH_PA1_CLOSE);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-  /* PA_OC_ALERT (PC6): INA226 ALERT output, active-LOW, falling edge.
-   * NVIC priority 5 — below audio DMA (0) and USB (2). */
+  /* PA_OC_ALERT (PB13): INA226 ALERT output, active-LOW, falling edge.
+   * EXTI15_10_IRQn, priority 5 — below audio DMA (0) and USB (2). */
   GPIO_InitStruct.Pin  = PA_OC_ALERT_GPIO_PIN;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
@@ -1232,13 +1225,13 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_SetPriority(PA_OC_ALERT_EXTI_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(PA_OC_ALERT_EXTI_IRQn);
 
-  /* PCA9555_INT (PB8): GPIO expander INT, active-LOW, falling edge, pull-up.
-   * Shares EXTI9_5_IRQn with PA_OC_ALERT (PC6) at same priority. */
+  /* PCA9555_INT (PB14): GPIO expander INT, active-LOW, falling edge, pull-up.
+   * Shares EXTI15_10_IRQn with PA_OC_ALERT (PB13) at same priority. */
   GPIO_InitStruct.Pin  = PCA9555_INT_PIN;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(PCA9555_INT_PORT, &GPIO_InitStruct);
-  /* NVIC already enabled above for EXTI9_5_IRQn */
+  /* NVIC already enabled above for EXTI15_10_IRQn */
 
   /* AUDIO_SD (PC13): LM4871/NS8002 shutdown, active-LOW.
    * Open-drain so jack NC switch có thể kéo xuống GND song song với MCU.

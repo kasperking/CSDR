@@ -55,7 +55,7 @@ extern SAI_HandleTypeDef  hsai_BlockA1;
 extern SAI_HandleTypeDef  hsai_BlockB1;
 extern I2C_HandleTypeDef  hi2c1;
 extern I2C_HandleTypeDef  hi2c2;    /* PCA9555 button expander (I2C2: PB10/PB11) */
-extern TIM_HandleTypeDef  htim3;    /* Encoder — TIM3 CH1=PB4, CH2=PB5 */
+extern TIM_HandleTypeDef  htim4;    /* Encoder — TIM4 CH1=PD12, CH2=PD13 */
 extern TIM_HandleTypeDef  htim8;    /* Backlight — TIM8_CH4 = PC9 */
 extern TIM_HandleTypeDef  htim17;   /* Fan — TIM17_CH1 = PB9 */
 extern ADC_HandleTypeDef  hadc1;
@@ -732,8 +732,8 @@ void CSDR_Init(void)
   g_cw_keyer.bk_delay_ms   = g_sdr.cw_bk_delay_ms;
   CWKeyer_Init(&g_cw_keyer);
 
-  /* Encoder – TIM3 quadrature (PB4/PB5), initialised as encoder in MX_TIM3_Init */
-  Encoder_Init(&g_encoder, &htim3);
+  /* Encoder – TIM4 quadrature (PD12/PD13), initialised as encoder in MX_TIM4_Init */
+  Encoder_Init(&g_encoder, &htim4);
 
   /* PCA9555 button expander – all function keys on I2C2. */
   Input_Init();
@@ -753,7 +753,7 @@ void CSDR_Init(void)
   Key_InitPCA(&k_band, &g_pca9555_raw, PCA_BIT_BAND);
   Key_InitPCA(&k_mode, &g_pca9555_raw, PCA_BIT_MODE);
   Key_InitPCA(&k_tune, &g_pca9555_raw, PCA_BIT_TUNE);
-  Key_Init(&k_ptt, PTT_GPIO_Port, PTT_Pin);   /* PB12 – direct MCU */
+  Key_Init(&k_ptt, PTT_GPIO_Port, PTT_Pin);   /* PE1 – direct MCU */
 
   /* Analog subsystem */
   Analog_Init();
@@ -827,7 +827,7 @@ void CSDR_Init(void)
   Menu_Init(&g_menu);
 
   /* Start SAI DMA (provides BCLK/LRCK to WM8731) */
-  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
   /* Start TX first - it's MASTER and generates BCLK/LRCK for RX */
   RuntimeDiag_TxHalfFilled(0U);
   RuntimeDiag_TxHalfFilled(1U);

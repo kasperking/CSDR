@@ -2,12 +2,12 @@
 /**
   ******************************************************************************
   * @file    encoder.c
-  * @brief   Encoder BSP – TIM3 hardware quadrature (PB4=CH1, PB5=CH2)
+  * @brief   Encoder BSP – TIM4 hardware quadrature (PD12=CH1, PD13=CH2)
   *
-  *  Đọc TIM3->CNT mỗi 1ms (từ SysTick callback qua Encoder_Poll).
+  *  Đọc TIM4->CNT mỗi 1ms (từ SysTick callback qua Encoder_Poll).
   *  Delta = CNT_now - CNT_prev (signed 16-bit → xử lý wrap-around).
   *  Gia tốc: đọc nhanh nhiều xung → nhân hệ số.
-  *  Nút ENC_SW (PB3): polling có debounce + long press.
+  *  Nút ENC_SW (PB15): polling có debounce + long press.
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -26,7 +26,7 @@
 #define ENC_ACCEL_THRESH_HI   30U
 #define ENC_ACCEL_THRESH_MED  15U
 #define ENC_ACCEL_THRESH_LO    6U
-/* EC11 in TIM3 X4 mode = 4 quadrature counts per physical detent.
+/* EC11 in TIM4 X4 mode = 4 quadrature counts per physical detent.
  * Accumulate raw counts; only fire a step when full detent reached.
  * Bounce < 4 counts is silently discarded. Delta is scaled ×COUNTS_PER_STEP
  * so VFO sensitivity is unchanged vs the old direct-accumulation code. */
@@ -47,7 +47,7 @@ Encoder_t g_encoder;
 /**
   * @brief  Khởi tạo encoder (gọi sau HAL_TIM_Encoder_Start).
   * @param  enc   Encoder handle
-  * @param  htim  TIM3 handle (đã init bởi MX_TIM3_Init)
+  * @param  htim  TIM4 handle (đã init bởi MX_TIM4_Init)
   */
 void Encoder_Init(Encoder_t *enc, TIM_HandleTypeDef *htim)
 {
@@ -75,9 +75,9 @@ void Encoder_Init(Encoder_t *enc, TIM_HandleTypeDef *htim)
 /**
   * @brief  Polling encoder – gọi mỗi 1ms từ HAL_SYSTICK_Callback.
   *
-  *  1. Đọc TIM3->CNT, tính delta (16-bit signed để xử lý wrap-around 0/65535).
+  *  1. Đọc TIM4->CNT, tính delta (16-bit signed để xử lý wrap-around 0/65535).
   *  2. Tính gia tốc: |delta| lớn trong thời gian ngắn → nhân hệ số.
-  *  3. Đọc ENC_SW (PB3) với debounce & long press.
+  *  3. Đọc ENC_SW (PB15) với debounce & long press.
   *
   * @param  enc  Encoder handle
   */
@@ -85,7 +85,7 @@ void Encoder_Poll(Encoder_t *enc)
 {
   /* USER CODE BEGIN Encoder_Poll_0 */
 
-  /* ── 1. Đọc TIM3 CNT ─────────────────────────────────────── */
+  /* ── 1. Đọc TIM4 CNT ─────────────────────────────────────── */
   uint16_t cnt_now = (uint16_t)__HAL_TIM_GET_COUNTER(enc->htim);
   int16_t  raw     = (int16_t)(cnt_now - enc->cnt_prev);
   enc->cnt_prev    = cnt_now;
@@ -146,7 +146,7 @@ void Encoder_Poll(Encoder_t *enc)
     if (enc->accel_count > 0U) { enc->accel_count--; }
   }
 
-  /* ── 3. Nút nhấn ENC_SW (PB3) – stability-window debounce ──────────
+  /* ── 3. Nút nhấn ENC_SW (PB15) – stability-window debounce ──────────
    * btn_now=true = pressed (active-low, GPIO_PIN_RESET).
    * Any edge resets the stability timer and un-confirms the press state.
    * Events fire only after the pin holds stable for debounce_ms, preventing

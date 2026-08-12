@@ -18,7 +18,7 @@
   *
   *    ALERT LOW (quá dòng) → Vgate ≈ 0.3V → Q1 OFF → bias cắt trong ~140 µs
   *
-  *  ALERT GPIO: PC6 (NC_PC6, pin không dùng trên board)
+  *  ALERT GPIO: PB13
   *    CubeMX: GPIO_Input, Pull-up, EXTI Falling Edge, NVIC priority 5
   ******************************************************************************
   */
@@ -46,11 +46,12 @@ extern "C" {
 #define PA_OC_LIMIT_MAX_A       16.38f
 
 /* ─── ALERT GPIO ─────────────────────────────────────────────────────────────
- * PC6 → EXTI line 6 → nhóm EXTI9_5_IRQn (STM32 gộp lines 5-9 chung 1 vector).
- * IOC: PC6.Signal=GPXTI6, GPIO_MODE_IT_FALLING, GPIO_PULLUP.                */
-#define PA_OC_ALERT_GPIO_PORT   GPIOC
-#define PA_OC_ALERT_GPIO_PIN    GPIO_PIN_6
-#define PA_OC_ALERT_EXTI_IRQn   EXTI9_5_IRQn
+ * PB13 → EXTI line 13 → nhóm EXTI15_10_IRQn (STM32 gộp lines 10-15 chung 1
+ * vector, chia sẻ với PCA9555_INT trên PB14).
+ * IOC: PB13.Signal=GPXTI13, GPIO_MODE_IT_FALLING, GPIO_PULLUP.              */
+#define PA_OC_ALERT_GPIO_PORT   GPIOB
+#define PA_OC_ALERT_GPIO_PIN    GPIO_PIN_13
+#define PA_OC_ALERT_EXTI_IRQn   EXTI15_10_IRQn
 
 /* ─── State ──────────────────────────────────────────────────────────────── */
 typedef struct {
@@ -87,7 +88,7 @@ void PA_OC_SetCurrentLimit(float current_a);
 float PA_OC_ReadCurrent(void);
 
 /**
-  * @brief  Gọi từ EXTI9_5_IRQHandler khi chân ALERT xuống LOW.
+  * @brief  Gọi từ EXTI15_10_IRQHandler khi chân ALERT xuống LOW.
   *         Chỉ đặt cờ — không gọi I2C, không gọi HAL.
   */
 void PA_OC_AlertISR(void);

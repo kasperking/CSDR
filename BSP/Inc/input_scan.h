@@ -5,12 +5,12 @@
   * @brief   Centralized input scan – PCA9555 managed path
   *
   *  Architecture:
-  *    - Encoder (ENC_SW, TIM3 quadrature on PB4/PB5): direct MCU, handled by encoder.c
+  *    - Encoder (ENC_SW, TIM4 quadrature on PD12/PD13): direct MCU, handled by encoder.c
   *    - All function buttons: PCA9555 on I2C2, managed here
   *
   *  Call order each main loop iteration:
   *    Input_Scan()           <- refresh g_pca9555_raw from PCA9555 once
-  *    csdr_handle_encoder()  <- reads TIM3 + ENC_SW direct GPIO
+  *    csdr_handle_encoder()  <- reads TIM4 + ENC_SW direct GPIO
   *    csdr_handle_keys()     <- calls Key_Poll() which reads g_pca9555_raw
   *
   *  Input_F4_IsPressed() does a live I2C read and is used only by the
@@ -38,12 +38,12 @@ extern "C" {
 /* I2C address: A0=A1=A2=GND → 7-bit 0x20 → 8-bit HAL 0x40 */
 #define INPUT_PCA9555_ADDR   0x40U
 
-/* INT pin: PB8, active-LOW, falling edge → EXTI9_5_IRQn (shared with PA_OC_ALERT) */
-#define PCA9555_INT_PIN      GPIO_PIN_8
+/* INT pin: PB14, active-LOW, falling edge → EXTI15_10_IRQn (shared with PA_OC_ALERT PB13) */
+#define PCA9555_INT_PIN      GPIO_PIN_14
 #define PCA9555_INT_PORT     GPIOB
 
 /* PCA9555 bit assignments — Port 0 (bits 6:0).
- * PTT/DIT/DAH are direct MCU (PB12/PB13/PB14) — NOT on PCA9555.
+ * PTT/DIT/DAH are direct MCU (PE1/PE0/PB8) — NOT on PCA9555.
  * Port 1 (bits 15:8) is reserved for future expansion. */
 #define PCA_BIT_MENU    0U   /*!< MENU key */
 #define PCA_BIT_BAND    1U   /*!< BAND key */
@@ -57,7 +57,7 @@ extern "C" {
 /* ── INT-driven scan ────────────────────────────────────────────────────── */
 
 /**
-  * @brief  Called from EXTI9_5_IRQHandler when PB8 (PCA9555 INT) fires.
+  * @brief  Called from EXTI15_10_IRQHandler when PB14 (PCA9555 INT) fires.
   *         Sets a volatile flag; Input_Scan() reads PCA9555 only when set.
   */
 void Input_SetIrqPending(void);

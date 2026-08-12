@@ -98,7 +98,7 @@ float PA_OC_ReadCurrent(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  ISR — gọi từ EXTI9_5_IRQHandler trong stm32h7xx_it.c
+ *  ISR — gọi từ EXTI15_10_IRQHandler trong stm32h7xx_it.c
  *
  *  KHÔNG gọi I2C, KHÔNG gọi HAL_Delay, KHÔNG gọi bất kỳ hàm blocking nào.
  * ═══════════════════════════════════════════════════════════════════════════ */

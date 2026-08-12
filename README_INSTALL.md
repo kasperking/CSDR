@@ -323,7 +323,7 @@ CSDR/
 │   │   ├── boot_dfu.h          ← DFU bootloader entry
 │   │   ├── cal.h               ← Calibration parameters
 │   │   ├── diag.h              ← Debug/diagnostic vars
-│   │   ├── encoder.h           ← Encoder quadrature (TIM3)
+│   │   ├── encoder.h           ← Encoder quadrature (TIM4)
 │   │   ├── fsdr_analog.h       ← Power/SWR/ALC/Voltage/Fan/NTC
 │   │   ├── input_scan.h        ← Keys via PCA9555 I2C expander
 │   │   ├── menu.h              ← Menu overlay
@@ -404,7 +404,7 @@ CSDR/
 | FMC_NOE (RD) | PD4 | Read strobe |
 | FMC_NE1 (CS) | PC7 | Chip select |
 | FMC_A16 (RS) | PD11 | Register/Data select |
-| LCD_RESET | PD13 | Hardware reset |
+| LCD_RESET | PC8 | Hardware reset |
 | LCD_BL (TIM8_CH4) | PC9 | Backlight PWM |
 
 ### Các ngoại vi khác
@@ -414,7 +414,7 @@ CSDR/
 | SAI1 Audio (WM8731) | PE2 (MCLK_A), PE3 (SD_B), PE4 (FS_A), PE5 (SCK_A), PE6 (SD_A) |
 | I2C1 — WM8731 + Si5351 | PB6 (SCL), PB7 (SDA) |
 | I2C2 — PCA9555 keys | PB10 (SCL), PB11 (SDA) |
-| Encoder TIM3 quadrature | PB4 (CH1), PB5 (CH2), PA10 (SW) |
+| Encoder TIM4 quadrature | PD12 (CH1), PD13 (CH2), PB15 (SW) |
 | BPF SN74CBT3253 ×4 via 74AHC595 | PA4 (SRCLK), PA5 (RCLK), PA6 (595 OE̅, boot HIGH), PA7 (SER) |
 | LPF 74HC238 | PA0 (A0), PA1 (A1), PA2 (A2) |
 | PE4302 ATT (bit-bang SPI) | PC4 (DATA), PC5 (CLK), PB0 (LATCH) |
@@ -426,7 +426,9 @@ CSDR/
 | ADC Supply voltage | PA3 |
 | Fan PWM (TIM17_CH1) | PB9 |
 | T/R relay | PB2 |
-| PTT | PB12 |
-| DIT / DAH paddle | PB13, PB14 |
-| Power latch | PD12 |
+| PTT | PE1 |
+| DIT / DAH paddle | PE0, PB8 |
+| PW button | PB12 |
 | PW_HOLD | PB1 |
+| PCA9555 INT | PB14 |
+| PA_OC_ALERT (INA226) | PB13 |

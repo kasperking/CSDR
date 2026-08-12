@@ -5,9 +5,9 @@
 **Files liên quan:**
 - `BSP/Inc/ina226.h` / `BSP/Src/ina226.c` — INA226 low-level driver
 - `BSP/Inc/pa_overcurrent.h` / `BSP/Src/pa_overcurrent.c` — PA protection policy
-- `Core/Src/stm32h7xx_it.c` — EXTI9_5 IRQ handler
+- `Core/Src/stm32h7xx_it.c` — EXTI15_10 IRQ handler
 - `BSP/Src/csdr_app.c` — call sites: Init, Loop, TX apply
-- `CSDR.ioc` — PC6 EXTI config, NVIC priority 5
+- `CSDR.ioc` — PB13 EXTI config, NVIC priority 5
 
 ---
 
@@ -15,7 +15,7 @@
 
 INA226 đo điện áp trên trở shunt **liên tục** với chu kỳ 140 µs. Khi dòng PA vượt ngưỡng, chip tự động kéo chân **ALERT** (open-drain, active-LOW) xuống GND mà **không cần MCU can thiệp**. Chân ALERT này điều khiển trực tiếp gate của một N-MOSFET đặt trong đường cấp bias PA — MOSFET tắt, bias bị cắt trong vòng **~140 µs + 50 ns**.
 
-Song song đó, MCU nhận ngắt EXTI (falling edge trên PC6) để cập nhật trạng thái phần mềm: tắt TX mode, cập nhật UI.
+Song song đó, MCU nhận ngắt EXTI (falling edge trên PB13) để cập nhật trạng thái phần mềm: tắt TX mode, cập nhật UI.
 
 ```
 Dòng PA vượt ngưỡng
@@ -99,7 +99,7 @@ V_gate = 3.3V × 100Ω / (1kΩ + 100Ω + 10kΩ) ≈ 0.3V  < V_gs(th) → Q1 tắ
 | GND         | GND power plane, via thẳng |
 | SDA         | PB11 (I2C2_SDA, 10 kΩ pull-up) |
 | SCL         | PB10 (I2C2_SCL, 10 kΩ pull-up) |
-| ALERT       | PC6, 10 kΩ pull-up → 3.3V, 100 Ω series → R_ser |
+| ALERT       | PB13, 10 kΩ pull-up → 3.3V, 100 Ω series → R_ser |
 | A0, A1      | GND → địa chỉ 0x40 |
 
 ---
@@ -196,7 +196,7 @@ HAL_I2C_Master_Transmit/Receive
 | `PA_OC_Init(&hi2c2)` | `CSDR_Init` | Khởi tạo INA226, nạp config bảo vệ |
 | `PA_OC_SetCurrentLimit(A)` | `csdr_apply_tx` | Thay đổi ngưỡng khi vào TX |
 | `PA_OC_ReadCurrent()` | Main loop (tuỳ chọn) | Đọc dòng tức thời |
-| `PA_OC_AlertISR()` | `EXTI9_5_IRQHandler` | Đặt cờ fault — ISR safe |
+| `PA_OC_AlertISR()` | `EXTI15_10_IRQHandler` | Đặt cờ fault — ISR safe |
 | `PA_OC_HandleFaultInLoop()` | `CSDR_Loop` | Xử lý fault, clear latch, update UI |
 
 ### 4.4 Luồng thời gian thực
@@ -222,14 +222,15 @@ t = 200 ms     PA_OC_HandleFaultInLoop() xóa INA226 latch
 ```c
 #include "pa_overcurrent.h"   /* thêm vào USER CODE BEGIN Includes */
 
-/* EXTI9_5 — PA_OC_ALERT trên PC6, falling edge */
-void EXTI9_5_IRQHandler(void)
+/* EXTI15_10 — PA_OC_ALERT trên PB13, falling edge
+ * (vector dùng chung với PCA9555_INT trên PB14) */
+void EXTI15_10_IRQHandler(void)
 {
     if (__HAL_GPIO_EXTI_GET_IT(PA_OC_ALERT_GPIO_PIN)) {
         PA_OC_AlertISR();
         __HAL_GPIO_EXTI_CLEAR_IT(PA_OC_ALERT_GPIO_PIN);
     }
-    HAL_GPIO_EXTI_IRQHandler(PA_OC_ALERT_GPIO_PIN);
+    /* ... nhánh PCA9555_INT (PB14) xử lý tương tự ... */
 }
 ```
 
@@ -260,19 +261,19 @@ if (g_sdr.tx_mode) {
 
 | Mục | Giá trị |
 |-----|---------|
-| PC6 Signal | `GPXTI6` (GPIO External Interrupt) |
-| PC6 Mode | `GPIO_MODE_IT_FALLING` |
-| PC6 Pull | `GPIO_PULLUP` |
-| PC6 Label | `PA_OC_ALERT` |
-| NVIC `EXTI9_5_IRQn` | Enabled, PreemptPriority = **5** |
+| PB13 Signal | `GPXTI13` (GPIO External Interrupt) |
+| PB13 Mode | `GPIO_MODE_IT_FALLING` |
+| PB13 Pull | `GPIO_PULLUP` |
+| PB13 Label | `PA_OC_ALERT` |
+| NVIC `EXTI15_10_IRQn` | Enabled, PreemptPriority = **5** |
 
 > NVIC priority 5 < audio DMA (0) < USB (2) — ISR không tranh chấp với audio/USB.
 
 Sau khi Generate Code, CubeMX tự thêm vào `main.h`:
 ```c
-#define PA_OC_ALERT_Pin        GPIO_PIN_6
-#define PA_OC_ALERT_GPIO_Port  GPIOC
-#define PA_OC_ALERT_EXTI_IRQn  EXTI9_5_IRQn
+#define PA_OC_ALERT_Pin        GPIO_PIN_13
+#define PA_OC_ALERT_GPIO_Port  GPIOB
+#define PA_OC_ALERT_EXTI_IRQn  EXTI15_10_IRQn
 ```
 
 ---
@@ -290,7 +291,7 @@ INA226 đặt cạnh tầng PA là môi trường RF khắc nghiệt. Các biệ
 - Loại nhiễu HF trong khi giữ I2C hoạt động ở 400 kHz.
 
 ### Lọc chân ALERT
-- **100 Ω series + 100 pF xuống GND** trên đường ALERT trước khi vào PC6.
+- **100 Ω series + 100 pF xuống GND** trên đường ALERT trước khi vào PB13.
 - **TVS diode 5.6 V** (ví dụ PESD5V0S1BA) từ ALERT xuống GND để clamp spike RF.
 
 ### Lọc nguồn VCC của INA226

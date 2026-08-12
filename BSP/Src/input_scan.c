@@ -105,7 +105,7 @@ void Input_Scan(void)
     dbg_pca_init_attempts++;
     /* Fall through: read initial state after successful reinit. */
   } else {
-    /* Device healthy: only read when INT fired (PB8 falling edge). */
+    /* Device healthy: only read when INT fired (PB14 falling edge). */
     if (!s_pca_irq_pending)
       return;
   }

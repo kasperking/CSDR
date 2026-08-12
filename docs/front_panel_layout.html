@@ -304,13 +304,13 @@
         <caption>Chú giải mặt trước — nguồn tham chiếu trong code</caption>
         <thead><tr><th>Nút / vùng</th><th>Chức năng</th><th>Nguồn</th></tr></thead>
         <tbody>
-          <tr><td>PWR</td><td>Nguồn on/off — nhấn giữ mềm (soft-latch), không phải công tắc cơ khí</td><td class="src">main.h · PW_Pin PD12, PW_HOLD PB1</td></tr>
+          <tr><td>PWR</td><td>Nguồn on/off — nhấn giữ mềm (soft-latch), không phải công tắc cơ khí</td><td class="src">main.h · PW_Pin PB12, PW_HOLD PB1</td></tr>
           <tr><td>MENU</td><td>Vào/thoát menu cài đặt</td><td class="src">input_scan.h · PCA_BIT_MENU (P0.0)</td></tr>
           <tr><td>BAND</td><td>Đổi băng tần — giữ để mở bảng chọn băng</td><td class="src">band_sel.h · PCA_BIT_BAND (P0.1)</td></tr>
           <tr><td>MODE</td><td>Đổi mode thu/phát (USB/LSB/AM/FM/CW/DIGI)</td><td class="src">mode_sel.h · PCA_BIT_MODE (P0.2)</td></tr>
           <tr><td>F1–F4</td><td>Phím mềm theo ngữ cảnh — cuộn menu, xác nhận, back, quét SWR nhanh</td><td class="src">csdr_app.c · PCA_BIT_F1..F4 (P0.3–P0.6)</td></tr>
           <tr><td>TUNE</td><td>Phím riêng — push-to-tune, giữ để dò ATU</td><td class="src">input_scan.h · PCA_BIT_TUNE (P0.7)</td></tr>
-          <tr><td>VFO</td><td>Encoder xoay chỉnh tần số + nhấn để chọn bước nhảy</td><td class="src">encoder.h · TIM3 PB4/PB5, ENC_SW PB3</td></tr>
+          <tr><td>VFO</td><td>Encoder xoay chỉnh tần số + nhấn để chọn bước nhảy</td><td class="src">encoder.h · TIM4 PD12/PD13, ENC_SW PB15</td></tr>
           <tr><td>LCD</td><td>ST7796S 480×320, vùng hiển thị 73.44×48.96mm, bus FMC 8080</td><td class="src">lcd_panel_config.h · sdr_ui.h</td></tr>
           <tr><td>LOA</td><td>Loa giám sát nội bộ (không tắt được bằng AUDIO_SD, chỉ codec shutdown)</td><td class="src">wm8731.h · AUDIO_SD PC13</td></tr>
         </tbody>
@@ -415,8 +415,8 @@
           <tr><td>DC IN</td><td>Nguồn 13.8V ngoài — có cảm biến áp trên board</td><td class="src">main.h · VOLTAGE_IN_METER PA3</td></tr>
           <tr><td>FAN</td><td>Quạt tản nhiệt tầng PA, điều khiển theo nhiệt độ</td><td class="src">main.h · FAN_Pin PB9</td></tr>
           <tr><td>USB-C</td><td>CAT (TS-2000), USB Audio, nạp firmware/NOR flash qua CDC</td><td class="src">usb_cat.h · usb_audio.h · usb_flash_proto.h</td></tr>
-          <tr><td>MIC</td><td>Mic + PTT (RJ45 kiểu Kenwood/Yaesu 8 chân)</td><td class="src">main.h · PTT_Pin PB12</td></tr>
-          <tr><td>KEY</td><td>Manipulator CW — bug thẳng hoặc paddle iambic</td><td class="src">main.h · DIT_Pin PB13, DAH_Pin PB14</td></tr>
+          <tr><td>MIC</td><td>Mic + PTT (RJ45 kiểu Kenwood/Yaesu 8 chân)</td><td class="src">main.h · PTT_Pin PE1</td></tr>
+          <tr><td>KEY</td><td>Manipulator CW — bug thẳng hoặc paddle iambic</td><td class="src">main.h · DIT_Pin PE0, DAH_Pin PB8</td></tr>
           <tr><td>PHONES</td><td>Tai nghe / loa ngoài, đường audio ra codec</td><td class="src">wm8731.h · SAI + AUDIO_SD PC13</td></tr>
         </tbody>
       </table>

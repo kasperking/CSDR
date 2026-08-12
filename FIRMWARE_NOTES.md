@@ -113,7 +113,7 @@ All keys are debounced (20 ms) via `Key_Poll` / `Key_Press` / `Key_PressOrRepeat
 | **F4** | *(no action)* | Back / exit menu level |
 | **BAND** | Next band (BPF/LPF switched) | *(no action)* |
 | **MODE** | Cycle AM→FM→USB→LSB→CW→AM | *(no action)* |
-| **PTT (PB12)** | Toggle TX on/off | *(no action)* |
+| **PTT (PE1)** | Toggle TX on/off | *(no action)* |
 | **ENC↕** | Tune by current step | Menu encoder-edit (item value) |
 | **ENC⊙** | Cycle mode | Select item / run ACTION |
 | **ENC⊙** *(long)* | Cycle spectrum zoom | *(no action)* |
@@ -488,8 +488,8 @@ Frame must be **37 data characters** before `;` (38 total). Hamlib 4.7.1 `kenwoo
 
 | Item | Detail |
 |------|--------|
-| PW latch | PD12 — drive HIGH to keep power on |
-| PW_HOLD | PB1 — MCU running indicator |
+| PW button | PB12 — input pull-up, LOW = pressed |
+| PW_HOLD | PB1 — drive HIGH to keep power latched on |
 | Soft shutdown | Hold encoder switch 3 s |
 | Supply ADC | PC0 → ADC3, 1:4 divider |
 | NTC ADC | PC2_C → ADC3, 10 kΩ β=3950 |
