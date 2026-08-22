@@ -43,6 +43,7 @@
 #include "ft8_mode.h"
 #include "ft8_app.h"
 #include "rtty_decode.h"
+#include "tx_unlock.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -599,6 +600,9 @@ void CSDR_Init(void)
     }
     SPI_Assets_LoadAll(&g_flash);
     Flash_LoadBandCal(&g_flash, g_band_cal);  /* defaults kept on failure */
+    /* Restore out-of-band TX unlock state + audit log (own flash sector,
+     * survives Factory Reset).  Blank/invalid sector → locked, no history. */
+    TxUnlock_Init(&g_flash);
   }
   LCD_Render_Init();
   SDR_UI_Init();
@@ -1145,6 +1149,11 @@ void CSDR_PrepareShutdown(void)
   /* Save is asynchronous (Flash_SaveSettingsAsync) and the animation below
    * never runs Flash_SaveTick — force completion before power drops. */
   Flash_SaveFlush(&g_flash);
+
+  /* Flush the out-of-band TX audit log (captures oob_tx_count accrued this
+   * session).  After Flash_SaveFlush so the settings engine has released the
+   * SPI bus; power is about to drop, so the blocking erase is harmless here. */
+  TxUnlock_PersistCounters();
 
   LCD_Clear(0x0000U);
 
@@ -2319,6 +2328,8 @@ static void csdr_handle_encoder(void)
             SDR_UI_DrawCWText("IDQ CAL: NEED DAC MODE+INA226");
         } else if (strcmp(name, "Factory Reset") == 0) {
           csdr_factory_reset();
+        } else if (strcmp(name, "TX Band Unlock") == 0) {
+          TxUnlock_Run();          /* status/code screen; no RF/LO retune */
         }
         g_sdr.display_dirty |= DIRTY_ALL;
       } else {
@@ -2512,6 +2523,8 @@ static void csdr_handle_keys(void)
               SDR_UI_DrawCWText("IDQ CAL: NEED DAC MODE+INA226");
           } else if (strcmp(name, "Factory Reset") == 0) {
             csdr_factory_reset();
+          } else if (strcmp(name, "TX Band Unlock") == 0) {
+            TxUnlock_Run();          /* status/code screen; no RF/LO retune */
           }
           g_sdr.display_dirty |= DIRTY_ALL;
         } else {
@@ -3530,8 +3543,27 @@ static void csdr_apply_tx(void)
     g_sdr.display_dirty |= DIRTY_ALL;
   }
 
+  /* Out-of-band TX limit (MARS/CAP-style).  TX carrier = split→VFO-B else the
+   * operating frequency (marker-track/AM both hop the LO to freq_hz on TX).
+   * A NEW keying outside every ham-band edge is refused unless the operator
+   * has entered the unlock code (System → TX Band Unlock).  Same new-TX-only
+   * gate as the INA226 block; an in-progress TX is never cut mid-over. */
+  uint32_t tx_carrier_hz = g_cat.split_on ? g_sdr.vfo_b.freq_hz : g_sdr.freq_hz;
+  if (g_sdr.tx_mode && !s_tx_applied && !TxUnlock_FreqAllowed(tx_carrier_hz)) {
+    g_sdr.tx_mode = false;
+    SDR_UI_DrawCWText("TX BLOCKED: OUT OF HAM BAND");
+    g_sdr.display_dirty |= DIRTY_ALL;
+  }
+
   bool tx_transition = (g_sdr.tx_mode != s_tx_applied);
   s_tx_applied = g_sdr.tx_mode;
+
+  /* Trace: an out-of-band transmission actually started (only reachable while
+   * unlocked — otherwise the gate above cleared tx_mode).  RAM counter only;
+   * persisted to the flash audit log on the next unlock/relock and at shutdown
+   * so nothing blocks the hot TX path here. */
+  if (tx_transition && g_sdr.tx_mode && BPF_FreqToBand(tx_carrier_hz) == 0xFFU)
+    TxUnlock_NoteOobTx();
 
   if (tx_transition && g_sdr.tx_mode && s_rx_drain_pending) {
     /* Re-key while the TX→RX release drain still holds the relays in TX:

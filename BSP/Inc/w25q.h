@@ -97,7 +97,10 @@ extern "C" {
 #define FLASH_ADDR_FONT_DATA     0x058000UL   /* 32KB zone (0x058000–0x05FFFF): font bitmaps  */
 #define FLASH_ADDR_FFT_TWIDDLE   0x060000UL   /* 16KB zone (0x060000–0x063FFF): twiddle tables */
 #define FLASH_ADDR_FFT_BITREV    0x064000UL   /* 16KB zone (0x064000–0x067FFF): bitrev tables  */
-/* 0x068000 and beyond: free (15.6 MB remaining on W25Q128) */
+#define FLASH_ADDR_TX_UNLOCK     0x068000UL   /* 4KB: out-of-band TX unlock audit log
+                                               * (tx_unlock.c). Separate from Settings so a
+                                               * Factory Reset cannot wipe the trace.        */
+/* 0x069000 and beyond: free (15.6 MB remaining on W25Q128) */
 
 /* Timeouts */
 #define W25Q_TIMEOUT_SECTOR_MS   400U

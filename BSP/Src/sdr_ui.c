@@ -32,6 +32,7 @@
 #include "runtime_diag.h"
 #include "lcd_dma.h"    /* LCD_Wait / LCD_PushWindowAsync / diagnostics */
 #include "selftest.h"   /* g_selftest, SelfTest_AnyFail — top-bar HW warnings */
+#include "tx_unlock.h"  /* TxUnlock_IsUnlocked — persistent OOB-TX header tag */
 #include "pa_protect.h" /* PA_State_t / PA_Fault_t for TX warning overlay */
 #include "rtc_clock.h"  /* RTC_Clock_GetTime / SetTime */
 #include "core_cm7.h"   /* DWT->CYCCNT for chunk render timing */
@@ -874,27 +875,41 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
                         ? (uint16_t)(clock_x - (uint16_t)Font8x10.width - 4U)
                         : (uint16_t)(volt_x   - (uint16_t)Font8x10.width - 4U);
 
-  /* ── Hardware warning: centred between ATT label and sep2 ─ */
-  char     warn_str[32] = {0};
+  /* ── Header warning: centred between ATT label and sep2 ─
+   * Shows self-test failures and, while out-of-band TX is unlocked, a
+   * persistent amber "OOB TX" tag (part of the tx_unlock audit trail — the
+   * operator can never forget the limiter is lifted). */
+  char     warn_str[40] = {0};
   uint16_t warn_x       = 0U;
-  if (SelfTest_AnyFail()) {
+  {
     uint8_t pos = 0U;
-    warn_str[pos++] = '!';
-    for (uint8_t i = 0U; i < SELFTEST_COUNT; i++) {
-      if (!g_selftest.items[i].ok) {
-        warn_str[pos++] = ' ';
-        for (const char *c = g_selftest.items[i].id;
-             *c && pos < (uint8_t)(sizeof(warn_str) - 1U); c++) {
-          warn_str[pos++] = *c;
+    if (SelfTest_AnyFail()) {
+      warn_str[pos++] = '!';
+      for (uint8_t i = 0U; i < SELFTEST_COUNT; i++) {
+        if (!g_selftest.items[i].ok) {
+          warn_str[pos++] = ' ';
+          for (const char *c = g_selftest.items[i].id;
+               *c && pos < (uint8_t)(sizeof(warn_str) - 1U); c++) {
+            warn_str[pos++] = *c;
+          }
         }
       }
     }
+    if (TxUnlock_IsUnlocked()) {
+      if (pos > 0U && pos < (uint8_t)(sizeof(warn_str) - 1U)) warn_str[pos++] = ' ';
+      for (const char *c = "OOB TX";
+           *c && pos < (uint8_t)(sizeof(warn_str) - 1U); c++) {
+        warn_str[pos++] = *c;
+      }
+    }
     warn_str[pos] = '\0';
-    uint16_t warn_w = (uint16_t)((uint16_t)strlen(warn_str) * Font8x10.width);
-    uint16_t avail  = (sep2_x > left_end + 4U) ? (uint16_t)(sep2_x - left_end - 4U) : 0U;
-    warn_x = (avail > warn_w)
-             ? (uint16_t)(left_end + (avail - warn_w) / 2U)
-             : left_end;
+    if (pos > 0U) {
+      uint16_t warn_w = (uint16_t)((uint16_t)strlen(warn_str) * Font8x10.width);
+      uint16_t avail  = (sep2_x > left_end + 4U) ? (uint16_t)(sep2_x - left_end - 4U) : 0U;
+      warn_x = (avail > warn_w)
+               ? (uint16_t)(left_end + (avail - warn_w) / 2U)
+               : left_end;
+    }
   }
 
   for (uint16_t row = 0; row < HDR_H; row++) {

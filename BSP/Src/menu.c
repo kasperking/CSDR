@@ -312,7 +312,7 @@ void Menu_Init(Menu_Handle_t *m)
 
   /* ── System group (parent = 5) — high-impact / calibration-type settings
    *    live here (PA sub-group).  View order is ascending slot:
-   *    45..48, 49, 50, Clock(55), About(72). ─────────────── */
+   *    45..48, 49, 50, Clock(55), TX Band Unlock(72), About(73). ─────────── */
   m->items[45] = (MenuItem_t){ "Backlight",   MENU_TYPE_INT,   0,100,10,&_bl_val,        NULL,          0U,NULL,NULL,5 };
   m->items[46] = (MenuItem_t){ "USB",         MENU_TYPE_ENUM,  0,0,0,   &_usb_val,       usb_strs,      2U,NULL,NULL,5 };
   m->items[47] = (MenuItem_t){ "USB Stream",  MENU_TYPE_ENUM,  0,0,0,   &_iq_stream_val, iq_stream_strs,2U,NULL,NULL,5 };
@@ -320,7 +320,10 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[49] = (MenuItem_t){ "Calibration", MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
   m->items[50] = (MenuItem_t){ "Factory Reset",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
   m->items[55] = (MenuItem_t){ "Clock",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
-  m->items[72] = (MenuItem_t){ "About",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  /* Out-of-band TX unlock (MARS/CAP-style, tx_unlock.c) — dispatched by label
+   * in csdr_handle_keys like Calibration/Factory Reset. */
+  m->items[72] = (MenuItem_t){ "TX Band Unlock",MENU_TYPE_ACTION,0,0,0, NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[73] = (MenuItem_t){ "About",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
 
   /* ── PA sub-group (parent = 48, System → PA) ────────────── */
   /* Ext-PA block: toggle + its two sub-settings + the amp's ALC input.
@@ -344,9 +347,9 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[61] = (MenuItem_t){ "Set Time",  MENU_TYPE_TIME, 0,86399,1,&_clk_val,   NULL,0U,apply_clock, NULL,55 };
   m->items[62] = (MenuItem_t){ "Time Zone", MENU_TYPE_INT,  -12,14,1, &_utcofs_val,NULL,0U,apply_utcofs,"h", 55 };
 
-  /* ── About sub-group (parent = 72) ──────────────────────── */
-  m->items[51] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,72 };
-  m->items[52] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,72 };
+  /* ── About sub-group (parent = 73) ──────────────────────── */
+  m->items[51] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,73 };
+  m->items[52] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,73 };
 
   /* ── Root actions (parent = -1) — highest slots so they render after all
    *    root groups (view order is ascending slot; RTTY group sits at 53) ── */
