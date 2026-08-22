@@ -28,8 +28,9 @@
   *    trả lại nguyên trạng.  Mọi truy cập SPI3 (W25Q + DAC) đều từ main
   *    loop, không ISR → không cần lock bus.
   *
-  *    CS: PD3 (chân trống, không có trong .ioc — module tự init GPIO).
-  *    PCB phải nối net DAC_CS về PD3.  LDAC nối GND (update ngay khi CS nhả).
+  *    CS: PB4 (chân trống, module tự init GPIO — main.c không đụng tới;
+  *    NJTRST pull-up nội giữ CS HIGH từ reset tới lúc init, khỏi glitch).
+  *    PCB phải nối net DAC_CS về PB4.  LDAC nối GND (update ngay khi CS nhả).
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -46,8 +47,8 @@ extern "C" {
 #include <stdbool.h>
 
 /* ─── CS GPIO — phải khớp routing PCB ──────────────────────────────────── */
-#define PA_BIAS_CS_GPIO_PORT    GPIOD
-#define PA_BIAS_CS_GPIO_PIN     GPIO_PIN_3
+#define PA_BIAS_CS_GPIO_PORT    GPIOB
+#define PA_BIAS_CS_GPIO_PIN     GPIO_PIN_4
 
 #define PA_BIAS_SPI_TIMEOUT_MS  10U
 

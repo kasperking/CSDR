@@ -24,7 +24,7 @@
 #include "csdr_app.h"
 #include "pe4302.h"     /* g_att — display path adds back front-end attenuation */
 #include "si5351.h"     /* g_si5351 — XTAL correction + CLK2 cal output */
-#include "gps_cal.h"    /* TIM1 reciprocal counter (PA8=CLK2, PA9=1PPS) */
+#include "gps_cal.h"    /* TIM3 reciprocal counter (PB5=CLK2, PC6=1PPS) */
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -455,7 +455,7 @@ static void render_gps_status(const char *line1, const char *line2)
   }
 }
 
-/* GPS 1PPS cal: CLK2 = XTAL passthrough → PA8, 1PPS → PA9.
+/* GPS 1PPS cal: CLK2 = XTAL passthrough → PB5, 1PPS → PC6.
  * ENC (khi đủ ≥5 s) = nhận kết quả + áp ngay; F4 = hủy. */
 static void gps_cal_run(void)
 {
@@ -489,11 +489,11 @@ static void gps_cal_run(void)
       char l1[44], l2[44];
       switch (r.state) {
         case GPSCAL_NO_CLK:
-          snprintf(l1, sizeof(l1), "GPS Cal: NO CLK2 on PA8");
+          snprintf(l1, sizeof(l1), "GPS Cal: NO CLK2 on PB5");
           snprintf(l2, sizeof(l2), "Check wire      F4=cancel");
           break;
         case GPSCAL_NO_PPS:
-          snprintf(l1, sizeof(l1), "GPS Cal: waiting 1PPS PA9");
+          snprintf(l1, sizeof(l1), "GPS Cal: waiting 1PPS PC6");
           snprintf(l2, sizeof(l2), "Check GPS fix   F4=cancel");
           break;
         case GPSCAL_SETTLING:

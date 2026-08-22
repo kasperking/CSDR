@@ -81,9 +81,9 @@ void PA_Bias_Init(SPI_HandleTypeDef *hspi)
 {
   s_spi = hspi;
 
-  /* PD3 không nằm trong .ioc — init tại đây.  Idle HIGH trước khi đổi mode
+  /* PB4 do module tự init (main.c không đụng).  Idle HIGH trước khi đổi mode
    * để không glitch CS xuống thấp lúc chuyển sang output. */
-  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   HAL_GPIO_WritePin(PA_BIAS_CS_GPIO_PORT, PA_BIAS_CS_GPIO_PIN, GPIO_PIN_SET);
   GPIO_InitTypeDef gi = {
     .Pin   = PA_BIAS_CS_GPIO_PIN,
