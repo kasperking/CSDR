@@ -2328,8 +2328,6 @@ static void csdr_handle_encoder(void)
             SDR_UI_DrawCWText("IDQ CAL: NEED DAC MODE+INA226");
         } else if (strcmp(name, "Factory Reset") == 0) {
           csdr_factory_reset();
-        } else if (strcmp(name, "TX Band Unlock") == 0) {
-          TxUnlock_Run();          /* status/code screen; no RF/LO retune */
         }
         g_sdr.display_dirty |= DIRTY_ALL;
       } else {
@@ -2359,6 +2357,35 @@ static void csdr_handle_encoder(void)
 
 static void csdr_handle_keys(void)
 {
+  /* Hidden out-of-band TX unlock gesture — intentionally NOT in any menu.
+   * Hold F1 + F2 together for 3 s while the menu/overlays are closed and
+   * receiving to open the code-entry / audit screen (tx_unlock.c).  Read from
+   * the raw PCA9555 bits (active-low, 0 = pressed); while the chord is held all
+   * normal key handling is suppressed so the volume keys stop tracking. The
+   * secret code is still required inside the screen — this only opens it. */
+  {
+    static uint32_t s_ul_t0    = 0U;
+    static bool     s_ul_fired = false;
+    bool ul_chord = !Menu_IsOpen(&g_menu) && !BandSel_IsOpen() && !ModeSel_IsOpen()
+                    && !g_sdr.tx_mode
+                    && ((g_pca9555_raw & ((1U << PCA_BIT_F1) | (1U << PCA_BIT_F2))) == 0U);
+    if (ul_chord) {
+      if (s_ul_t0 == 0U) s_ul_t0 = HAL_GetTick();
+      if (!s_ul_fired && (HAL_GetTick() - s_ul_t0) >= 3000U) {
+        s_ul_fired = true;
+        TxUnlock_Run();
+        g_sdr.display_dirty |= DIRTY_ALL;
+        /* Swallow every key still held from the gesture so nothing fires on
+         * release (F1/F2 volume, etc.). */
+        Key_Sync(&k_menu); Key_Sync(&k_f1);   Key_Sync(&k_f2); Key_Sync(&k_f3);
+        Key_Sync(&k_f4);   Key_Sync(&k_band); Key_Sync(&k_mode);
+        Key_Sync(&k_ptt);  Key_Sync(&k_tune);
+      }
+      return;   /* consume: no normal key handling while the chord is held */
+    }
+    s_ul_t0 = 0U; s_ul_fired = false;
+  }
+
   Key_Poll(&k_menu); Key_Poll(&k_f1);   Key_Poll(&k_f2); Key_Poll(&k_f3);
   Key_Poll(&k_f4);   Key_Poll(&k_band); Key_Poll(&k_mode); Key_Poll(&k_ptt);
   Key_Poll(&k_tune);
@@ -2523,8 +2550,6 @@ static void csdr_handle_keys(void)
               SDR_UI_DrawCWText("IDQ CAL: NEED DAC MODE+INA226");
           } else if (strcmp(name, "Factory Reset") == 0) {
             csdr_factory_reset();
-          } else if (strcmp(name, "TX Band Unlock") == 0) {
-            TxUnlock_Run();          /* status/code screen; no RF/LO retune */
           }
           g_sdr.display_dirty |= DIRTY_ALL;
         } else {
