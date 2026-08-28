@@ -236,6 +236,10 @@ void CSDR_Loop(void);
  * Call ONLY from CSDR_Loop-equivalent context — runs the full apply chain
  * (relays, codec, SI5351, PA_Protect OnTxStart/Stop). */
 void CSDR_RequestTX(bool tx);
+/* Raise/drop the low-power TUNE carrier (tune_mode: drive capped at
+ * TUNE_POWER_PCT, PA_Protect ignores SWR warn/trip).  Used by atu.c to key
+ * TX for an automatic tune cycle; raising is a no-op if already in TX. */
+void CSDR_RequestTuneCarrier(bool on);
 
 /* Persist g_sdr to flash (same serialiser as the menu path).  For apps that
  * edit persisted fields outside the menu (ft8_app station setup). */

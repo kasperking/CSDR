@@ -8,6 +8,7 @@
 #include "menu.h"
 #include "sdr_ui.h"
 #include "gps_nmea.h"
+#include "atu.h"
 #include "build_info.h"
 #include <string.h>
 #include <stdio.h>
@@ -53,6 +54,11 @@ static int32_t _vox_val, _voxgain_val, _voxdelay_val;
 static int32_t _alc_val, _extpa_val, _extpadly_val, _extpadrv_val;
 static int32_t _biassrc_val, _bias1_val, _bias2_val, _idqtgt_val;
 
+/* ATU group — values mirror g_atu, refreshed on menu open (see Menu_Toggle)
+ * and pushed back by the apply_atu_* callbacks, so the tuner settings stay
+ * out of the already very wide Menu_LoadFromSDR parameter list. */
+static int32_t _atuon_val, _atuauto_val, _atubyp_val;
+
 /* System group */
 static int32_t _bl_val, _usb_val, _iq_stream_val, _tx_src_val;
 static int32_t _clk_val;   /* seconds 0-86399, decomposed to HH:MM:SS for display */
@@ -94,6 +100,26 @@ static void apply_clock(void)
 static void apply_utcofs(void)
 {
   GPS_NMEA_SetUtcOffset(_utcofs_val);  /* câu RMC kế tiếp re-sync RTC */
+}
+
+/* ATU: push straight into the tuner module.  ATU_SetEnabled/SetBypass move
+ * relays, and both refuse to do so while transmitting or mid-tune, so these
+ * are safe to fire from the menu at any moment. */
+static void apply_atu_on(void)
+{
+  ATU_SetEnabled(_atuon_val != 0);
+  _atubyp_val = g_atu.bypass ? 1 : 0;   /* disabling forces bypass */
+}
+
+static void apply_atu_auto(void)
+{
+  ATU_SetAuto(_atuauto_val != 0);
+}
+
+static void apply_atu_bypass(void)
+{
+  ATU_SetBypass(_atubyp_val != 0);
+  _atubyp_val = g_atu.bypass ? 1 : 0;   /* refused in TX — show the truth */
 }
 
 /* About info strings */
@@ -317,8 +343,9 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[46] = (MenuItem_t){ "USB",         MENU_TYPE_ENUM,  0,0,0,   &_usb_val,       usb_strs,      2U,NULL,NULL,5 };
   m->items[47] = (MenuItem_t){ "USB Stream",  MENU_TYPE_ENUM,  0,0,0,   &_iq_stream_val, iq_stream_strs,2U,NULL,NULL,5 };
   m->items[48] = (MenuItem_t){ "PA",          MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
-  m->items[49] = (MenuItem_t){ "Calibration", MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
-  m->items[50] = (MenuItem_t){ "Factory Reset",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[49] = (MenuItem_t){ "ATU",          MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[50] = (MenuItem_t){ "Calibration", MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
+  m->items[51] = (MenuItem_t){ "Factory Reset",MENU_TYPE_ACTION,0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
   m->items[55] = (MenuItem_t){ "Clock",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
   m->items[72] = (MenuItem_t){ "About",        MENU_TYPE_GROUP, 0,0,0,   NULL,NULL,           0U,NULL,NULL,5 };
 
@@ -340,13 +367,24 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[70] = (MenuItem_t){ "Idq Target",  MENU_TYPE_INT,  50,2000,50,&_idqtgt_val,  NULL,      0U,NULL,"mA",48 };
   m->items[71] = (MenuItem_t){ "Bias Calibration",MENU_TYPE_ACTION,0,0,0,NULL,NULL,               0U,NULL,NULL,48 };
 
+  /* ── ATU sub-group (parent = 49, System → ATU) ──────────────
+   * Slot 52 was freed by moving the About children up, so "Antenna Tuner"
+   * sorts ahead of the 75+ block and heads the group — view order inside a
+   * group is ascending slot.  The two ACTION items are dispatched by label
+   * in csdr_handle_keys, like SWR Scan / FT8 / Bias Calibration. */
+  m->items[52] = (MenuItem_t){ "Antenna Tuner",   MENU_TYPE_ENUM, 0,0,0, &_atuon_val,  onoff_strs,2U,apply_atu_on,    NULL,49 };
+  m->items[75] = (MenuItem_t){ "Auto on TUNE Key",MENU_TYPE_ENUM, 0,0,0, &_atuauto_val,onoff_strs,2U,apply_atu_auto,  NULL,49 };
+  m->items[76] = (MenuItem_t){ "Bypass",          MENU_TYPE_ENUM, 0,0,0, &_atubyp_val, onoff_strs,2U,apply_atu_bypass,NULL,49 };
+  m->items[77] = (MenuItem_t){ "Tune Now",        MENU_TYPE_ACTION,0,0,0,NULL,NULL,           0U,NULL,NULL,49 };
+  m->items[78] = (MenuItem_t){ "Clear ATU Memory",MENU_TYPE_ACTION,0,0,0,NULL,NULL,           0U,NULL,NULL,49 };
+
   /* ── Clock sub-group (parent = 55) ──────────────────────── */
   m->items[61] = (MenuItem_t){ "Set Time",  MENU_TYPE_TIME, 0,86399,1,&_clk_val,   NULL,0U,apply_clock, NULL,55 };
   m->items[62] = (MenuItem_t){ "Time Zone", MENU_TYPE_INT,  -12,14,1, &_utcofs_val,NULL,0U,apply_utcofs,"h", 55 };
 
   /* ── About sub-group (parent = 72) ──────────────────────── */
-  m->items[51] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,72 };
-  m->items[52] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,72 };
+  m->items[73] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,72 };
+  m->items[74] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,72 };
 
   /* ── Root actions (parent = -1) — highest slots so they render after all
    *    root groups (view order is ascending slot; RTTY group sits at 53) ── */
@@ -369,6 +407,11 @@ void Menu_Toggle(Menu_Handle_t *m)
     SDR_UI_GetClock(&ch, &cm, &cs);
     _clk_val = (int32_t)((uint32_t)ch * 3600U + (uint32_t)cm * 60U + cs);
     _utcofs_val = GPS_NMEA_GetUtcOffset();
+    /* ATU state is owned by atu.c, not by the settings blob — read it back
+     * here so the group always opens showing the live relay/enable state. */
+    _atuon_val   = g_atu.enabled   ? 1 : 0;
+    _atuauto_val = g_atu.auto_tune ? 1 : 0;
+    _atubyp_val  = g_atu.bypass    ? 1 : 0;
     m->time_field = 0U;
   }
   Menu_BuildView(m);

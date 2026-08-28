@@ -32,6 +32,7 @@
 #include "pa_overcurrent.h"
 #include "pa_protect.h"
 #include "pa_bias.h"
+#include "atu.h"
 #include "usb_flash_proto.h"
 #include "selftest.h"
 #include "hw_fault.h"
@@ -193,6 +194,10 @@ extern char              dbg_cat_last_resp[];       /* last non-empty response e
  * s_save_on_disconnect: set by CSDR_CDC_ResetCAT so CSDR_Loop flushes immediately. */
 static uint32_t s_freq_save_tick      = 0U;
 static volatile bool s_save_on_disconnect = false;
+/* Debounced ATU memory flush — armed when a tune result lands, fires 3 s later
+ * from CSDR_Loop.  Kept separate from s_freq_save_tick because it writes a
+ * different flash sector (FLASH_ADDR_ATU_MEM) on a much rarer cadence. */
+static uint32_t s_atu_save_tick       = 0U;
 static uint32_t s_tune_start_ms       = 0U;   /* HAL_GetTick() at TUNE start; TUNE_MAX_MS safety */
 /* Suppress SAI stop/start volume apply for 500ms after USB connect so flrig
  * init sequence completes before the ~15ms audio gap. 0 = no active window. */
@@ -373,6 +378,9 @@ static void csdr_save_settings(void)
   fs.pa_bias1_p1     = (uint8_t)(g_sdr.pa_bias1 + 1U);  /* level+1: 0 = old blob */
   fs.pa_bias2_p1     = (uint8_t)(g_sdr.pa_bias2 + 1U);
   fs.pa_idq_t10      = (uint8_t)(g_sdr.pa_idq_ma / 10U);
+  /* ATU: carved from si5351_cal tail — 0 = pre-ATU blob → tuner off */
+  fs.atu_enabled     = g_atu.enabled   ? 1U : 0U;
+  fs.atu_auto        = g_atu.auto_tune ? 1U : 0U;
 
   /* TX / audio */
   fs.mic_gain        = g_sdr.mic_gain;
@@ -523,6 +531,9 @@ void CSDR_Init(void)
                           ? (uint8_t)(fs.pa_bias2_p1 - 1U) : 0U;
       g_sdr.pa_idq_ma   = (fs.pa_idq_t10 >= 5U && fs.pa_idq_t10 <= 200U)
                           ? (uint16_t)(fs.pa_idq_t10 * 10U) : 500U;
+      /* ATU: carved từ si5351_cal tail — 0 = blob cũ → tuner tắt, bypass */
+      g_atu.enabled     = (fs.atu_enabled == 1U);
+      g_atu.auto_tune   = (fs.atu_auto == 1U);
       /* TX / audio */
       g_sdr.mic_gain      = fs.mic_gain;
       g_sdr.digi_gain     = fs.digi_gain;
@@ -600,6 +611,7 @@ void CSDR_Init(void)
     }
     SPI_Assets_LoadAll(&g_flash);
     Flash_LoadBandCal(&g_flash, g_band_cal);  /* defaults kept on failure */
+    ATU_MemLoad();   /* blank sector (no ATU ever fitted) → empty memory */
     /* Restore out-of-band TX unlock state + audit log (own flash sector,
      * survives Factory Reset).  Blank/invalid sector → locked, no history. */
     TxUnlock_Init(&g_flash);
@@ -683,6 +695,13 @@ void CSDR_Init(void)
   /* BPF + LPF */
   BPF_LPF_Init();
   csdr_apply_band(g_sdr.band_idx);
+
+  /* ATU: own 595 chain on the ATU board (atu.h).  Parks the relays in bypass
+   * and, when the tuner is enabled, recalls the stored solution for the
+   * restored frequency.  Runs after csdr_apply_band so band_idx/freq_hz are
+   * final — the recall is keyed off freq_hz. */
+  ATU_Init();
+  if (g_atu.enabled) ATU_OnFreqChange(g_sdr.freq_hz);
 
   /* DSP */
   DSP_Init(&g_dsp, CSDR_AUDIO_SAMPLE_RATE);
@@ -1876,6 +1895,13 @@ void CSDR_Loop(void)
       s_save_on_disconnect  = false;
       csdr_save_settings();
     }
+    /* ATU solution memory: same 3 s debounce.  ATU_MemFlush refuses while
+     * transmitting or tuning (its sector erase blocks tens to hundreds of ms),
+     * so keep the tick armed until it actually lands. */
+    if (s_atu_save_tick && (now - s_atu_save_tick) >= 3000U) {
+      ATU_MemFlush();
+      if (!ATU_MemDirty()) s_atu_save_tick = 0U;
+    }
     /* Discard buffered PC TX audio when not transmitting.
      * Without this the ring fills to 9216 bytes and stays there,
      * causing every subsequent USB OUT packet to hit the overrun path.
@@ -1911,6 +1937,45 @@ void CSDR_Loop(void)
       g_sdr.display_dirty |= DIRTY_ALL;
     } else if (_st == 2U) {
       SDR_UI_DrawCWText("IDQ CAL FAILED");
+      g_sdr.display_dirty |= DIRTY_ALL;
+    } }
+
+  /* ATU solution recall on frequency change.  Watching freq_hz here catches
+   * every source at once — encoder, CAT, band key, band overlay, VFO swap,
+   * marker re-center — instead of sprinkling hooks through each of them.
+   * Only a change of 100 kHz bucket matters, so tuning across a band costs
+   * nothing; ATU_OnFreqChange itself defers the relay write when the change
+   * lands mid-transmission. */
+  { static uint32_t s_atu_bucket = 0xFFFFFFFFU;
+    uint32_t _b = g_sdr.freq_hz / ATU_MEM_BUCKET_HZ;
+    if (_b != s_atu_bucket) { s_atu_bucket = _b; ATU_OnFreqChange(g_sdr.freq_hz); } }
+
+  /* ATU: cooperative tune state machine (one relay move + one SWR reading per
+   * ATU_SETTLE_MS) plus the deferred relay write parked by a mid-TX frequency
+   * change.  No-op when the tuner is idle. */
+  ATU_Poll();
+  /* Live progress on the INFO line — a tune takes ~2 s and moves relays the
+   * whole time, so show it advancing rather than leaving the operator
+   * wondering whether the radio has locked up. */
+  { static uint32_t t_atu_ui = 0U;
+    if (ATU_IsTuning() && (now - t_atu_ui) >= 250U) {
+      t_atu_ui = now;
+      SDR_UI_DrawCWText(ATU_StatusText());
+    } }
+  { uint16_t _swr;
+    uint8_t  _ast = ATU_PollResult(&_swr);
+    if (_ast != 0U) {
+      char _msg[28];
+      if (_ast == 1U) {
+        /* printf %f is disabled (newlib-nano) — split the fixed-point SWR */
+        snprintf(_msg, sizeof(_msg), "ATU %s SWR %u.%02u",
+                 g_atu.bypass ? "BYPASS" : "TUNED",
+                 (unsigned)(_swr / 100U), (unsigned)(_swr % 100U));
+        s_atu_save_tick = HAL_GetTick();   /* arm debounced memory flush */
+      } else {
+        snprintf(_msg, sizeof(_msg), "ATU TUNE FAILED");
+      }
+      SDR_UI_DrawCWText(_msg);
       g_sdr.display_dirty |= DIRTY_ALL;
     } }
 
@@ -2108,6 +2173,12 @@ static void csdr_factory_reset(void)
   g_sdr.ext_pa_on        = false;
   g_sdr.ext_pa_delay_ms  = 25U;
   g_sdr.ext_pa_max_drive = 50U;
+  /* ATU back to "not fitted": relays released, network out of the RF path.
+   * The solution memory lives in its own flash sector and is cleared through
+   * the ATU menu, not here — a factory reset of the radio's settings should
+   * not silently discard hours of antenna tuning data. */
+  ATU_SetEnabled(false);
+  ATU_SetAuto(false);
   g_sdr.mic_gain         = 50;
   g_sdr.digi_gain        = 70;
   g_sdr.tx_power         = 100U;
@@ -2326,6 +2397,17 @@ static void csdr_handle_encoder(void)
             SDR_UI_DrawCWText("IDQ CAL RUNNING...");
           else
             SDR_UI_DrawCWText("IDQ CAL: NEED DAC MODE+INA226");
+        } else if (strcmp(name, "Tune Now") == 0) {
+          /* Keys a low-power carrier itself and runs asynchronously —
+           * ATU_Poll drives it, the result lands via ATU_PollResult. */
+          if (ATU_StartTune())
+            SDR_UI_DrawCWText("ATU TUNING...");
+          else
+            SDR_UI_DrawCWText("ATU: NEED PA + TUNER ON");
+        } else if (strcmp(name, "Clear ATU Memory") == 0) {
+          ATU_MemClear();
+          s_atu_save_tick = HAL_GetTick();   /* debounced flush */
+          SDR_UI_DrawCWText("ATU MEMORY CLEARED");
         } else if (strcmp(name, "Factory Reset") == 0) {
           csdr_factory_reset();
         }
@@ -2548,6 +2630,17 @@ static void csdr_handle_keys(void)
               SDR_UI_DrawCWText("IDQ CAL RUNNING...");
             else
               SDR_UI_DrawCWText("IDQ CAL: NEED DAC MODE+INA226");
+          } else if (strcmp(name, "Tune Now") == 0) {
+            /* Keys a low-power carrier itself and runs asynchronously —
+             * ATU_Poll drives it, the result lands via ATU_PollResult. */
+            if (ATU_StartTune())
+              SDR_UI_DrawCWText("ATU TUNING...");
+            else
+              SDR_UI_DrawCWText("ATU: NEED PA + TUNER ON");
+          } else if (strcmp(name, "Clear ATU Memory") == 0) {
+            ATU_MemClear();
+            s_atu_save_tick = HAL_GetTick();   /* debounced flush */
+            SDR_UI_DrawCWText("ATU MEMORY CLEARED");
           } else if (strcmp(name, "Factory Reset") == 0) {
             csdr_factory_reset();
           }
@@ -2597,15 +2690,30 @@ static void csdr_handle_keys(void)
 
   /* TUNE: dedicated momentary push-to-tune button on its own PCA9555 line
    * (PCA_BIT_TUNE) — continuous low-power carrier for as long as it's held.
-   * See csdr_tune_start/csdr_tune_stop. Ignored while the menu is open. */
+   * See csdr_tune_start/csdr_tune_stop. Ignored while the menu is open.
+   *
+   * With the internal ATU fitted and "Auto on TUNE" enabled, the same button
+   * instead launches a full automatic tune cycle: press starts it, and the
+   * cycle owns the carrier until it finishes, so the release must NOT cut it
+   * short.  A second press while tuning aborts — the button stays the way out.
+   * ATU_StartTune keys TX itself (tune_mode, so the same 25% drive cap and
+   * SWR-trip suppression apply as for a manual tune). */
   if (!Menu_IsOpen(&g_menu)) {
-    if (Key_Press(&k_tune))   { csdr_tune_start(); }
-    if (Key_Release(&k_tune)) { csdr_tune_stop();  }
+    bool atu_key = g_atu.enabled && g_atu.auto_tune;
+    if (Key_Press(&k_tune)) {
+      if (!atu_key)             { csdr_tune_start(); }
+      else if (ATU_IsTuning())  { ATU_AbortTune();   }
+      else if (!ATU_StartTune()){ csdr_tune_start(); } /* refused → plain carrier */
+    }
+    if (Key_Release(&k_tune) && !ATU_IsTuning()) { csdr_tune_stop(); }
   }
 
   /* TUNE safety auto-stop: in case the button sticks or input glitches and
-   * Key_Release never fires, force-stop after TUNE_MAX_MS regardless. */
-  if (g_sdr.tune_mode && (HAL_GetTick() - s_tune_start_ms) >= TUNE_MAX_MS) {
+   * Key_Release never fires, force-stop after TUNE_MAX_MS regardless.
+   * Skipped while the ATU owns the carrier — it runs its own, much shorter
+   * ATU_TIMEOUT_MS and drops TX itself when the cycle ends. */
+  if (g_sdr.tune_mode && !ATU_IsTuning()
+      && (HAL_GetTick() - s_tune_start_ms) >= TUNE_MAX_MS) {
     csdr_tune_stop();
   }
 
@@ -3736,6 +3844,18 @@ static void csdr_tune_stop(void)
   g_sdr.tx_mode        = false;
   g_sdr.display_dirty |= DIRTY_ALL;
   csdr_apply_tx();
+}
+
+/* Public handle on the same low-power tune carrier the TUNE button raises.
+ * atu.c needs it to key TX for a tune cycle but cannot set tune_active /
+ * cw_key_out itself — g_dsp is file-static here.  Routing the ATU through
+ * this wrapper also guarantees it gets the identical drive cap and
+ * PA_Protect SWR-suppression behaviour as a manual tune, rather than a
+ * second, drifting copy of the same flag sequence. */
+void CSDR_RequestTuneCarrier(bool on)
+{
+  if (on) csdr_tune_start();   /* no-op if already transmitting */
+  else    csdr_tune_stop();
 }
 
 /* CAT callback — AC command (antenna tuner start/stop).  Same TUNE state as

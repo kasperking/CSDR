@@ -295,6 +295,13 @@ HAL_StatusTypeDef W25Q_WriteSR1(W25Q_Handle_t *dev, uint8_t new_sr)
   return W25Q_WaitBusy(dev, 50U);
 }
 
+/* Adding the ATU flags carved two bytes off si5351_cal[] rather than growing
+ * the struct, precisely so every stored blob keeps its offsets and CRC (no
+ * settings reset on upgrade).  Freeze the size so that stays true. */
+_Static_assert(sizeof(Flash_Settings_t) == 172U,
+               "Flash_Settings_t size changed — existing blobs will fail CRC "
+               "and every radio silently resets to defaults on upgrade");
+
 HAL_StatusTypeDef Flash_LoadBandCal(W25Q_Handle_t *dev,
                                      BandCal_t band[BAND_COUNT])
 {
@@ -339,6 +346,53 @@ HAL_StatusTypeDef Flash_SaveBandCal(W25Q_Handle_t *dev,
   HAL_StatusTypeDef r = W25Q_SectorErase(dev, FLASH_ADDR_BAND_CAL);
   if (r != HAL_OK) return r;
   return W25Q_Write(dev, FLASH_ADDR_BAND_CAL,
+                    (const uint8_t*)&blk, sizeof(blk));
+}
+
+/* The ATU block's CRC covers sizeof(blk)-4 bytes and Flash_SaveAtuMem does NOT
+ * pre-zero the struct, which is only safe because the layout has no implicit
+ * padding.  ATU_MEM_SLOTS was chosen (284, not the 283 the band plan needs) to
+ * make that true — pin it down here so a future slot-count edit fails the build
+ * instead of silently producing blocks whose CRC depends on stack garbage. */
+_Static_assert(sizeof(AtuMemSlot_t) == 3U,
+               "AtuMemSlot_t must stay 3 bytes");
+_Static_assert(sizeof(AtuMemBlock_t) == 4U + 3U * ATU_MEM_SLOTS + 4U,
+               "AtuMemBlock_t has implicit padding: pick ATU_MEM_SLOTS so that "
+               "4 + 3*ATU_MEM_SLOTS is a multiple of 4");
+
+HAL_StatusTypeDef Flash_LoadAtuMem(W25Q_Handle_t *dev,
+                                    AtuMemSlot_t slot[ATU_MEM_SLOTS])
+{
+  AtuMemBlock_t blk;
+  bool ok = (W25Q_Read(dev, FLASH_ADDR_ATU_MEM,
+                        (uint8_t*)&blk, sizeof(blk)) == HAL_OK)
+            && (blk.magic == ATU_MEM_MAGIC)
+            && (crc32_simple((const uint8_t*)&blk,
+                              sizeof(blk) - sizeof(blk.crc32)) == blk.crc32);
+  if (ok) {
+    memcpy(slot, blk.slot, ATU_MEM_SLOTS * sizeof(AtuMemSlot_t));
+  } else {
+    /* Blank sector (no ATU ever fitted) or corrupt block: an all-zero table
+     * means flags=0 in every slot, i.e. "no stored solution" — the correct
+     * starting state, not an error condition the user needs to see. */
+    memset(slot, 0, ATU_MEM_SLOTS * sizeof(AtuMemSlot_t));
+  }
+  return ok ? HAL_OK : HAL_ERROR;
+}
+
+HAL_StatusTypeDef Flash_SaveAtuMem(W25Q_Handle_t *dev,
+                                    const AtuMemSlot_t slot[ATU_MEM_SLOTS])
+{
+  AtuMemBlock_t blk;
+  blk.magic = ATU_MEM_MAGIC;
+  memcpy(blk.slot, slot, ATU_MEM_SLOTS * sizeof(AtuMemSlot_t));
+  /* No implicit padding in AtuMemBlock_t by construction (see w25q.h), so the
+   * CRC covers real bytes only and needs no pre-memset of the struct. */
+  blk.crc32 = crc32_simple((const uint8_t*)&blk,
+                             sizeof(blk) - sizeof(blk.crc32));
+  HAL_StatusTypeDef r = W25Q_SectorErase(dev, FLASH_ADDR_ATU_MEM);
+  if (r != HAL_OK) return r;
+  return W25Q_Write(dev, FLASH_ADDR_ATU_MEM,
                     (const uint8_t*)&blk, sizeof(blk));
 }
 

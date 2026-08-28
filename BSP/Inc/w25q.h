@@ -100,7 +100,10 @@ extern "C" {
 #define FLASH_ADDR_TX_UNLOCK     0x068000UL   /* 4KB: out-of-band TX unlock audit log
                                                * (tx_unlock.c). Separate from Settings so a
                                                * Factory Reset cannot wipe the trace.        */
-/* 0x069000 and beyond: free (15.6 MB remaining on W25Q128) */
+#define FLASH_ADDR_ATU_MEM       0x069000UL   /* 4KB: ATU solution memory (atu.c) — own
+                                               * sector so a tune result never triggers a
+                                               * Settings rewrite (different write cadence). */
+/* 0x06A000 and beyond: free (15.6 MB remaining on W25Q128) */
 
 /* Timeouts */
 #define W25Q_TIMEOUT_SECTOR_MS   400U
@@ -122,11 +125,15 @@ typedef struct {
  * Layout: 4-byte fields first, 2-byte next, 1-byte/bool last.  crc32 covers
  * all bytes except itself (last 4) — including any implicit padding, which is
  * always zero because csdr_save_settings() memsets the struct before filling.
- * Struct size = 152 B (1-byte group ends at offset 147 → pad to crc32 @ 148).
+ * Struct size = 172 B, pinned by a _Static_assert in w25q.c — the size has
+ * drifted upward over time and the figure quoted here went stale more than
+ * once, so trust the assert, not this comment.
  * Changing field order/offsets breaks backward compat (CRC mismatch →
  * defaults loaded); new 1-byte fields may consume the padding before crc32
  * without breaking old blobs (they read back 0 → loader must map 0 to the
- * field's default). */
+ * field's default).  Carving a new field out of the si5351_cal[] tail (as the
+ * Ext PA, PA bias and ATU fields all did) keeps the size AND every later
+ * offset identical, so it costs no settings reset at all — prefer it. */
 typedef struct {
   /* ── always first ───────────────────────────────────────────── */
   uint32_t   magic;              /* 0xFADEFADE → valid           */
@@ -191,7 +198,16 @@ typedef struct {
   /* ── SI5351 per-band calibration (future) — tail carved for Ext PA
    *    (array was [32], never written → old blobs read 0 in the new
    *    fields; offsets of everything after are unchanged) ─────────── */
-  uint8_t    si5351_cal[21];
+  uint8_t    si5351_cal[19];
+  uint8_t    atu_enabled;        /* ATU fitted + enabled: 0=off 1=on; 0 also =
+                                    pre-ATU blob padding → tuner stays bypassed
+                                    on every existing radio.  Carved from the
+                                    si5351_cal tail, so adding the ATU does NOT
+                                    change the struct size or any offset — no
+                                    CRC break, no settings reset.           */
+  uint8_t    atu_auto;           /* TUNE key runs a full auto-tune instead of a
+                                    plain carrier: 0=off (legacy behaviour, and
+                                    the value every old blob reads back) 1=on */
   uint8_t    pa_idq_t10;         /* Idq target ÷10 mA: 5..200 = 50..2000 mA;
                                     0 = blob cũ → default 50 (500 mA).
                                     Carved từ si5351_cal tail               */
@@ -289,6 +305,39 @@ typedef struct {
 
 #define BAND_CAL_MAGIC  0xCA1BCA1BUL
 
+/* ── ATU solution memory (atu.c) stored at FLASH_ADDR_ATU_MEM ─────────────
+ * One slot per ATU_MEM_BUCKET_HZ of spectrum from ATU_MEM_FREQ_MIN upward,
+ * so a tune is remembered per 100 kHz segment rather than per band — an
+ * L-network solution changes materially across a wide band (40m, 10m).
+ *
+ * SLOT COUNT IS DELIBERATELY 284, NOT THE 283 NEEDED to cover 1.8-30.0 MHz:
+ * 284 x 3 B = 852 B leaves magic(4) + slots(852) exactly 4-byte aligned, so
+ * crc32 lands at offset 856 with NO implicit padding anywhere in the block.
+ * The CRC therefore covers only real data and is reproducible without
+ * relying on the caller to zero padding bytes. */
+#define ATU_MEM_FREQ_MIN    1800000UL   /* first bucket starts at 1.8 MHz  */
+#define ATU_MEM_BUCKET_HZ    100000UL   /* 100 kHz per stored solution     */
+#define ATU_MEM_SLOTS            284U   /* covers 1.8-30.2 MHz; see above  */
+
+/* flags bits — bit0 valid, bit1 c_tx_side, bit2 "bypass was the best match" */
+#define ATU_MEM_F_VALID     0x01U
+#define ATU_MEM_F_C_TX       0x02U
+#define ATU_MEM_F_BYPASS    0x04U
+
+typedef struct {
+  uint8_t l_val;    /* inductor ladder 0..127 */
+  uint8_t c_val;    /* capacitor ladder 0..127 */
+  uint8_t flags;    /* ATU_MEM_F_* bits; 0 = no solution stored */
+} AtuMemSlot_t;     /* 3 bytes */
+
+typedef struct {
+  uint32_t     magic;                    /* ATU_MEM_MAGIC when valid       */
+  AtuMemSlot_t slot[ATU_MEM_SLOTS];      /* 284 x 3 = 852 bytes            */
+  uint32_t     crc32;                    /* covers all bytes before this   */
+} AtuMemBlock_t;                         /* 4 + 852 + 4 = 860 bytes        */
+
+#define ATU_MEM_MAGIC   0xA70CA70CUL
+
 /* Exported variables --------------------------------------------------------*/
 extern W25Q_Handle_t g_flash;
 
@@ -340,6 +389,19 @@ HAL_StatusTypeDef Flash_LoadBandCal(W25Q_Handle_t *dev,
                                      BandCal_t band[BAND_COUNT]);
 HAL_StatusTypeDef Flash_SaveBandCal(W25Q_Handle_t *dev,
                                      const BandCal_t band[BAND_COUNT]);
+
+/* ATU solution memory API — reads/writes FLASH_ADDR_ATU_MEM.
+ * Flash_LoadAtuMem: on magic/CRC failure (including a blank sector on a radio
+ *                   that never had an ATU) zeroes slot[] — every bucket then
+ *                   reads back as "no solution" — and returns HAL_ERROR, which
+ *                   atu.c treats as an empty memory rather than a fault.
+ * Flash_SaveAtuMem: sector-erase + page-write of AtuMemBlock_t (860 bytes).
+ *                   Blocks on the erase like Flash_SaveBandCal — call from RX
+ *                   only (atu.c gates this in ATU_MemFlush). */
+HAL_StatusTypeDef Flash_LoadAtuMem(W25Q_Handle_t *dev,
+                                    AtuMemSlot_t slot[ATU_MEM_SLOTS]);
+HAL_StatusTypeDef Flash_SaveAtuMem(W25Q_Handle_t *dev,
+                                    const AtuMemSlot_t slot[ATU_MEM_SLOTS]);
 
 /* Boot logo */
 HAL_StatusTypeDef Flash_WriteLogo(W25Q_Handle_t *dev,
