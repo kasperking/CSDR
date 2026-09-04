@@ -263,7 +263,7 @@ Menu (gốc)
 │   ├─ PA     → External PA · PA Key Delay · PA Drive Max · External ALC
 │   │           · Bias Source · Bias 1 · Bias 2 · Idq Target · Bias Calibration (action)
 │   ├─ Clock  → Set Time (HH:MM:SS) · Time Zone (giờ UTC±)
-│   └─ About  → Version · Build Date
+│   └─ About  → Version · Build Date · Terms & Disclaimer (action)
 ├─ SWR Scan   (action ở menu gốc)
 └─ FT8        (action ở menu gốc — mở ứng dụng toàn màn hình)
 ```

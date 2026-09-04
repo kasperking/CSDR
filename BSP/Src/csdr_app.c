@@ -45,6 +45,7 @@
 #include "ft8_app.h"
 #include "rtty_decode.h"
 #include "tx_unlock.h"
+#include "terms.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -2410,6 +2411,8 @@ static void csdr_handle_encoder(void)
           SDR_UI_DrawCWText("ATU MEMORY CLEARED");
         } else if (strcmp(name, "Factory Reset") == 0) {
           csdr_factory_reset();
+        } else if (strcmp(name, "Terms & Disclaimer") == 0) {
+          Terms_ShowDisclaimer();
         }
         g_sdr.display_dirty |= DIRTY_ALL;
       } else {
@@ -2643,6 +2646,8 @@ static void csdr_handle_keys(void)
             SDR_UI_DrawCWText("ATU MEMORY CLEARED");
           } else if (strcmp(name, "Factory Reset") == 0) {
             csdr_factory_reset();
+          } else if (strcmp(name, "Terms & Disclaimer") == 0) {
+            Terms_ShowDisclaimer();
           }
           g_sdr.display_dirty |= DIRTY_ALL;
         } else {

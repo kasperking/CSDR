@@ -429,6 +429,6 @@ CSDR/
 | PTT | PE1 |
 | DIT / DAH paddle | PE0, PB8 |
 | PW button | PB12 |
-| PW_HOLD | PB1 |
+| PW_HOLD | PB2 |
 | PCA9555 INT | PB14 |
 | PA_OC_ALERT (INA226) | PB13 |

@@ -12,21 +12,37 @@
   *  by 4 dedicated MCU pins.  BPF timing/word-building is untouched: the two
   *  chains share nothing but the bit-bang idiom.
   *
-  *  ── Pins (all previously unused; module self-inits its GPIO, main.c and
-  *     CubeMX never touch them — survives a .ioc regen) ──────────────────
+  *  ── Pins (reserved in CSDR.ioc as GPIO_Output + Locked, so CubeMX will
+  *     not reassign them; ATU_Init() ALSO configures them itself, which is
+  *     what makes the driver work today without a regen) ─────────────────
   *    PD2  ATU_SER    – 595 serial data in (first chip in the chain)
   *    PD3  ATU_SRCLK  – 595 shift clock, shared by both chips
   *    PD7  ATU_RCLK   – 595 storage-register latch, shared (pulse HIGH->LOW)
-  *    PA8  ATU_OE     – 595 output-enable, active-LOW, shared
+  *    PB3  ATU_OE     – 595 output-enable, active-LOW, shared
   *
   *  ATU_OE requires a 10k pull-up to 3V3 ON THE ATU BOARD.  It holds the
   *  595 outputs in Hi-Z from power-on (and whenever the control cable is
   *  unplugged) until ATU_Init() shifts a known-good word in — see ATU_Init.
+  *  PB3 carries PinState=GPIO_PIN_SET in the .ioc for the same reason: if
+  *  MX_GPIO_Init ever starts configuring this pin (after a regen) it must
+  *  park OE HIGH first, never drive it low onto an unknown 595 state.  This
+  *  mirrors what PA6/BPF_OE already does.
   *  The ULN2803 relay-driver inputs need 10k pull-DOWNs so Hi-Z reads as
   *  "all relays released" rather than floating.
   *
-  *  PA9, PA10 and PB3 are deliberately left free; PB3 in particular stays
-  *  available as SWO trace for debugging.
+  *  PB3 IS THE JTDO/TRACESWO PIN.  Using it as GPIO costs SWO trace, which
+  *  this project does not use: SWV is off in CSDR.launch, no ITM code exists,
+  *  and the .ioc declares only PA13/PA14 (2-wire SWD).  PB4/NJTRST was
+  *  already repurposed the same way for DAC_CS.  Two consequences to know:
+  *    - Do NOT enable SWV in the debugger while the ATU is fitted.  Trace
+  *      output would drive OE with serial data and make the relays chatter,
+  *      because DBGMCU TRACE_IOEN takes the pin back from GPIO at any time.
+  *    - PB3 has NO internal pull at reset (unlike PB4/NJTRST, which has a
+  *      pull-up).  The external 10k pull-up below is therefore load-bearing,
+  *      not just belt-and-braces: it is the only thing holding OE HIGH
+  *      between power-on and ATU_Init().
+  *
+  *  PA8, PA9 and PA10 are left free.
   *
   *  ── 595 chain bit map ───────────────────────────────────────────────────
   *  atu595_shift() sends bit15 first, so after 16 clocks the HIGH byte has
@@ -98,18 +114,13 @@ extern "C" {
 #endif
 
 #include "stm32h7xx_hal.h"
+#include "main.h"   /* authoritative GPIO pin defines: ATU_SER_Pin, ATU_OE_Pin, ... */
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ─── Control GPIO — must match the ATU board wiring ────────────────────── */
-#define ATU_SER_GPIO_PORT     GPIOD
-#define ATU_SER_GPIO_PIN      GPIO_PIN_2
-#define ATU_SRCLK_GPIO_PORT   GPIOD
-#define ATU_SRCLK_GPIO_PIN    GPIO_PIN_3
-#define ATU_RCLK_GPIO_PORT    GPIOD
-#define ATU_RCLK_GPIO_PIN     GPIO_PIN_7
-#define ATU_OE_GPIO_PORT      GPIOA
-#define ATU_OE_GPIO_PIN       GPIO_PIN_8
+/* Control GPIO lives in CSDR.ioc (PB3/PD2/PD3/PD7, GPIO_Output, Locked) and
+ * therefore in main.h — no private copies here, so CubeMX cannot hand these
+ * pins to a peripheral behind the driver s back. */
 
 /* ─── 595 word bit positions (see header comment for the chain layout) ──── */
 #define ATU_BIT_L_SHIFT       0U    /* bits 0..6  : L ladder, chip 1 QA..QG */

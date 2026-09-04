@@ -1243,7 +1243,7 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(AUDIO_SD_GPIO_Port, &GPIO_InitStruct);
 
-  /* PW_HOLD (PB1): CubeMX nhóm nhầm vào block INPUT trên GPIOD.
+  /* PW_HOLD (PB2): CubeMX nhóm nhầm vào block INPUT trên GPIOD.
    * Config lại đúng: OUTPUT_PP, initial HIGH để giữ latch nguồn. */
   GPIO_InitStruct.Pin   = PW_HOLD_Pin;
   GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;

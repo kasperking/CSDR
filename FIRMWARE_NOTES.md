@@ -489,7 +489,7 @@ Frame must be **37 data characters** before `;` (38 total). Hamlib 4.7.1 `kenwoo
 | Item | Detail |
 |------|--------|
 | PW button | PB12 — input pull-up, LOW = pressed |
-| PW_HOLD | PB1 — drive HIGH to keep power latched on |
+| PW_HOLD | PB2 — drive HIGH to keep power latched on |
 | Soft shutdown | Hold encoder switch 3 s |
 | Supply ADC | PC0 → ADC3, 1:4 divider |
 | NTC ADC | PC2_C → ADC3, 10 kΩ β=3950 |

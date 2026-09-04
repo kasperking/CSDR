@@ -23,7 +23,7 @@
   *   ├─ [System] → Backlight / USB / USB Stream / PA / Calibration / Factory Reset / Clock / About
   *   │                ├─ [PA]    → External PA / PA Key Delay / PA Drive Max / External ALC
   *   │                │            / Bias Source / Bias 1 / Bias 2 / Idq Target / Bias Calibration
-  *   │                └─ [About] → Version / Build Date
+  *   │                └─ [About] → Version / Build Date / Terms & Disclaimer
   *   ├─ SWR Scan  (root action)
   *   └─ FT8       (root action — full-screen app; FT8 decode runs only inside it)
   *
@@ -48,7 +48,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      79U   /* slots 0..78, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
+#define MENU_ITEM_COUNT      80U   /* slots 0..79, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */

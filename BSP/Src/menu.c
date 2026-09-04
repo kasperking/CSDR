@@ -385,6 +385,9 @@ void Menu_Init(Menu_Handle_t *m)
   /* ── About sub-group (parent = 72) ──────────────────────── */
   m->items[73] = (MenuItem_t){ "Version",    MENU_TYPE_INFO,  0,0,0, NULL,about_ver_strs, 1U,NULL,NULL,72 };
   m->items[74] = (MenuItem_t){ "Build Date", MENU_TYPE_INFO,  0,0,0, NULL,about_date_strs,1U,NULL,NULL,72 };
+  /* Dispatched by label in csdr_handle_keys, like SWR Scan / FT8 / Tune Now —
+   * opens the full-screen Terms_ShowDisclaimer() viewer (see terms.c). */
+  m->items[79] = (MenuItem_t){ "Terms & Disclaimer",MENU_TYPE_ACTION,0,0,0,NULL,NULL,0U,NULL,NULL,72 };
 
   /* ── Root actions (parent = -1) — highest slots so they render after all
    *    root groups (view order is ascending slot; RTTY group sits at 53) ── */

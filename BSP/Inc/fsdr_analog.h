@@ -3,7 +3,7 @@
   ******************************************************************************
   * @file    fsdr_analog.h
   * @brief   FSDR Analog subsystems:
-  *          - Power Management (PB12 nút PW + PB1 PW_HOLD soft on/off)
+  *          - Power Management (PB12 nút PW + PB2 PW_HOLD soft on/off)
   *          - SWR / ALC / Voltage measurement (ADC1/2/3)
   *          - Fan control + NTC temperature (TIM17_CH1 + ADC1_INP10)
   ******************************************************************************
@@ -25,7 +25,7 @@ extern "C" {
 /* ══════════════════════════════════════════════════════════
  *  POWER MANAGEMENT
  *  PB12 PW      – Power button input (INPUT_PULLUP; LOW = button held)
- *  PB1  PW_HOLD – Power latch output (drive HIGH = keep ON, LOW = cut power)
+ *  PB2  PW_HOLD – Power latch output (drive HIGH = keep ON, LOW = cut power)
  *
  *  Sequence bật nguồn:
  *   1. User nhấn PW → nguồn vào → MCU bắt đầu chạy

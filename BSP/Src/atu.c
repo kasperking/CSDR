@@ -78,7 +78,7 @@ typedef enum {
 
 static struct {
   uint8_t  state;
-  uint8_t  half;         /* 0 = lo-Z, 1 = hi-Z                            */
+  uint8_t  half;         /* 0 = C at antenna end, 1 = C at radio end      */
   uint8_t  pass;         /* index into k_passes                           */
   uint8_t  idx;          /* point within the current pass                 */
   uint8_t  cur_l, cur_c; /* working point for this half                   */
@@ -128,13 +128,13 @@ static bool     s_word_valid;
 static void atu595_shift(uint16_t word)
 {
   for (int8_t i = 15; i >= 0; i--) {
-    HAL_GPIO_WritePin(ATU_SER_GPIO_PORT, ATU_SER_GPIO_PIN,
+    HAL_GPIO_WritePin(ATU_SER_GPIO_Port, ATU_SER_Pin,
                       (word & (1U << i)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(ATU_SRCLK_GPIO_PORT, ATU_SRCLK_GPIO_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(ATU_SRCLK_GPIO_PORT, ATU_SRCLK_GPIO_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(ATU_SRCLK_GPIO_Port, ATU_SRCLK_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(ATU_SRCLK_GPIO_Port, ATU_SRCLK_Pin, GPIO_PIN_RESET);
   }
-  HAL_GPIO_WritePin(ATU_RCLK_GPIO_PORT, ATU_RCLK_GPIO_PIN, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(ATU_RCLK_GPIO_PORT, ATU_RCLK_GPIO_PIN, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(ATU_RCLK_GPIO_Port, ATU_RCLK_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(ATU_RCLK_GPIO_Port, ATU_RCLK_Pin, GPIO_PIN_RESET);
 }
 
 static uint16_t atu_word(uint8_t l, uint8_t c, bool c_tx_side, bool bypass)
@@ -316,33 +316,33 @@ static void atu_finish(bool ok)
 void ATU_Init(void)
 {
   /* USER CODE BEGIN ATU_Init_0 */
-  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /* Park OE HIGH (595 outputs Hi-Z) BEFORE the pin becomes an output, so the
    * switch to push-pull cannot momentarily pull OE low and expose whatever
    * random word the 595s powered up with.  The board's pull-up has been
    * holding OE high since power-on; this hands over without a gap. */
-  HAL_GPIO_WritePin(ATU_OE_GPIO_PORT, ATU_OE_GPIO_PIN, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(ATU_OE_GPIO_Port, ATU_OE_Pin, GPIO_PIN_SET);
   GPIO_InitTypeDef gi = {
-    .Pin   = ATU_OE_GPIO_PIN,
+    .Pin   = ATU_OE_Pin,
     .Mode  = GPIO_MODE_OUTPUT_PP,
     .Pull  = GPIO_NOPULL,
     .Speed = GPIO_SPEED_FREQ_LOW,
   };
-  HAL_GPIO_Init(ATU_OE_GPIO_PORT, &gi);
+  HAL_GPIO_Init(ATU_OE_GPIO_Port, &gi);
 
-  HAL_GPIO_WritePin(ATU_SER_GPIO_PORT,   ATU_SER_GPIO_PIN,   GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(ATU_SRCLK_GPIO_PORT, ATU_SRCLK_GPIO_PIN, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(ATU_RCLK_GPIO_PORT,  ATU_RCLK_GPIO_PIN,  GPIO_PIN_RESET);
-  gi.Pin = ATU_SER_GPIO_PIN | ATU_SRCLK_GPIO_PIN | ATU_RCLK_GPIO_PIN;
-  HAL_GPIO_Init(ATU_SER_GPIO_PORT, &gi);   /* SER/SRCLK/RCLK share GPIOD */
+  HAL_GPIO_WritePin(ATU_SER_GPIO_Port,   ATU_SER_Pin,   GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(ATU_SRCLK_GPIO_Port, ATU_SRCLK_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(ATU_RCLK_GPIO_Port,  ATU_RCLK_Pin,  GPIO_PIN_RESET);
+  gi.Pin = ATU_SER_Pin | ATU_SRCLK_Pin | ATU_RCLK_Pin;
+  HAL_GPIO_Init(ATU_SER_GPIO_Port, &gi);   /* SER/SRCLK/RCLK share GPIOD */
 
   /* Shift the bypass word in while the outputs are still Hi-Z, then enable
    * them — the relays go straight from "all released" to "bypass". */
   s_word_valid = false;
   atu_apply(0U, 0U, false, true);
-  HAL_GPIO_WritePin(ATU_OE_GPIO_PORT, ATU_OE_GPIO_PIN, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(ATU_OE_GPIO_Port, ATU_OE_Pin, GPIO_PIN_RESET);
 
   s_tune.state     = AST_IDLE;
   s_tune.result    = 0U;

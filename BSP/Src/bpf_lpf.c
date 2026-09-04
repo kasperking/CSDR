@@ -19,7 +19,7 @@
  *       Exactly one of the 4 mux-side OE bits may be LOW at a time (never
  *       two — would join TX/RX paths, or bank A/B, through the filters).
  *  LPF: LPF_A0=PA0, LPF_A1=PA1, LPF_A2=PA2 (74HC238 address)
- *  T/R: T_R_SW=PB2 (relay control) */
+ *  T/R: T_R_SW=PB1 (relay control) */
 
 /* 74AHC595 output bit positions (QA=bit0 .. QF=bit5); see bpf_lpf.h. */
 #define BPF595_BIT_S0     0U
