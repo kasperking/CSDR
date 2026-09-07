@@ -570,10 +570,9 @@ void SDR_UI_DrawTXSpectrum(const float *fft_db, uint16_t bins,
   }
 
   /* ── Pixel colors ───────────────────────────────────────────────────────── *
-   * Amber-orange peak + dark rust body distinguishes TX spectrum from the
-   * RX icy-blue palette at a glance.                                         */
-  const uint16_t tx_peak_sw = SWAP16(0xFCA0U); /* amber-orange: R=31,G=37,B=0 */
-  const uint16_t tx_body_sw = SWAP16(0x7800U); /* dark rust:    R=15,G=0, B=0 */
+   * Amber-orange trace distinguishes the TX spectrum from the RX icy-blue
+   * palette at a glance.                                                     */
+  const uint16_t tx_trace_sw = SWAP16(0xFCA0U);/* amber-orange: R=31,G=37,B=0 */
   const uint16_t bg_sw      = SWAP16(UI_SPEC_BG);
   const uint16_t grid_sw    = SWAP16(UI_SPEC_GRID);
   const uint16_t div_sw     = SWAP16(UI_DIVIDER);
@@ -587,13 +586,17 @@ void SDR_UI_DrawTXSpectrum(const float *fft_db, uint16_t bins,
     if ((y % 6U == 0U)) rp[cx_panel] = grid_sw;
   }
 
-  /* Filled amber bars */
-  for (uint16_t x = 0U; x < TX_PANEL_W; x++) {
-    uint16_t peak = s_spec_py[x];
-    if (peak >= NO_SIG) continue;
-    s_spec_buf[peak][TX_PANEL_X + x] = tx_peak_sw;
-    for (uint16_t yr = (uint16_t)(peak + 1U); yr <= fill_bot; yr++)
-      s_spec_buf[yr][TX_PANEL_X + x] = tx_body_sw;
+  /* Amber analyzer trace — same 1-px polyline style as the RX spectrum */
+  {
+    uint16_t y_prev = (s_spec_py[0] > fill_bot) ? fill_bot : s_spec_py[0];
+    for (uint16_t x = 0U; x < TX_PANEL_W; x++) {
+      uint16_t y_cur = (s_spec_py[x] > fill_bot) ? fill_bot : s_spec_py[x];
+      uint16_t y0    = (y_cur < y_prev) ? y_cur : y_prev;
+      uint16_t y1    = (y_cur < y_prev) ? y_prev : y_cur;
+      for (uint16_t y = y0; y <= y1; y++)
+        s_spec_buf[y][TX_PANEL_X + x] = tx_trace_sw;
+      y_prev = y_cur;
+    }
   }
 
   /* "TX" label — anchored to panel left edge */
@@ -2554,6 +2557,14 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
   memcpy(s_spec_py_prev, s_spec_py, sizeof(s_spec_py));
   s_spec_py_valid = true;
 
+  /* The trace links neighbouring columns, so a level change at column x also
+   * repaints columns x-1 / x+1 — widen the dirty band by one column each side
+   * or a partial push leaves a stale trace segment at the band edges. */
+  if (dirty_x0 <= dirty_x1) {
+    if (dirty_x0 > 0U)                      dirty_x0--;
+    if (dirty_x1 < (uint16_t)(SPEC_W - 1U)) dirty_x1++;
+  }
+
   /* Grid lines at 75%, 50%, 25% of height */
   uint16_t g1 = (uint16_t)(SPEC_H - (uint16_t)(0.75f * (float)SPEC_H));
   uint16_t g2 = (uint16_t)(SPEC_H - (uint16_t)(0.50f * (float)SPEC_H));
@@ -2597,8 +2608,7 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     if (pb_r > (int32_t)(SPEC_W - 1U)) pb_r = (int32_t)(SPEC_W - 1U);
   }
 
-  uint16_t spec_sw      = SWAP16(0xC7FFU);   /* icy white-blue: top     */
-  uint16_t spec_fill_sw = SWAP16(0x3D7FU);   /* muted cold cyan: body   */
+  uint16_t spec_sw      = SWAP16(0xFFE0U);   /* analyzer yellow: trace  */
   uint16_t pb_sw        = SWAP16(UI_SPEC_PASS);
   uint16_t cx_sw        = SWAP16(0xFFFFU);   /* bright white centre pixel     */
   uint16_t dot_sw       = SWAP16(UI_SPEC_GRID);
@@ -2649,14 +2659,20 @@ void SDR_UI_DrawSpectrum(const float *fft_db, uint16_t bins,
     if (cx < SPEC_W) row[cx] = cx_sw;
   }
 
-  /* Draw filled cyan/teal spectrum columns — bright top pixel, darker body. */
+  /* Spectrum-analyzer trace — 1-px polyline, no area fill.
+   * Each column paints the vertical run between the previous column's level
+   * and its own, so steep slopes stay connected instead of breaking into
+   * detached dots.  No-signal columns clamp to the baseline row so the trace
+   * rests on the noise floor rather than vanishing. */
   const uint16_t fill_bot = (uint16_t)(SPEC_H - 2U);
-  for (uint16_t x = 0U; x < SPEC_W; x++) {
-    uint16_t peak = s_spec_py[x];
-    if (peak >= NO_SIG) continue;
-    s_spec_buf[peak][x] = spec_sw;
-    for (uint16_t yr = (uint16_t)(peak + 1U); yr <= fill_bot; yr++) {
-      s_spec_buf[yr][x] = spec_fill_sw;
+  {
+    uint16_t y_prev = (s_spec_py[0] > fill_bot) ? fill_bot : s_spec_py[0];
+    for (uint16_t x = 0U; x < SPEC_W; x++) {
+      uint16_t y_cur = (s_spec_py[x] > fill_bot) ? fill_bot : s_spec_py[x];
+      uint16_t y0    = (y_cur < y_prev) ? y_cur : y_prev;
+      uint16_t y1    = (y_cur < y_prev) ? y_prev : y_cur;
+      for (uint16_t y = y0; y <= y1; y++) s_spec_buf[y][x] = spec_sw;
+      y_prev = y_cur;
     }
   }
 

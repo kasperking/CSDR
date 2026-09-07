@@ -32,54 +32,86 @@ extern TIM_HandleTypeDef htim4;   /* encoder timer (TIM4_CH1/CH2 = PD12/PD13) */
 #define TM_FG         0xFFFFU
 #define TM_HINT       0x5ACBU
 
-/* Hand-wrapped to <=34 columns so it fits the narrowest supported panel
- * (ST7789 240px landscape: usable width 220px / 6px Font6x8 = 36 columns). */
-static const char *const s_lines[] = {
-  "This device transmits RF energy.",
-  "Operate it only if you hold a",
-  "valid amateur radio license",
-  "covering the band, mode, and",
-  "power in use.",
+/* Source text as whole paragraphs — wrapped at runtime to whatever width the
+ * active panel actually has (see wrap_build()). A "" entry is a blank
+ * separator line. Fixes the bug where hand-wrapped short lines only filled
+ * the left half of a wide 480px ST7796 panel. */
+static const char *const s_paragraphs[] = {
+  "This device transmits RF energy. Operate it only if you hold a valid "
+  "amateur radio license covering the band, mode, and power in use.",
   "",
-  "This is open-source, experimental",
-  "firmware provided AS IS, WITHOUT",
-  "WARRANTY OF ANY KIND, express or",
-  "implied, including any warranty",
-  "of merchantability or fitness",
-  "for a particular purpose.",
+  "This is open-source, experimental firmware provided AS IS, WITHOUT "
+  "WARRANTY OF ANY KIND, express or implied, including any warranty of "
+  "merchantability or fitness for a particular purpose.",
   "",
-  "The developer(s) accept NO",
-  "LIABILITY for equipment damage,",
-  "interference, regulatory",
-  "violations, RF exposure, or any",
-  "other loss from using this",
+  "The developer(s) accept NO LIABILITY for equipment damage, interference, "
+  "regulatory violations, RF exposure, or any other loss from using this "
   "device. You assume all risk.",
   "",
-  "TX BAND UNLOCK -- reachable via",
-  "System > About, or the hidden",
-  "F1+F2 gesture -- disables the",
-  "amateur-band TX limiter.",
+  "Modifying this device, or its firmware, in a way that results in "
+  "unauthorized or illegal transmission is a violation of applicable "
+  "law. Any such use is entirely your responsibility and is permanently "
+  "logged with a timestamp.",
   "",
-  "Enabling it may let this radio",
-  "transmit outside bands you are",
-  "licensed for. This can be",
-  "ILLEGAL in your country.",
+  "You are solely responsible for every transmission this device makes, "
+  "and for complying with the radio regulations of your country at all "
+  "times.",
   "",
-  "Every unlock, re-lock, and",
-  "out-of-band TX event is logged",
-  "with a timestamp to flash, and",
-  "cannot be cleared from this menu.",
-  "",
-  "You are solely responsible for",
-  "every transmission this device",
-  "makes, and for complying with",
-  "the radio regulations of your",
-  "country at all times.",
-  "",
-  "Using this device means you",
-  "accept these terms in full.",
+  "Using this device means you accept these terms in full.",
 };
-#define TERMS_LINE_COUNT  ((uint8_t)(sizeof(s_lines) / sizeof(s_lines[0])))
+#define TERMS_PARA_COUNT ((uint8_t)(sizeof(s_paragraphs) / sizeof(s_paragraphs[0])))
+
+/* Wrapped-line buffer, rebuilt once per screen open for the active panel's
+ * actual width. 80 cols covers the widest panel today (ST7796: (480-20)/6 =
+ * 76) with margin; 64 lines covers this content even on the narrowest panel
+ * (ST7789: (240-20)/6 = 36 cols wraps the same paragraphs into ~45 lines). */
+#define TM_MAX_COLS   80U
+#define TM_MAX_LINES  64U
+static char    s_wrapped[TM_MAX_LINES][TM_MAX_COLS];
+static uint8_t s_line_count;
+
+static void wrap_build(uint8_t cols)
+{
+  if (cols == 0U) cols = 1U;
+  if (cols >= TM_MAX_COLS) cols = (uint8_t)(TM_MAX_COLS - 1U);
+
+  s_line_count = 0U;
+  for (uint8_t p = 0U; p < TERMS_PARA_COUNT && s_line_count < TM_MAX_LINES; p++) {
+    const char *s = s_paragraphs[p];
+    if (s[0] == '\0') {
+      s_wrapped[s_line_count][0] = '\0';
+      s_line_count++;
+      continue;
+    }
+    while (*s != '\0' && s_line_count < TM_MAX_LINES) {
+      const char *p2 = s;
+      const char *last_space = NULL;
+      uint8_t n = 0U;
+      while (*p2 != '\0' && n < cols) {
+        if (*p2 == ' ') last_space = p2;
+        p2++; n++;
+      }
+      uint8_t take;
+      const char *next = p2;
+      if (*p2 == '\0') {
+        take = n;                                   /* remainder fits fully */
+      } else if (last_space != NULL && last_space != s) {
+        take = (uint8_t)(last_space - s);
+        next = last_space + 1;                       /* skip the space      */
+      } else {
+        take = n;                                    /* hard break, no space */
+      }
+      /* Guard against a stalled cursor (e.g. a stray leading space in a
+       * future edit) — this loop must always make forward progress, it
+       * runs before the per-iteration CSDR_ProcessAudioPending() pump. */
+      if (take == 0U) { take = 1U; next = s + 1; }
+      memcpy(s_wrapped[s_line_count], s, take);
+      s_wrapped[s_line_count][take] = '\0';
+      s_line_count++;
+      s = next;
+    }
+  }
+}
 
 static void push_ln(uint16_t y)
 { LCD_PushWindow(0U, y, (uint16_t)(LCD_W - 1U), y, LN, LCD_W); }
@@ -131,13 +163,13 @@ static void render_screen(uint8_t scroll, uint8_t visible)
 
   for (uint8_t i = 0U; i < visible; i++) {
     uint8_t idx = (uint8_t)(scroll + i);
-    row_text(y, (idx < TERMS_LINE_COUNT) ? s_lines[idx] : "", TM_FG);
+    row_text(y, (idx < s_line_count) ? s_wrapped[idx] : "", TM_FG);
     y = (uint16_t)(y + TM_LINE_H);
   }
 
   char foot[40];
   bool more_up   = (scroll > 0U);
-  bool more_down = (uint8_t)(scroll + visible) < TERMS_LINE_COUNT;
+  bool more_down = (uint8_t)(scroll + visible) < s_line_count;
   snprintf(foot, sizeof foot, "%s ENC/F1/F2=SCROLL  F4=EXIT %s",
            more_up ? "^" : " ", more_down ? "v" : " ");
   row_text(y, foot, TM_HINT); y += TM_FOOTER_H;
@@ -146,16 +178,21 @@ static void render_screen(uint8_t scroll, uint8_t visible)
 
 void Terms_ShowDisclaimer(void)
 {
+  /* Wrap the source paragraphs to the panel's actual usable width — fixes
+   * hand-wrapped text only filling the left half of a wide 480px panel. */
+  uint8_t cols = (uint8_t)((LCD_W - 2U * TM_X) / Font6x8.width);
+  wrap_build(cols);
+
   /* Visible content rows = whatever fits between the header and the footer
    * line, on whichever panel is active (LCD_H is 320 on every supported
    * panel today, but this stays correct if that ever changes). */
   uint16_t avail = (uint16_t)(LCD_H - ZONE_SPEC_Y - TM_HDR_H - TM_FOOTER_H);
   uint8_t  visible = (uint8_t)(avail / TM_LINE_H);
   if (visible == 0U) visible = 1U;
-  if (visible > TERMS_LINE_COUNT) visible = TERMS_LINE_COUNT;
+  if (visible > s_line_count) visible = s_line_count;
 
-  uint8_t scroll_max = (TERMS_LINE_COUNT > visible)
-                      ? (uint8_t)(TERMS_LINE_COUNT - visible) : 0U;
+  uint8_t scroll_max = (s_line_count > visible)
+                      ? (uint8_t)(s_line_count - visible) : 0U;
   uint8_t scroll = 0U;
 
   Key_t k_enc = {0}, k_f1 = {0}, k_f2 = {0}, k_f4 = {0};
