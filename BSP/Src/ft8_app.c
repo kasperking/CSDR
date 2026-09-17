@@ -494,7 +494,7 @@ void FT8_App_Run(void)
   Key_Init   (&k_enc,  ENC_SW_GPIO_Port, ENC_SW_Pin);
   Key_Sync(&k_f4); Key_Sync(&k_menu); Key_Sync(&k_f1); Key_Sync(&k_f2);
   Key_Sync(&k_enc);
-  (void)Encoder_GetDelta(&g_encoder);   /* discard counts from before entry */
+  (void)Encoder_GetSteps(&g_encoder);   /* discard counts from before entry */
 
   FT8_SetStripUI(false);
   FT8_SetEnabled(true);
@@ -533,7 +533,10 @@ void FT8_App_Run(void)
     Input_Scan();
     Key_Poll(&k_f4); Key_Poll(&k_menu); Key_Poll(&k_f1); Key_Poll(&k_f2);
     Key_Poll(&k_enc);
-    int32_t enc_delta = Encoder_GetDelta(&g_encoder);
+    /* Step thô, KHÔNG gia tốc: ở đây mỗi nấc phải là đúng một dòng / một ký
+     * tự.  Dùng Encoder_GetDelta() sẽ kéo theo hệ số nhân tới ×100 → con trỏ
+     * và ký tự callsign nhảy loạn khi quay nhanh. */
+    int32_t enc_delta = Encoder_GetSteps(&g_encoder);
 
     /* ── TX slot scheduling: QSO sequencer first, else CQ beacon ── */
     int32_t cyc = FT8_GetCycleMs();

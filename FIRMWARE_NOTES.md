@@ -360,12 +360,14 @@ mux side off while floating).
 
 | 595 bit | Signal | Function |
 |---------|--------|----------|
-| QA | S0 | select bit 0, all 4 chips |
-| QB | S1 | select bit 1, all 4 chips |
-| QC | OE_1.1 | bank A RX enable, active-LOW |
-| QD | OE_1.2 | bank A TX enable, active-LOW |
-| QE | OE_2.1 | bank B RX enable, active-LOW |
-| QF | OE_2.2 | bank B TX enable, active-LOW |
+| QA (bit0) | — | not connected |
+| QB (bit1) | OE_1.1 | bank A RX enable, active-LOW |
+| QC (bit2) | S1 | select bit 1, all 4 chips |
+| QD (bit3) | S0 | select bit 0, all 4 chips |
+| QE (bit4) | OE_1.2 | bank A TX enable, active-LOW |
+| QF (bit5) | OE_2.1 | bank B RX enable, active-LOW |
+| QG (bit6) | OE_2.2 | bank B TX enable, active-LOW |
+| QH (bit7) | — | not connected (QH' cascade unused) |
 
 Exactly one OE bit LOW at any time (two at once would join TX/RX paths or
 bank A/B).  `BPF_Set()` shifts an all-off word, then the target word

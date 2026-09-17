@@ -2,13 +2,16 @@
 /**
   ******************************************************************************
   * @file    encoder.h
-  * @brief   Encoder BSP – TIM2 hardware quadrature interface
+  * @brief   Encoder BSP – TIM4 hardware quadrature interface
   *
   *  Khác với phiên bản EXTI:
-  *   - Dùng TIM2->CNT (hardware đếm xung A/B tự động)
+  *   - Dùng TIM4->CNT (hardware đếm xung A/B tự động)
   *   - Không cần EXTI handler
-  *   - Gia tốc tính theo delta giữa 2 lần đọc CNT
-  *   - Nút nhấn PA2 (encoder_sw): polling với debounce
+  *   - Gia tốc tính theo khoảng thời gian giữa 2 step (PPR-independent)
+  *   - Nút nhấn ENC_SW (PB15): polling với debounce
+  *
+  *  Loại encoder chọn trong encoder_config.h (ENC_PROFILE) — xem file đó để
+  *  biết cách đo count/vòng và chọn profile đúng.
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -22,6 +25,7 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32h7xx_hal.h"
+#include "encoder_config.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -29,11 +33,12 @@ extern "C" {
 typedef struct {
   TIM_HandleTypeDef *htim;          /*!< TIM4 handle (hardware quadrature) */
   uint16_t           cnt_prev;      /*!< Giá trị CNT lần đọc trước         */
-  int32_t            raw_accum;     /*!< Bộ tích raw counts (debounce EC11) */
-  int32_t            delta;         /*!< Delta tích lũy kể từ GetDelta()   */
-  uint32_t           accel_count;   /*!< Bộ đếm gia tốc                    */
-  int32_t            accel_mult;    /*!< Hệ số nhân                         */
-  uint32_t           last_tick;     /*!< Tick lần đọc trước                 */
+  int32_t            raw_accum;     /*!< Bộ tích raw counts (chưa đủ 1 step) */
+  int32_t            delta;         /*!< Delta ĐÃ nhân gia tốc, kể từ GetDelta() */
+  int32_t            steps_raw;     /*!< Số step THÔ (không gia tốc), kể từ GetSteps() */
+  uint32_t           dt_avg_ms;     /*!< EMA khoảng cách giữa 2 step (ms)   */
+  int32_t            accel_mult;    /*!< Hệ số nhân đang áp dụng            */
+  uint32_t           last_step_tick;/*!< Tick của step hợp lệ gần nhất      */
   /* Nút nhấn (polling PB15) */
   volatile bool      btn_pressed;   /*!< Nhấn ngắn pending (ISR→main)       */
   volatile bool      btn_long;      /*!< Nhấn dài pending  (ISR→main)       */
@@ -54,11 +59,12 @@ extern Encoder_t g_encoder;
 /* Exported functions prototypes ---------------------------------------------*/
 void    Encoder_Init(Encoder_t *enc, TIM_HandleTypeDef *htim);
 void    Encoder_Poll(Encoder_t *enc);   /*!< Gọi mỗi 1ms từ SysTick */
-int32_t Encoder_GetDelta(Encoder_t *enc);
+int32_t Encoder_GetDelta(Encoder_t *enc);   /*!< step × hệ số gia tốc   */
+int32_t Encoder_GetSteps(Encoder_t *enc);   /*!< step thô, KHÔNG gia tốc */
 bool    Encoder_GetButton(Encoder_t *enc);
 bool    Encoder_GetLongPress(Encoder_t *enc);
 
-/* Compatibility stubs (không dùng với TIM2 quadrature) */
+/* Compatibility stubs (không dùng với TIM4 quadrature) */
 static inline void Encoder_IRQ_Handler(Encoder_t *enc) { (void)enc; }
 static inline void Encoder_Btn_IRQ_Handler(Encoder_t *enc) { (void)enc; }
 

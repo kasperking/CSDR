@@ -21,13 +21,17 @@
  *  LPF: LPF_A0=PA0, LPF_A1=PA1, LPF_A2=PA2 (74HC238 address)
  *  T/R: T_R_SW=PB1 (relay control) */
 
-/* 74AHC595 output bit positions (QA=bit0 .. QF=bit5); see bpf_lpf.h. */
-#define BPF595_BIT_S0     0U
-#define BPF595_BIT_S1     1U
-#define BPF595_BIT_OE1_1  2U  /* bank A (chip pair 1) RX enable, active-LOW */
-#define BPF595_BIT_OE1_2  3U  /* bank A (chip pair 1) TX enable, active-LOW */
-#define BPF595_BIT_OE2_1  4U  /* bank B (chip pair 2) RX enable, active-LOW */
-#define BPF595_BIT_OE2_2  5U  /* bank B (chip pair 2) TX enable, active-LOW */
+/* 74AHC595 output bit positions (QA=bit0 .. QH=bit7); see bpf_lpf.h.
+ * QA (bit0) and QH (bit7) are left unconnected on the PCB — the six used
+ * signals sit on QB..QG, and S0 / OE_1.1 are swapped relative to the
+ * obvious ordering (S0 on QD, OE_1.1 on QB), so read the table, do not
+ * assume a sequential mapping. */
+#define BPF595_BIT_OE1_1  1U  /* QB — bank A (chip pair 1) RX enable, active-LOW */
+#define BPF595_BIT_S1     2U  /* QC */
+#define BPF595_BIT_S0     3U  /* QD */
+#define BPF595_BIT_OE1_2  4U  /* QE — bank A (chip pair 1) TX enable, active-LOW */
+#define BPF595_BIT_OE2_1  5U  /* QF — bank B (chip pair 2) RX enable, active-LOW */
+#define BPF595_BIT_OE2_2  6U  /* QG — bank B (chip pair 2) TX enable, active-LOW */
 
 /* Break word: all 4 OE bits HIGH (every mux side off). S0/S1 don't matter
  * while every side is disabled, so they're left 0 here. */

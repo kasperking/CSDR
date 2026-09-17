@@ -17,14 +17,18 @@
   *                  shifted + latched — see BPF_LPF_Init().
   *  PA7 BPF_SER   – 595 serial data in
   *
-  *  595 output bit → function (see bpf_lpf.c bpf595_shift() / BPF595_BIT_*):
-  *    QA (bit0) = S0   — filter channel select bit 0, shared by all 4 chips
-  *    QB (bit1) = S1   — filter channel select bit 1, shared by all 4 chips
-  *    QC (bit2) = OE_1.1 — bank A (chip pair 1) RX side enable, active-LOW
-  *    QD (bit3) = OE_1.2 — bank A (chip pair 1) TX side enable, active-LOW
-  *    QE (bit4) = OE_2.1 — bank B (chip pair 2) RX side enable, active-LOW
-  *    QF (bit5) = OE_2.2 — bank B (chip pair 2) TX side enable, active-LOW
-  *    QG, QH    = unused (reserved for future expansion)
+  *  595 output bit → function (see bpf_lpf.c bpf595_shift() / BPF595_BIT_*).
+  *  NOTE: the six used signals start at QB, not QA (QA and QH are left
+  *  unconnected on the PCB), AND S0 is swapped with OE_1.1 — the mapping is
+  *  not sequential, read it off the table:
+  *    QA (bit0) = unused (not connected)
+  *    QB (bit1) = OE_1.1 — bank A (chip pair 1) RX side enable, active-LOW
+  *    QC (bit2) = S1   — filter channel select bit 1, shared by all 4 chips
+  *    QD (bit3) = S0   — filter channel select bit 0, shared by all 4 chips
+  *    QE (bit4) = OE_1.2 — bank A (chip pair 1) TX side enable, active-LOW
+  *    QF (bit5) = OE_2.1 — bank B (chip pair 2) RX side enable, active-LOW
+  *    QG (bit6) = OE_2.2 — bank B (chip pair 2) TX side enable, active-LOW
+  *    QH (bit7) = unused (not connected); QH' cascade output also unused
   *  Exactly one of OE_1.1/OE_1.2/OE_2.1/OE_2.2 may be LOW at a time — never
   *  two at once (would join TX/RX paths, or join bank A/B, through the
   *  filters). BPF_Set() enforces this with a break-before-make shift+latch.
