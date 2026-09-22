@@ -511,6 +511,11 @@ static uint8_t Comp_AS_SetInterface(USBD_HandleTypeDef *pdev,
     }
   }
   USB_Audio_SetStreaming(&g_usb_audio, (s_as_in_alt || s_as_out_alt) ? 1 : 0);
+  /* RX producer follows AS-IN alone.  With a single combined flag, selecting
+   * CSDR as the PC's *playback* device (AS-OUT alt 1, AS-IN still alt 0)
+   * started the RX producer while no consumer existed, filling rx_ring to the
+   * ceiling and freezing spectrum + waterfall via the ring-pressure guard. */
+  USB_Audio_SetRxStreaming(&g_usb_audio, s_as_in_alt ? 1 : 0);
   return USBD_OK;
 }
 

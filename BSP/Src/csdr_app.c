@@ -979,7 +979,7 @@ static void csdr_process_audio_pending(void)
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
     /* Feed USB ring from main-loop context, not ISR, to avoid starving the
      * USB OTG interrupt handler when the host opens the audio stream. */
-    if (g_usb_audio.usb_streaming && g_sdr.usb_iq_stream && g_sdr.usb_mode != 0U)
+    if (g_usb_audio.rx_streaming && g_sdr.usb_iq_stream && g_sdr.usb_mode != 0U)
       USB_Audio_WriteRX(&g_usb_audio, s_rx_buf, CSDR_AUDIO_BLOCK_SIZE);
     dbg_rx_sample_0 = s_rx_buf[0];
     dbg_rx_sample_1 = s_rx_buf[1];
@@ -989,7 +989,7 @@ static void csdr_process_audio_pending(void)
     } else {
       DSP_Process(&g_dsp, s_rx_buf, s_tx_buf, CSDR_AUDIO_BLOCK_SIZE);
     }
-    if (g_usb_audio.usb_streaming && !g_sdr.usb_iq_stream && !g_sdr.tx_mode && g_sdr.usb_mode != 0U)
+    if (g_usb_audio.rx_streaming && !g_sdr.usb_iq_stream && !g_sdr.tx_mode && g_sdr.usb_mode != 0U)
       USB_Audio_WriteRX(&g_usb_audio, s_tx_buf, CSDR_AUDIO_BLOCK_SIZE);
     RuntimeDiag_AudioBlockEnd();
     dbg_dsp_process_cnt++;
@@ -1029,7 +1029,7 @@ static void csdr_process_audio_pending(void)
      * Size 2048 B — 32-byte aligned ✓ */
     SCB_InvalidateDCache_by_Addr((uint32_t*)(s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2),
         CSDR_AUDIO_BLOCK_SIZE * 2 * (int32_t)sizeof(int32_t));
-    if (g_usb_audio.usb_streaming && g_sdr.usb_iq_stream && g_sdr.usb_mode != 0U)
+    if (g_usb_audio.rx_streaming && g_sdr.usb_iq_stream && g_sdr.usb_mode != 0U)
       USB_Audio_WriteRX(&g_usb_audio,
                          s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                          CSDR_AUDIO_BLOCK_SIZE);
@@ -1041,7 +1041,7 @@ static void csdr_process_audio_pending(void)
       DSP_Process(&g_dsp, s_rx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                    s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2, CSDR_AUDIO_BLOCK_SIZE);
     }
-    if (g_usb_audio.usb_streaming && !g_sdr.usb_iq_stream && !g_sdr.tx_mode && g_sdr.usb_mode != 0U)
+    if (g_usb_audio.rx_streaming && !g_sdr.usb_iq_stream && !g_sdr.tx_mode && g_sdr.usb_mode != 0U)
       USB_Audio_WriteRX(&g_usb_audio,
                          s_tx_buf + CSDR_AUDIO_BLOCK_SIZE*2,
                          CSDR_AUDIO_BLOCK_SIZE);
@@ -1533,8 +1533,13 @@ void CSDR_Loop(void)
 #endif
     if (!dbg_disable_lcd_dma) {
       static uint32_t s_spec_overload_ms = 0U;
-      bool spec_ring_pressure = g_usb_audio.rx_overrun_pending ||
-                                (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
+      /* rx_streaming qualifier: ring occupancy is only meaningful while the
+       * host holds AS-IN open.  Without it, a host that opens AS-OUT alone
+       * (CSDR selected as the PC's playback device) leaves a ring that nobody
+       * drains, and the pressure test would suppress the spectrum forever. */
+      bool spec_ring_pressure = g_usb_audio.rx_streaming &&
+                                (g_usb_audio.rx_overrun_pending ||
+                                 (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES));
       /* Do NOT use RuntimeDiag_IsUiOverload() here: that flag reflects waterfall
        * suppression state and creates a circular feedback loop that permanently
        * kills spectrum whenever waterfall is suppressed (even spuriously). */
@@ -1609,7 +1614,8 @@ void CSDR_Loop(void)
        * second after the cause clears.  ring_pressure is instantaneous (same
        * 75 ms tick) and the 2-hit hysteresis below already filters spikes.
        * tx_underrun_per_sec is irrelevant: waterfall is frozen during TX. */
-      bool ring_pressure = (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
+      bool ring_pressure = g_usb_audio.rx_streaming &&
+                           (g_usb_audio.rx_count > USB_AUDIO_OVERRUN_BYTES);
       if (g_usb_audio.rx_overrun_pending) g_usb_audio.rx_overrun_pending = false;
 
       if (ring_pressure) {

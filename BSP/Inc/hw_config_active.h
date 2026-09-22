@@ -1,7 +1,7 @@
 /* hw_config_active.h -- CSDR Hardware Configuration (auto-generated)
  * DO NOT EDIT -- regenerate with:  python tools/hw_config.py
  *
- * Generated  : 2026-06-20 22:01:53
+ * Generated  : 2026-09-20 17:06:39
  * Controller : ST7796
  * Orientation: Landscape BGR
  * FMC width  : 16-bit
@@ -11,6 +11,7 @@
  * SYSCLK     : 480 MHz  (PLL1 M=5 N=192 P=2)
  * SAI1       : 12.2881 MHz  (PLL2 M=2 N=58 P=59)
  * Storage    : W25Q NOR  W25Q64  64 Mbit
+ * Encoder    : EC11 mechanical  (4 count/step)
  */
 
 #ifndef HW_CONFIG_ACTIVE_H
@@ -104,5 +105,21 @@
 #define HW_W25Q_SECTOR_SIZE          4096U
 #define HW_W25Q_BLOCK32_SIZE         32768U
 #define HW_W25Q_BLOCK64_SIZE         65536U
+
+/* -- Front-panel encoder (TIM4 quadrature, PD12/PD13) --------------------
+ * HW_ENC_PROFILE is read by encoder_config.h, which derives
+ * ENC_COUNTS_PER_STEP and ENC_DIR_GUARD_MS from it:
+ *   1 = EC11 mechanical      4 count/detent, 40 ms direction guard
+ *   2 = Optical 4 cnt/det    4 count/detent, 10 ms direction guard
+ *   3 = Optical 1 cnt/det    1 count/detent, 10 ms direction guard
+ *
+ * Pick by MEASURING, not guessing: the difference in TIM4->CNT over
+ * exactly one revolution equals 4 x PPR.
+ *   80 -> profile 1    96 or 128 -> profile 2    16/24/32 -> profile 3
+ *
+ * Acceleration is NOT set here: encoder.c derives it from the timing
+ * between steps, so it is independent of PPR. Turn it off with
+ * ENC_ACCEL_ENABLE in encoder_config.h if the knob feels too twitchy. */
+#define HW_ENC_PROFILE      1   /* EC11 mechanical */
 
 #endif /* HW_CONFIG_ACTIVE_H */

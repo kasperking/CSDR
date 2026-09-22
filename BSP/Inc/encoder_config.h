@@ -3,8 +3,13 @@
  * @file  encoder_config.h
  * @brief Compile-time profile selection for the TIM4 quadrature encoder.
  *
- *  Chọn ĐÚNG MỘT profile theo encoder đang lắp.  Chỉ có một câu hỏi cần trả
- *  lời: **một detent sinh ra bao nhiêu count trong TIM4 X4 mode?**
+ *  CÁCH CHỌN: chạy `python tools/hw_config.py` → mục "Front-panel Encoder".
+ *  Tool ghi HW_ENC_PROFILE vào hw_config_active.h và file này lấy theo.
+ *  Sửa tay ENC_PROFILE bên dưới chỉ dùng khi không chạy hw_config.py —
+ *  HW_ENC_PROFILE nếu có sẽ THẮNG giá trị mặc định ở đây.
+ *
+ *  Chỉ có một câu hỏi cần trả lời để chọn đúng:
+ *  **một detent sinh ra bao nhiêu count trong TIM4 X4 mode?**
  *
  *    - Encoder cơ EC11 và các encoder optical có 1 quadrature cycle / detent
  *      (ví dụ CTS 291 mã X24 = 24 PPR / 24 detent)  →  4 count / detent.
@@ -31,8 +36,8 @@
 #ifndef ENCODER_CONFIG_H
 #define ENCODER_CONFIG_H
 
-/* Cho phép tools/hw_config.py về sau ghi đè bằng HW_ENC_PROFILE mà không phải
- * sửa file này (giống cách lcd_panel_config.h đọc HW_LCD_PANEL). */
+/* tools/hw_config.py ghi HW_ENC_PROFILE vào đây (giống cách lcd_panel_config.h
+ * đọc HW_LCD_PANEL).  Chạy tool là đủ, không cần sửa file này. */
 #include "hw_config_active.h"
 
 /* ── Profile identifiers ──────────────────────────────────────────────────── */
@@ -43,8 +48,10 @@
                                       416, Grayhill 62S, bản không detent
                                       4/6/8 PPR)                               */
 
-/* ── Active profile ───────────────────────────────────────────────────────── */
-#if defined(HW_ENC_PROFILE)
+/* ── Active profile ─────────────────────────────────────────────────────────
+ * Thứ tự ưu tiên: -D trên command line > HW_ENC_PROFILE (hw_config.py) >
+ * mặc định EC11 (dùng khi hw_config_active.h chưa có mục encoder). */
+#if !defined(ENC_PROFILE) && defined(HW_ENC_PROFILE)
   #define ENC_PROFILE  HW_ENC_PROFILE
 #endif
 #ifndef ENC_PROFILE

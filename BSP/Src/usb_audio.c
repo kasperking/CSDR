@@ -29,26 +29,15 @@ void USB_Audio_SetStreaming(USB_Audio_Handle_t *au, bool enable)
     /* Stop: clear ring state so stale data is not replayed on reconnect.
      * Keep error counters alive until the next session start so they remain
      * visible in the diagnostic snapshot after the host disconnects. */
+    au->rx_streaming = false;
     au->rx_wr = au->rx_rd = au->rx_count = 0U;
     au->tx_wr = au->tx_rd = au->tx_count = 0U;
   } else {
     /* Start: reset per-session stats so counters reflect the new session only.
-     * Pre-fill RX ring with 8 packets of silence when the ring is empty.
-     * Without this, production (192.06 B/ms) ≈ consumption (192 B/ms) causes
-     * the ring to bottom out at ~128 B before each WriteRX refill, firing
-     * rx_underrun at ~166 Hz.  Eight silent packets give a 512-B minimum —
-     * above the 192-B underrun threshold — so the ring never underruns unless
-     * the main loop stalls for > 8 ms.
-     * Guard: only pre-fill when rx_count == 0 (ring was cleared by Stop or
-     * Init).  If SetStreaming(true) is called while already streaming (e.g.
-     * host re-opens the interface), the ring already has live data — skip. */
-    if (au->rx_count == 0U) {
-      const uint16_t prefill = (uint16_t)(8U * USB_AUDIO_BYTES_PER_FRAME);  /* 1536 B */
-      memset(au->rx_ring, 0, prefill);
-      au->rx_wr    = prefill;
-      au->rx_rd    = 0U;
-      au->rx_count = prefill;
-    }
+     * The RX prefill lives in USB_Audio_SetRxStreaming(): it must happen when
+     * the AS-IN (capture) interface opens, not when either direction opens.
+     * Filling the RX ring for an AS-OUT-only session (PC picks CSDR as its
+     * playback device) leaves data that nobody drains. */
     au->rx_overrun        = 0U;
     au->rx_overrun_write  = 0U;
     au->rx_underrun       = 0U;
@@ -61,6 +50,38 @@ void USB_Audio_SetStreaming(USB_Audio_Handle_t *au, bool enable)
     au->rx_overrun_pending = false;
   }
   /* USER CODE END USB_Audio_SetStreaming_0 */
+}
+
+void USB_Audio_SetRxStreaming(USB_Audio_Handle_t *au, bool enable)
+{
+  /* USER CODE BEGIN USB_Audio_SetRxStreaming_0 */
+  au->rx_streaming = enable;
+  if (!enable) {
+    /* AS-IN closed: the only consumer (ReadRXPacket, gated by s_as_in_alt)
+     * has stopped.  Empty the ring so rx_count cannot sit above
+     * USB_AUDIO_OVERRUN_BYTES and hold the spectrum/waterfall ring-pressure
+     * suppression permanently asserted. */
+    au->rx_wr = au->rx_rd = au->rx_count = 0U;
+    return;
+  }
+
+  /* Pre-fill RX ring with 8 packets of silence when the ring is empty.
+   * Without this, production (192.06 B/ms) ≈ consumption (192 B/ms) causes
+   * the ring to bottom out at ~128 B before each WriteRX refill, firing
+   * rx_underrun at ~166 Hz.  Eight silent packets give a 512-B minimum —
+   * above the 192-B underrun threshold — so the ring never underruns unless
+   * the main loop stalls for > 8 ms.
+   * Guard: only pre-fill when rx_count == 0 (ring was cleared by Stop, Init
+   * or the disable branch above).  If this is called while already streaming
+   * the ring already holds live data — skip. */
+  if (au->rx_count == 0U) {
+    const uint16_t prefill = (uint16_t)(8U * USB_AUDIO_BYTES_PER_FRAME);  /* 1536 B */
+    memset(au->rx_ring, 0, prefill);
+    au->rx_wr    = prefill;
+    au->rx_rd    = 0U;
+    au->rx_count = prefill;
+  }
+  /* USER CODE END USB_Audio_SetRxStreaming_0 */
 }
 
 /**
@@ -78,7 +99,10 @@ void USB_Audio_WriteRX(USB_Audio_Handle_t *au,
                         const int32_t *src, uint16_t samples)
 {
   /* USER CODE BEGIN USB_Audio_WriteRX_0 */
-  if (!au->usb_streaming) return;
+  /* Gate on rx_streaming, NOT usb_streaming: the consumer (ReadRXPacket) only
+   * runs while the host holds AS-IN open.  Producing into a ring nobody drains
+   * pins rx_count at the ceiling, which trips the UI ring-pressure guard. */
+  if (!au->rx_streaming) return;
 
   uint16_t bytes = (uint16_t)(samples * USB_AUDIO_CHANNELS * USB_AUDIO_BYTES_PER_SAMPLE);
 
@@ -128,7 +152,7 @@ void USB_Audio_WriteRX(USB_Audio_Handle_t *au,
    * inflating rx_count against a zero'd ring.
    * BASEPRI = 0x20: masks USB OTG (priority 2 → 0x20); SAI/DMA unmasked. */
   __set_BASEPRI(0x20U);
-  if (au->usb_streaming) {
+  if (au->rx_streaming) {
     au->rx_count = (uint16_t)(au->rx_count + bytes);
     if (au->rx_count > au->rx_count_peak) au->rx_count_peak = au->rx_count;
   }

@@ -109,7 +109,17 @@ typedef struct {
    * one waterfall tick (75 ms) rather than waiting for the 1-second rate window. */
   volatile bool rx_overrun_pending;
 
-  volatile bool usb_streaming;   /* True khi USB host đang stream */
+  /* usb_streaming: true khi host mở BẤT KỲ chiều nào (AS-IN hoặc AS-OUT).
+   * Dùng cho TX ring (USB OUT) và cho các khối drift-correction. */
+  volatile bool usb_streaming;
+
+  /* rx_streaming: true CHỈ khi host mở AS-IN (interface "recording" trên PC).
+   * Là cổng cho producer WriteRX.  Tách riêng khỏi usb_streaming vì chỉ
+   * ReadRXPacket (USB IRQ, gated by s_as_in_alt) mới tiêu thụ rx_ring: nếu
+   * host chỉ mở playback (AS-OUT) thì không ai đọc ring, rx_count leo tới
+   * trần và kẹt vĩnh viễn trên ngưỡng USB_AUDIO_OVERRUN_BYTES — khiến
+   * spectrum/waterfall bị suppression treo cứng (FFT "đứng hình"). */
+  volatile bool rx_streaming;
 } USB_Audio_Handle_t;
 
 /* Exported variables --------------------------------------------------------*/
@@ -126,6 +136,7 @@ void USB_Audio_Init(USB_Audio_Handle_t *au);
   * @brief  Ghi IQ samples từ SAI DMA vào RX ring (→ USB IN).
   *         Phải gọi từ main-loop context (CSDR_Loop), KHÔNG gọi từ DMA ISR.
   *         Gọi từ ISR sẽ chặn USB OTG IRQ và gây hard-lock khi host mở stream.
+  *         No-op khi au->rx_streaming == false (host chưa mở AS-IN).
   * @param  au        Handle
   * @param  src       SAI DMA buffer (int32_t, 16-bit right-justified)
   * @param  samples   Số sample pairs (I+Q)
@@ -158,9 +169,17 @@ void USB_Audio_WriteTX(USB_Audio_Handle_t *au,
  * unprotected read-modify-write on tx_count that would race the USB IRQ. */
 
 /**
-  * @brief  Bật/tắt USB Audio streaming.
+  * @brief  Bật/tắt USB Audio streaming (gộp cả 2 chiều IN + OUT).
   */
 void USB_Audio_SetStreaming(USB_Audio_Handle_t *au, bool enable);
+
+/**
+  * @brief  Bật/tắt riêng chiều RX (AS-IN: SDR → PC).
+  *         Gọi từ Comp_AS_SetInterface mỗi khi alt của AS-IN đổi.
+  *         enable=true  → prefill 8 packet im lặng nếu ring đang rỗng.
+  *         enable=false → xoá RX ring và chặn producer (WriteRX thành no-op).
+  */
+void USB_Audio_SetRxStreaming(USB_Audio_Handle_t *au, bool enable);
 
 #ifdef __cplusplus
 }

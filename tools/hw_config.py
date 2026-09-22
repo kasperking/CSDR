@@ -103,6 +103,15 @@ SETTINGS = OrderedDict([
         ]),
         "default": "8",
     }),
+    ("encoder_type", {
+        "label":   "Front-panel Encoder",
+        "choices": OrderedDict([
+            ("EC11",     "EC11 mechanical   4 count/detent   (80 counts/rev, 20 steps/rev)"),
+            ("OPT_4CPD", "Optical 4 cnt/det  CTS 291 X24/Y00/X00  (96-128 counts/rev)"),
+            ("OPT_1CPD", "Optical 1 cnt/det  CTS 291 832/624/416, Grayhill 62S  (16-32 counts/rev)"),
+        ]),
+        "default": "EC11",
+    }),
     ("hse_source", {
         "label":   "HSE Source",
         "choices": OrderedDict([
@@ -170,6 +179,7 @@ PRESETS = OrderedDict([
             "board_type":      "TEST",   "dma_chunk_rows":  "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
             "storage_type":    "W25Q_NOR", "w25q_model":    "W25Q128",
+            "encoder_type":    "EC11",
         },
     }),
     ("hw_prod_v1", {
@@ -180,6 +190,7 @@ PRESETS = OrderedDict([
             "board_type":      "PRODUCTION", "dma_chunk_rows": "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
             "storage_type":    "W25Q_NOR", "w25q_model":    "W25Q128",
+            "encoder_type":    "EC11",
         },
     }),
     ("hw_long_fpc_debug", {
@@ -190,6 +201,7 @@ PRESETS = OrderedDict([
             "board_type":      "LONG_FPC", "dma_chunk_rows": "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
             "storage_type":    "W25Q_NOR", "w25q_model":    "W25Q128",
+            "encoder_type":    "EC11",
         },
     }),
     ("hw_compact_st7789", {
@@ -200,6 +212,7 @@ PRESETS = OrderedDict([
             "board_type":      "TEST",   "dma_chunk_rows":  "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
             "storage_type":    "W25Q_NOR", "w25q_model":    "W25Q128",
+            "encoder_type":    "EC11",
         },
     }),
 ])
@@ -309,6 +322,25 @@ STORAGE_LABEL = {
     "NONE":     "None",
     "W25Q_NOR": "W25Q NOR Flash",
 }
+
+# Front-panel encoder profile IDs emitted as HW_ENC_PROFILE.
+# MUST match the ENC_PROFILE_* values in BSP/Inc/encoder_config.h.
+ENCODER_PROFILE_ID = {
+    "EC11":     1,
+    "OPT_4CPD": 2,
+    "OPT_1CPD": 3,
+}
+
+# Per profile: (counts per UI step, direction-guard ms, short label).
+# Mirrors the derived constants in encoder_config.h -- kept here only so the
+# tool can show what a choice resolves to; the firmware header stays the
+# single source of truth.
+ENCODER_PARAMS = {
+    "EC11":     (4, 40, "EC11 mechanical"),
+    "OPT_4CPD": (4, 10, "Optical, 4 count/detent"),
+    "OPT_1CPD": (1, 10, "Optical, 1 count/detent"),
+}
+
 
 # Minimum W25Q capacity for HW_HAS_LARGE_NVM and HW_SUPPORTS_WATERFALL_CACHE
 _LARGE_NVM_MBIT = 8    # >= 1 MB usable
@@ -452,6 +484,23 @@ def resolve_storage(cfg):
     }
 
 
+# ── Encoder resolution ────────────────────────────────────────────────────────
+
+def resolve_encoder(cfg):
+    """Return dict of encoder-derived values for the current config."""
+    etype = cfg.get("encoder_type", "EC11")
+    if etype not in ENCODER_PROFILE_ID:
+        etype = "EC11"
+    cps, guard_ms, label = ENCODER_PARAMS[etype]
+    return {
+        "etype":       etype,
+        "profile_id":  ENCODER_PROFILE_ID[etype],
+        "counts_step": cps,
+        "guard_ms":    guard_ms,
+        "label":       label,
+    }
+
+
 # ── Validation ────────────────────────────────────────────────────────────────
 
 def validate(cfg):
@@ -560,6 +609,7 @@ def resolve(cfg):
     pll1    = compute_pll1(hse_hz) or _pll_fallback()
     pll2    = compute_pll2(hse_hz) or _pll_fallback()
     storage = resolve_storage(cfg)
+    encoder = resolve_encoder(cfg)
 
     fmc_16bit = cfg.get("fmc_bus_width", "8BIT") == "16BIT"
 
@@ -581,6 +631,7 @@ def resolve(cfg):
         "pll1":                 pll1,
         "pll2":                 pll2,
         "storage":              storage,
+        "encoder":              encoder,
     }
 
 
@@ -665,6 +716,7 @@ def generate_header(cfg, r):
     p1      = r["pll1"]
     p2      = r["pll2"]
     st      = r["storage"]
+    enc     = r["encoder"]
     sai_mhz = p2["sai_hz"] / 1e6 if p2["sai_hz"] else 0.0
 
     # Storage summary for file-header comment
@@ -690,6 +742,7 @@ def generate_header(cfg, r):
         f" * SYSCLK     : 480 MHz  (PLL1 M={p1['m']} N={p1['n']} P={p1['p']})\n"
         f" * SAI1       : {sai_mhz:.4f} MHz  (PLL2 M={p2['m']} N={p2['n']} P={p2['p']})\n"
         f" * Storage    : {storage_comment}\n"
+        f" * Encoder    : {enc['label']}  ({enc['counts_step']} count/step)\n"
         " */\n"
         "\n"
         "#ifndef HW_CONFIG_ACTIVE_H\n"
@@ -756,6 +809,22 @@ def generate_header(cfg, r):
         f"#define HW_PLL2_VCIRANGE    {p2['rge']}\n"
         "\n"
         + _storage_header_section(cfg, st) +
+        "\n"
+        "/* -- Front-panel encoder (TIM4 quadrature, PD12/PD13) --------------------\n"
+        " * HW_ENC_PROFILE is read by encoder_config.h, which derives\n"
+        " * ENC_COUNTS_PER_STEP and ENC_DIR_GUARD_MS from it:\n"
+        " *   1 = EC11 mechanical      4 count/detent, 40 ms direction guard\n"
+        " *   2 = Optical 4 cnt/det    4 count/detent, 10 ms direction guard\n"
+        " *   3 = Optical 1 cnt/det    1 count/detent, 10 ms direction guard\n"
+        " *\n"
+        " * Pick by MEASURING, not guessing: the difference in TIM4->CNT over\n"
+        " * exactly one revolution equals 4 x PPR.\n"
+        " *   80 -> profile 1    96 or 128 -> profile 2    16/24/32 -> profile 3\n"
+        " *\n"
+        " * Acceleration is NOT set here: encoder.c derives it from the timing\n"
+        " * between steps, so it is independent of PPR. Turn it off with\n"
+        " * ENC_ACCEL_ENABLE in encoder_config.h if the knob feels too twitchy. */\n"
+        f"#define HW_ENC_PROFILE      {enc['profile_id']}   /* {enc['label']} */\n"
         "\n"
         "#endif /* HW_CONFIG_ACTIVE_H */\n"
     )
@@ -882,8 +951,11 @@ def patch_fmc_bus_width(cfg):
     with open(MAIN_C, encoding="utf-8") as fh:
         text = fh.read()
 
+    # The trailing (?:...)* also swallows tags appended by previous runs --
+    # without it every --apply left one more /* hw_config: ... */ on the line.
     text = _sub1(
-        r"(hsram1\.Init\.MemoryDataWidth\s*=\s*)FMC_NORSRAM_MEM_BUS_WIDTH_\w+;",
+        r"(hsram1\.Init\.MemoryDataWidth\s*=\s*)FMC_NORSRAM_MEM_BUS_WIDTH_\w+;"
+        r"(?:[ \t]*/\* hw_config:[^*]*\*/)*",
         rf"\g<1>{const};  /* hw_config: {width} */",
         text, "main.c MemoryDataWidth")
 
@@ -976,6 +1048,7 @@ def apply_config(cfg):
     p1 = r["pll1"]
     p2 = r["pll2"]
     st = r["storage"]
+    e  = r["encoder"]
     print("  Config written and source files patched:")
     print(f"    Header    : BSP/Inc/hw_config_active.h")
     print(f"    Patched   : Core/Src/main.c")
@@ -992,6 +1065,8 @@ def apply_config(cfg):
     print(f"  GPIO    : {r['gpio_speed']}")
     print(f"  DMA     : {r['dma_rows']} rows/strip")
     print(f"  Board   : {BOARD_LABEL[cfg['board_type']]}")
+    print(f"  Encoder : {e['label']}  ({e['counts_step']} count/step,"
+          f" {e['guard_ms']} ms guard)  HW_ENC_PROFILE = {e['profile_id']}")
     print(f"  HSE     : {r['hse_hz']/1e6:.3f} MHz  {cfg['hse_source']}"
           f"  ({r['hse_rcc_mode']})")
     print(f"  PLL1    : M={p1['m']} N={p1['n']} P={p1['p']}"
@@ -1275,6 +1350,9 @@ def print_main_menu(cfg, errors, warnings):
     print(f"    FMC    : ADDR_SETUP={t['addr_setup']}  DATA_SETUP={t['data_setup']}"
           f"  BUS_TURN={t['bus_turn']}")
     print(f"    GPIO   : {r['gpio_speed']}")
+    print(f"    Encoder: {r['encoder']['label']}"
+          f"  ({r['encoder']['counts_step']} count/step,"
+          f" {r['encoder']['guard_ms']} ms guard)")
     print(f"    HSE    : {hz_str}")
     print(f"           -> {pll1_str}")
     print(f"           -> {pll2_str}")
@@ -1351,6 +1429,10 @@ def cmd_show():
           f"  BUS_TURN={t['bus_turn']}")
     print(f"    GPIO   : {r['gpio_speed']}")
     print(f"    DMA    : {r['dma_rows']} rows/strip")
+    print(f"    Encoder: {r['encoder']['label']}"
+          f"  ({r['encoder']['counts_step']} count/step,"
+          f" {r['encoder']['guard_ms']} ms guard)"
+          f"  HW_ENC_PROFILE = {r['encoder']['profile_id']}")
     print(f"    HSE    : {hz_str}")
     print(f"           -> {pll1_str}")
     print(f"           -> {pll2_str}")
