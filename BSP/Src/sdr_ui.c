@@ -1080,9 +1080,9 @@ static void draw_compact_status(const SDR_UI_State_t *ui)
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawSidebarLeft  (SBL_W=80 × SBL_H=96)
  *
- *  5 items × ~19 rows each:
- *   0: Mode        1: VFO A/B   2: NR/NB
- *   3: VOL         4: SQL
+ *  4 items × 24 rows each:
+ *   0: Mode   1: NR/NB   2: VOL   3: SQL
+ *  (VFO A/B đã hiển thị bằng tiền tố A/B trước tần số — không lặp lại ở đây)
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
 {
@@ -1100,17 +1100,17 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
 
   /* Cache guard — skip rebuild when nothing changed */
   if (s_sbl_cache.valid
+      && s_sbl_cache.mode       == ui->mode
       && s_sbl_cache.volume     == ui->volume
       && s_sbl_cache.squelch    == ui->squelch
       && s_sbl_cache.nr_on      == ui->nr_on
-      && s_sbl_cache.nb_on      == ui->nb_on
-      && s_sbl_cache.active_vfo == ui->active_vfo) return;
+      && s_sbl_cache.nb_on      == ui->nb_on) return;
 
+  s_sbl_cache.mode       = ui->mode;
   s_sbl_cache.volume     = ui->volume;
   s_sbl_cache.squelch    = ui->squelch;
   s_sbl_cache.nr_on      = ui->nr_on;
   s_sbl_cache.nb_on      = ui->nb_on;
-  s_sbl_cache.active_vfo = ui->active_vfo;
   s_sbl_cache.valid      = true;
 
   char vol_str[6]; snprintf(vol_str, sizeof(vol_str), "%u", ui->volume);
@@ -1125,8 +1125,15 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
   const uint16_t item_h  = 24U;
   const uint16_t val_off =  4U;
 
-  uint16_t col_a = (ui->active_vfo == 0U) ? UI_STATUS_VAL : UI_STATUS_LBL;
-  uint16_t col_b = (ui->active_vfo == 1U) ? UI_STATUS_ON  : UI_STATUS_LBL;
+  static const char *const sbl_mode_s[7] = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
+  static const uint16_t sbl_mode_col[7] = {
+      UI_MODE_AM, UI_MODE_FM,  UI_MODE_USB, UI_MODE_LSB,
+      UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL
+  };
+  const char *mode_str = (ui->mode < 7U) ? sbl_mode_s[ui->mode] : "---";
+  uint16_t    mode_col = (ui->mode < 7U) ? sbl_mode_col[ui->mode] : UI_STATUS_LBL;
+  /* Mode value centred — "DIGU"(48 px) leaves no room for a MED label */
+  uint16_t    mode_x   = (uint16_t)((SBL_W - med_str_w(mode_str)) / 2U);
   uint16_t nr_bg = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
   uint16_t nb_bg = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
   uint16_t vol_x = (uint16_t)(SBL_W - 2U - med_str_w(vol_str));
@@ -1151,13 +1158,10 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
       }
 
       switch (i) {
-        case 0:  /* VFO — "VFO" left, A/B right, all MED */
+        case 0:  /* Mode — centred MED, per-mode colour */
           if (row >= val_off && row < val_off + MED_H) {
             uint16_t fr = row - val_off;
-            ln_medstr(ln,  2U, fr, "VFO", UI_STATUS_LBL, UI_SBL_BG);
-            ln_medchar(ln, 44U, fr, 'A',  col_a,         UI_SBL_BG);
-            ln_medchar(ln, 56U, fr, '/',  UI_STATUS_LBL, UI_SBL_BG);
-            ln_medchar(ln, 68U, fr, 'B',  col_b,         UI_SBL_BG);
+            ln_medstr(ln, mode_x, fr, mode_str, mode_col, UI_SBL_BG);
           }
           break;
 
@@ -1196,7 +1200,7 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
       }
 
       /* 1-px side rails — drawn after content so full-width MED glyph cells
-       * (e.g. 'B' at x=68 spans to x=79) can't punch through the frame */
+       * (e.g. a value right-aligned to x=78) can't punch through the frame */
       LCD_LineFill(ln, 0U, 1U, UI_DIVIDER);
       LCD_LineFill(ln, (uint16_t)(SBL_W - 1U), 1U, UI_DIVIDER);
     }
@@ -1392,8 +1396,11 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   }
 
   /* RX = green (subtle), TX = red — per UI spec */
+#if LCD_PANEL == LCD_PANEL_ST7789
+  /* ST7796: mode lives in the left sidebar (SBL), not beside the digits */
   static const char *const vfo_mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
   const char *vfo_mode_str = (ui->mode < 7U) ? vfo_mode_s[ui->mode] : "---";
+#endif
   const char *rt_str       = ui->tx_mode ? "TX" : "RX";
   uint16_t    rt_color     = ui->tx_mode ? UI_TX_BG : UI_RX_BG;
 
@@ -1502,7 +1509,7 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 #endif
   /* RX/TX text-only badge (ST7796 only) — ST7789 uses right panel instead.
    * rt_by chosen so text rows (rt_by+2 .. rt_by+2+MED_H) coincide with
-   * mode_y (= freq_top + (BIG_H-MED_H)/2), giving side-by-side alignment. */
+   * the vertical centre of the BIG digits, giving side-by-side alignment. */
 #if LCD_PANEL != LCD_PANEL_ST7789
   const uint16_t rt_bad_w = (uint16_t)(2U * MED_W + 6U);
   const uint16_t rt_bad_h = (uint16_t)(MED_H + 4U);
@@ -1529,14 +1536,8 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   /* Right-align digits: units column always at x=180 (= xx.xxx.xxx right edge) */
   const uint16_t vfo_right_edge = 2U + MED_W + 10U + 8U * BIG_W + 2U * 6U;  /* 180 */
   fx_base = (uint16_t)(vfo_right_edge - total_w);
-  const uint16_t mode_x = (uint16_t)(vfo_right_edge + 10U);  /* 190, fixed */
-  const uint16_t mode_y = (uint16_t)(freq_top + (BIG_H - MED_H) / 2U);
-  static const uint16_t s_mode_col[7] = {
-      UI_MODE_AM, UI_MODE_FM,  UI_MODE_USB, UI_MODE_LSB,
-      UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL
-  };
-  uint16_t mode_color = (ui->mode < 7U) ? s_mode_col[ui->mode] : UI_STATUS_LBL;
-  rt_bx = (uint16_t)(mode_x + (uint16_t)(strlen(vfo_mode_str) * MED_W) + 12U);
+  /* RX/TX badge right after the digits (mode moved to SBL) — fixed x=190 */
+  rt_bx = (uint16_t)(vfo_right_edge + 10U);
 #else
   fx_base = (fx_base >= 14U) ? (uint16_t)(fx_base - 14U) : 0U;
 #endif
@@ -1559,11 +1560,6 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
     if (row >= freq_top && (row - freq_top) < BIG_H) {
       ln_segstr(ln, fx_base, row - freq_top, full_freq, UI_FREQ_FG, UI_VFO_BG);
     }
-
-#if LCD_PANEL == LCD_PANEL_ST7796
-    if (row >= mode_y && (row - mode_y) < MED_H)
-      ln_medstr(ln, mode_x, row - mode_y, vfo_mode_str, mode_color, UI_VFO_BG);
-#endif
 
     /* Active VFO indicator (2× medium, top-left) */
     if (row >= vfoi_y && (row - vfoi_y) < MED_H) {
@@ -1683,8 +1679,8 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   /* Right-panel changed: forces redraw of both sections on ST7789.
    * Landscape: rp_chg propagates to lower_chg so params (rows 19..58) all refresh.
    * Portrait: params are in lower section → only mode/tx_mode need upper push.
-   * ST7796: mode text and RT badge ("TX"/"RX") both sit in the upper section;
-   *         add tx_mode so the upper section is pushed on every TX key/unkey. */
+   * ST7796: RT badge ("TX"/"RX") sits in the upper section; tx_mode pushes
+   *         it on every TX key/unkey (mode is drawn in SBL, not here). */
   bool rp_chg = false;
 #if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
   rp_chg = !s_vfo_cache.valid
@@ -1702,16 +1698,12 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
           || s_vfo_cache.tx_mode != ui->tx_mode;
 #else /* ST7796 */
   rp_chg = !s_vfo_cache.valid
-          || s_vfo_cache.mode    != ui->mode
           || s_vfo_cache.tx_mode != ui->tx_mode;  /* RT badge rows 6..21 in upper section */
 #endif
 
   bool upper_chg = !s_vfo_cache.valid
       || s_vfo_cache.freq_hz    != ui->freq_hz
       || s_vfo_cache.active_vfo != ui->active_vfo
-#if LCD_PANEL == LCD_PANEL_ST7796
-      || s_vfo_cache.mode       != ui->mode
-#endif
       || rp_chg;
 
   bool lower_chg = !s_vfo_cache.valid
@@ -1755,9 +1747,6 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   s_vfo_cache.tx_power   = ui->tx_power;
   s_vfo_cache.pa_watts   = ui->pa_watts;
   s_vfo_cache.fwd_power_mw = ui->fwd_power_mw;
-#if LCD_PANEL == LCD_PANEL_ST7796
-  s_vfo_cache.mode    = ui->mode;
-#endif
 #if LCD_PANEL == LCD_PANEL_ST7789
   s_vfo_cache.mode    = ui->mode;
   s_vfo_cache.volume  = ui->volume;
