@@ -1149,14 +1149,16 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, LPF_A0_Pin|LPF_A1_Pin|LPF_A2_Pin|BPF_SRCLK_Pin
-                          |BPF_RCLK_Pin|BPF_SER_Pin|FLASH_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, BPF_SRCLK_Pin|BPF_RCLK_Pin|BPF_SER_Pin|FLASH_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level — 74AHC595 OE is active-LOW and tri-states
     Q0-Q7 when HIGH: park HIGH at boot so the 3253 OE pull-ups hold every mux
     side off (isolated) until BPF_LPF_Init shifts a valid word in and pulls
-    this LOW. Do not rely on the GPIO reset default — regen can revert it. */
-  HAL_GPIO_WritePin(GPIOA, BPF_OE_Pin, GPIO_PIN_SET);
+    this LOW. LPF_A2:A0 = 111 selects 74HC238 Y7 (LPF_OFF, unconnected) so
+    no relay coil is energised at boot — 000 would close the 160m relay
+    until BPF_LPF_Init runs. Do not rely on the GPIO reset default — regen
+    can revert it. */
+  HAL_GPIO_WritePin(GPIOA, LPF_A0_Pin|LPF_A1_Pin|LPF_A2_Pin|BPF_OE_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, ATT_DAT_Pin|ATT_CLK_Pin, GPIO_PIN_RESET);

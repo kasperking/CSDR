@@ -35,6 +35,7 @@
 #include "tx_unlock.h"  /* TxUnlock_IsUnlocked — persistent OOB-TX header tag */
 #include "pa_protect.h" /* PA_State_t / PA_Fault_t for TX warning overlay */
 #include "rtc_clock.h"  /* RTC_Clock_GetTime / SetTime */
+#include "gps_nmea.h"   /* GPS_NMEA_GetStatus — header GPS tag + ANT warnings */
 #include "core_cm7.h"   /* DWT->CYCCNT for chunk render timing */
 #include <string.h>
 #include <stdio.h>
@@ -837,6 +838,15 @@ void SDR_UI_DrawFrame(uint32_t sample_rate, uint16_t fft_bins)
   draw_footer_rows(spec_half_span_hz());
 }
 
+/* Append " tag" to the header warning string, bounded by its size */
+static void hdr_warn_append(char *buf, uint8_t size, uint8_t *pos, const char *tag)
+{
+  if (*pos > 0U && *pos < (uint8_t)(size - 1U)) buf[(*pos)++] = ' ';
+  for (const char *c = tag; *c && *pos < (uint8_t)(size - 1U); c++) {
+    buf[(*pos)++] = *c;
+  }
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawHeader  (HDR_H=24 rows × LCD_W=480 cols)
  * ════════════════════════════════════════════════════════════════════════════ */
@@ -878,6 +888,32 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
                         ? (uint16_t)(clock_x - (uint16_t)Font8x10.width - 4U)
                         : (uint16_t)(volt_x   - (uint16_t)Font8x10.width - 4U);
 
+  /* ── GPS tag "GPS nn" left of the clock (nn = sats used, GGA) ───────────────
+   * Hidden until the first NMEA byte since boot (no module fitted = no
+   * clutter).  Green = RMC fix, gray = data but no fix, red "--" = stream
+   * lost.  Fixed 6-char width so the header layout doesn't jitter. */
+  GPSNMEA_Status_t gps;
+  GPS_NMEA_GetStatus(&gps);
+  char     gps_str[8] = {0};
+  uint16_t gps_col    = UI_STATUS_HINT;
+  uint16_t gps_x      = 0U;
+  uint16_t sep_gps_x  = 0U;
+  if (gps.seen && clk_fits) {
+    int32_t gx = (int32_t)sep2_x - 4 - (int32_t)(6U * Font8x10.width);
+    if (gx > (int32_t)left_end + 8 + (int32_t)Font8x10.width + 4) {
+      if (gps.state == GPSNMEA_NO_DATA) {
+        snprintf(gps_str, sizeof(gps_str), "GPS --");
+        gps_col = UI_STATUS_OFF;
+      } else {
+        snprintf(gps_str, sizeof(gps_str), "GPS %02u", (unsigned)(gps.sats % 100U));
+        gps_col = (gps.state == GPSNMEA_OK) ? UI_STATUS_ON : UI_STATUS_HINT;
+      }
+      sep_gps_x = sep2_x;
+      gps_x     = (uint16_t)gx;
+      sep2_x    = (uint16_t)(gps_x - (uint16_t)Font8x10.width - 4U);
+    }
+  }
+
   /* ── Header warning: centred between ATT label and sep2 ─
    * Shows self-test failures and, while out-of-band TX is unlocked, a
    * persistent amber "OOB TX" tag (part of the tx_unlock audit trail — the
@@ -899,16 +935,26 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
       }
     }
     if (TxUnlock_IsUnlocked()) {
-      if (pos > 0U && pos < (uint8_t)(sizeof(warn_str) - 1U)) warn_str[pos++] = ' ';
-      for (const char *c = "OOB TX";
-           *c && pos < (uint8_t)(sizeof(warn_str) - 1U); c++) {
-        warn_str[pos++] = *c;
-      }
+      hdr_warn_append(warn_str, (uint8_t)sizeof(warn_str), &pos, "OOB TX");
+    }
+    /* GPS: stream dropped after it was seen; antenna fault from the module's
+     * own detector.  OPEN is only flagged without a fix — a passive antenna
+     * also reads OPEN but still tracks, so a fix means it's working. */
+    if (gps.seen && gps.state == GPSNMEA_NO_DATA) {
+      hdr_warn_append(warn_str, (uint8_t)sizeof(warn_str), &pos, "GPS LOST");
+    }
+    if (gps.ant == GPSNMEA_ANT_SHORT) {
+      hdr_warn_append(warn_str, (uint8_t)sizeof(warn_str), &pos, "ANT SHORT");
+    } else if (gps.ant == GPSNMEA_ANT_OPEN && gps.state != GPSNMEA_OK) {
+      hdr_warn_append(warn_str, (uint8_t)sizeof(warn_str), &pos, "ANT OPEN");
     }
     warn_str[pos] = '\0';
     if (pos > 0U) {
-      uint16_t warn_w = (uint16_t)((uint16_t)strlen(warn_str) * Font8x10.width);
       uint16_t avail  = (sep2_x > left_end + 4U) ? (uint16_t)(sep2_x - left_end - 4U) : 0U;
+      /* Truncate rather than overdraw the GPS tag / clock slot */
+      uint16_t max_ch = (uint16_t)(avail / Font8x10.width);
+      if (pos > max_ch) warn_str[max_ch] = '\0';
+      uint16_t warn_w = (uint16_t)((uint16_t)strlen(warn_str) * Font8x10.width);
       warn_x = (avail > warn_w)
                ? (uint16_t)(left_end + (avail - warn_w) / 2U)
                : left_end;
@@ -927,12 +973,18 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
     if (clk_fits) {
       LCD_LineFill(ln, sep_clk_x, 1U, UI_DIVIDER);
     }
+    if (gps_str[0]) {
+      LCD_LineFill(ln, sep_gps_x, 1U, UI_DIVIDER);
+    }
     if (row >= txt_y && row < txt_y + Font8x10.height) {
       uint16_t fr = row - txt_y;
       LCD_LineStrW(ln, 4U,     fr, agc_str,  &Font8x10, UI_STATUS_LBL, UI_HDR_BG);
       LCD_LineStrW(ln, att_x,  fr, att_hdr,  &Font8x10, att_vc,        UI_HDR_BG);
       if (clk_fits) {
         LCD_LineStrW(ln, clock_x, fr, clk_str, &Font8x10, UI_STATUS_HINT, UI_HDR_BG);
+      }
+      if (gps_str[0]) {
+        LCD_LineStrW(ln, gps_x, fr, gps_str, &Font8x10, gps_col, UI_HDR_BG);
       }
       LCD_LineStrW(ln, volt_x, fr, vstr,     &Font8x10, vcol,          UI_HDR_BG);
       if (warn_str[0]) {

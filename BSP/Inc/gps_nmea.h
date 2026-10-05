@@ -33,8 +33,20 @@ typedef enum {
   GPSNMEA_OK            /*!< RMC hợp lệ trong 3 s gần nhất                */
 } GPSNMEA_State_t;
 
+/** Trạng thái active antenna — từ $GxTXT,..,ANTENNA OK/OPEN/SHORT của module
+ *  CASIC (AT6558: GP-02, ATGM336H).  Module u-blox không phát → UNKNOWN. */
+typedef enum {
+  GPSNMEA_ANT_UNKNOWN = 0,
+  GPSNMEA_ANT_OK,
+  GPSNMEA_ANT_OPEN,     /*!< hở mạch / chưa cắm antenna (dòng < ~2.5 mA)  */
+  GPSNMEA_ANT_SHORT     /*!< ngắn mạch — module đã cắt dòng VRF (~50 mA)  */
+} GPSNMEA_Ant_t;
+
 typedef struct {
   GPSNMEA_State_t state;
+  bool      seen;                 /*!< đã từng nhận byte từ GPS kể từ boot  */
+  uint8_t   sats;                 /*!< số vệ tinh dùng cho fix ($GxGGA f7), 0 nếu stale */
+  GPSNMEA_Ant_t ant;              /*!< UNKNOWN khi state = NO_DATA          */
   uint8_t   utc_h, utc_m, utc_s;  /*!< giờ UTC của RMC hợp lệ gần nhất     */
   uint32_t  sentences;            /*!< số câu qua được checksum            */
   uint32_t  cksum_err;            /*!< số câu hỏng checksum/format         */

@@ -17,6 +17,7 @@
 #include "gps_nmea.h"
 #include "rtc_clock.h"
 #include "stm32h7xx_hal.h"
+#include <string.h>
 
 #define GPSNMEA_IRQ_PRIO   12U        /* dưới audio DMA (0) — như gps_cal   */
 #define GPSNMEA_BAUD       9600U      /* mặc định NEO-6M/7M/8M/M10          */
@@ -39,6 +40,10 @@ static int32_t  s_utc_off_h;      /* RTC = UTC + offset (giờ nguyên)        *
 static uint8_t  s_utc_h, s_utc_m, s_utc_s;
 static uint32_t s_last_byte_ms, s_last_fix_ms, s_last_set_ms;
 static bool     s_seen_byte, s_seen_fix;
+static uint8_t  s_sats;           /* $GxGGA field 7 (số vệ tinh dùng)       */
+static uint32_t s_last_gga_ms;
+static GPSNMEA_Ant_t s_ant;       /* $GxTXT ANTENNA ... — module CASIC chỉ  */
+                                  /* phát khi đổi trạng thái nên KHÔNG stale */
 
 /* Counters — volatile để xem trực tiếp trong debugger */
 volatile uint32_t dbg_gps_nmea_sentences;
@@ -131,6 +136,43 @@ static void nmea_try_sync(void)
   dbg_gps_nmea_syncs++;
 }
 
+/* ── Vị trí ký tự đầu của field n (field 0 = "$GxXXX"); = star nếu thiếu ─── */
+static uint8_t nmea_field(uint8_t n, uint8_t star)
+{
+  uint8_t i = 0U;
+  while (n > 0U && i < star) {
+    if (s_line[i] == ',') n--;
+    i++;
+  }
+  return (n == 0U) ? i : star;
+}
+
+/* $GxGGA,time,lat,N,lon,E,quality,numSV,... — chỉ lấy numSV (field 7) */
+static void nmea_gga(uint8_t star)
+{
+  uint8_t  i = nmea_field(7U, star);
+  uint16_t n = 0U;
+  while (i < star && s_line[i] >= '0' && s_line[i] <= '9') {
+    n = (uint16_t)(n * 10U + (uint16_t)(s_line[i] - '0'));
+    if (n > 99U) n = 99U;
+    i++;
+  }
+  s_sats        = (uint8_t)n;
+  s_last_gga_ms = HAL_GetTick();
+}
+
+/* $GxTXT,01,01,01,ANTENNA OK|OPEN|SHORT — CASIC (GP-02/ATGM336H) */
+static void nmea_txt(uint8_t star)
+{
+  uint8_t i = nmea_field(4U, star);
+  if ((uint8_t)(star - i) < 10U || memcmp(&s_line[i], "ANTENNA ", 8U) != 0)
+    return;
+  const char *st = &s_line[i + 8U];
+  if      (st[0] == 'O' && st[1] == 'K')  s_ant = GPSNMEA_ANT_OK;
+  else if (st[0] == 'O' && st[1] == 'P')  s_ant = GPSNMEA_ANT_OPEN;
+  else if (st[0] == 'S' && st[1] == 'H')  s_ant = GPSNMEA_ANT_SHORT;
+}
+
 /* ── Một câu hoàn chỉnh "$....*hh" (không CR/LF) ─────────────────────────── */
 static void nmea_line(void)
 {
@@ -155,8 +197,12 @@ static void nmea_line(void)
 
   dbg_gps_nmea_sentences++;
 
-  /* Chỉ quan tâm RMC (talker 2 ký tự bất kỳ): $GxRMC,hhmmss.ss,A,... */
-  if (star < 6U || s_line[3] != 'R' || s_line[4] != 'M' || s_line[5] != 'C')
+  if (star < 6U) return;
+  if (s_line[3] == 'G' && s_line[4] == 'G' && s_line[5] == 'A') { nmea_gga(star); return; }
+  if (s_line[3] == 'T' && s_line[4] == 'X' && s_line[5] == 'T') { nmea_txt(star); return; }
+
+  /* Còn lại chỉ quan tâm RMC (talker 2 ký tự bất kỳ): $GxRMC,hhmmss.ss,A,... */
+  if (s_line[3] != 'R' || s_line[4] != 'M' || s_line[5] != 'C')
     return;
 
   /* Field 1 = time, field 2 = status; các field sau không cần */
@@ -228,4 +274,8 @@ void GPS_NMEA_GetStatus(GPSNMEA_Status_t *out)
     out->state = GPSNMEA_NO_FIX;
   else
     out->state = GPSNMEA_OK;
+  out->seen = s_seen_byte;
+  out->sats = (s_last_gga_ms != 0U && (now - s_last_gga_ms) <= GPSNMEA_STALE_MS)
+              ? s_sats : 0U;
+  out->ant  = (out->state == GPSNMEA_NO_DATA) ? GPSNMEA_ANT_UNKNOWN : s_ant;
 }
