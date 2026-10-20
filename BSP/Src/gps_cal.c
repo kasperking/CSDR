@@ -3,8 +3,8 @@
   * @file    gps_cal.c
   * @brief   GPS 1PPS frequency calibration — TIM3 reciprocal counter.
   *
-  *  TIM3 đếm CLK2 (external clock mode 1 qua TI2FP2/PB5); mỗi sườn lên
-  *  1PPS trên TI1/PC6 latch counter bằng phần cứng.  Hiệu hai lần latch
+  *  TIM3 đếm CLK2 (external clock mode 1 qua TI2FP2/PA7); mỗi sườn lên
+  *  1PPS trên TI1/PB4 latch counter bằng phần cứng.  Hiệu hai lần latch
   *  liên tiếp = số chu kỳ CLK2 trong đúng 1 giây GPS.
   *
   *  Interval lệch quá ±0.5% danh định (mất PPS, mất CLK, glitch) làm
@@ -13,6 +13,7 @@
   */
 #include "gps_cal.h"
 #include "stm32h7xx_hal.h"
+#include "main.h"          /* GPS_CLK2_Pin (PA7) / GPS_1PPS_Pin (PB4) */
 
 #define GPSCAL_IRQ_PRIO      12U    /* dưới audio DMA (0) và PA-OC EXTI (5) */
 #define GPSCAL_PPS_TIMEOUT   2500U  /* ms không capture → NO_PPS            */
@@ -81,18 +82,21 @@ void GPSCal_Start(uint32_t nominal_hz)
   s_last_delta = 0U;
   s_last_pps_ms = HAL_GetTick();
 
+  /* Chân chọn theo layout: PA7 (pin 31, cạnh phải) nhìn thẳng sang SI5351
+   * nên đường 25 MHz ngắn và không chạy vòng qua MCU; PB4 (pin 90) nằm sát
+   * GPS_RX (PD6) nên 1PPS đi thẳng sang module GPS, không cắt bus LCD. */
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   GPIO_InitTypeDef gi = {0};
   gi.Mode      = GPIO_MODE_AF_PP;
   gi.Alternate = GPIO_AF2_TIM3;
   gi.Speed     = GPIO_SPEED_FREQ_LOW;
-  gi.Pin       = GPIO_PIN_5;              /* PB5 = TIM3_CH2 ← SI5351 CLK2 */
+  gi.Pin       = GPS_CLK2_Pin;            /* PA7 = TIM3_CH2 ← SI5351 CLK2 */
   gi.Pull      = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &gi);
-  gi.Pin       = GPIO_PIN_6;              /* PC6 = TIM3_CH1 ← GPS 1PPS    */
+  HAL_GPIO_Init(GPS_CLK2_GPIO_Port, &gi);
+  gi.Pin       = GPS_1PPS_Pin;            /* PB4 = TIM3_CH1 ← GPS 1PPS    */
   gi.Pull      = GPIO_PULLDOWN;           /* không GPS → không rung */
-  HAL_GPIO_Init(GPIOC, &gi);
+  HAL_GPIO_Init(GPS_1PPS_GPIO_Port, &gi);
 
   __HAL_RCC_TIM3_CLK_ENABLE();
   TIM3->CR1  = 0U;
@@ -127,8 +131,8 @@ void GPSCal_Stop(void)
   TIM3->SR   = 0U;
   HAL_NVIC_DisableIRQ(TIM3_IRQn);
   __HAL_RCC_TIM3_CLK_DISABLE();
-  HAL_GPIO_DeInit(GPIOB, GPIO_PIN_5);
-  HAL_GPIO_DeInit(GPIOC, GPIO_PIN_6);
+  HAL_GPIO_DeInit(GPS_CLK2_GPIO_Port, GPS_CLK2_Pin);
+  HAL_GPIO_DeInit(GPS_1PPS_GPIO_Port, GPS_1PPS_Pin);
   s_running = false;
 }
 

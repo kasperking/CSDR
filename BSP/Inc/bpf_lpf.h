@@ -7,15 +7,15 @@
   *
   *  ── BPF (4× SN74CBT3253 dual 4:1 FET mux, 2 banks of {QSD-side, ant-side}
   *         pair, driven by one 74AHC595 shift register — NOT direct GPIO) ──
-  *  PA4 BPF_SRCLK – 595 shift clock
-  *  PA5 BPF_RCLK  – 595 storage-register latch (pulse HIGH then LOW to commit)
-  *  PA6 BPF_OE    – 595 chip output-enable, active-LOW. Tri-states Q0..Q7
+  *  PA5 CTL_SCK   – 595 shift clock (SRCLK) — shared control bus, ctl_bus.h
+  *  PA6 CTL_SDO   – 595 serial data in (SER) — shared control bus
+  *  PC4 BPF_RCLK  – 595 storage-register latch (pulse HIGH then LOW to commit)
+  *  PC5 BPF_OE    – 595 chip output-enable, active-LOW. Tri-states Q0..Q7
   *                  (all mux OE pins float) when HIGH. Pull-ups on the 3253
   *                  OE nets hold every mux side OFF while floating, so this
   *                  pin must be driven HIGH by the time the MCU takes over
   *                  and must stay HIGH until the first valid word has been
   *                  shifted + latched — see BPF_LPF_Init().
-  *  PA7 BPF_SER   – 595 serial data in
   *
   *  595 output bit → function (see bpf_lpf.c bpf595_shift() / BPF595_BIT_*).
   *  NOTE: the six used signals start at QB, not QA (QA and QH are left
@@ -45,7 +45,7 @@
   *   ch7  bank B S1=1 S0=1 — not populated (spare)
   *
   *  ── LPF (74HC238 3-to-8 Decoder) ────────────────────────
-  *  PA0 LPF_A0, PA1 LPF_A1, PA2 LPF_A2 – decoder address (A2:A1:A0)
+  *  PC0 LPF_A0, PC1 LPF_A1, PB5 LPF_A2 – decoder address (A2:A1:A0)
   *  Decoder enable pins E1/E2/E3 are hardwired on PCB (always enabled).
   *  Enum value = decoder address: (uint8_t)lpf_band_t → A2:A1:A0 directly.
   *

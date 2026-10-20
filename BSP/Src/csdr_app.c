@@ -63,7 +63,6 @@ extern TIM_HandleTypeDef  htim8;    /* Backlight — TIM8_CH4 = PC9 */
 extern TIM_HandleTypeDef  htim17;   /* Fan — TIM17_CH1 = PB9 */
 extern ADC_HandleTypeDef  hadc1;
 extern ADC_HandleTypeDef  hadc2;
-extern ADC_HandleTypeDef  hadc3;
 
 /* ══════════════════════════════════════════════════════════
  *  Private state
@@ -676,9 +675,9 @@ void CSDR_Init(void)
   g_rfagc.target_x2 = g_att.current_atten_x2;   /* no step-change on first update */
   RFAGC_SetEnabled(&g_rfagc, g_sdr.rf_agc_on, g_att.current_atten_x2);
 
-  /* PA bias source: fixed trimmer hoặc MCP4822 trên SPI3 (share W25Q).
+  /* PA bias source: fixed trimmer hoặc MCP4822 trên shared control bus.
    * Init ép DAC về 0 (soft-reset không reset DAC), rồi nạp cấu hình đã load. */
-  PA_Bias_Init(&hspi3);
+  PA_Bias_Init();
   PA_Bias_Configure(g_sdr.pa_bias_src, g_sdr.pa_bias1, g_sdr.pa_bias2);
   if (g_sdr.pa_idq_ma < 50U || g_sdr.pa_idq_ma > 2000U)
     g_sdr.pa_idq_ma = 500U;   /* no-blob boot path: g_sdr zero-init */

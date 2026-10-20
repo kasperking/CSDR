@@ -45,11 +45,14 @@ void PWR_Poll(void);                     /* Gọi mỗi 100ms: kiểm tra nút t
  *  SWR / ALC / VOLTAGE MEASUREMENT
  *
  *  ADC channels (từ FSDR.ioc):
+ *   ADC1_INP16 → PA0  ALC               (ALC/Mic level)
+ *   ADC1_INP17 → PA1  SWR_FOR           (forward power)
+ *   ADC2_INP14 → PA2  SWR_REF           (reflected power)
  *   ADC1_INP15 → PA3  VOLTAGE_IN_METER  (điện áp nguồn qua divider)
- *   ADC2_INP11 → PC1  ALC               (ALC/Mic level)
- *   ADC3_INP0  → PC2_C SWR_FOR          (forward power)
- *   ADC3_INP1  → PC3_C SWR_REF         (reflected power)
- *   ADC1_INP10 → PC0  NTC               (nhiệt độ)
+ *   ADC1_INP18 → PA4  NTC               (nhiệt độ)
+ *  Cả 5 chân nằm ở góc dưới-phải LQFP100 (pin 22-28), quay về phía PA/J4.
+ *  FOR (ADC1) và REF (ADC2) ở hai ADC khác nhau → có thể chuyển sang dual
+ *  regular-simultaneous sau này để lấy mẫu FOR/REF cùng thời điểm.
  *
  *  SWR = (Vfor + Vref) / (Vfor - Vref)
  *  Power_W = (Vfor^2) / R_coupler (thường R=50Ω, hệ số cần hiệu chỉnh)
@@ -82,7 +85,6 @@ extern FSDR_Analog_t g_analog;
 /* ADC handles (extern từ main.c) */
 extern ADC_HandleTypeDef hadc1;
 extern ADC_HandleTypeDef hadc2;
-extern ADC_HandleTypeDef hadc3;
 
 void Analog_Init(void);
 

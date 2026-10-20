@@ -12,7 +12,7 @@
   *      → Power policy     (drive_limit 100/75/50/25/0 %)
   *      → TX drive control (multiplied into g_dsp.tx.audio_gain via csdr_apply_tx)
   *
-  *  External ALC (PC1 / ADC2_INP11 — PA feedback voltage):
+  *  External ALC (PA0 / ADC1_INP16 — PA feedback voltage):
   *      fast-attack / slow-release envelope detector
   *      → continuous proportional reduction above 70% input
   *      → PA_Protect_GetALCDrive() 0-100 multiplier (independent of stepped foldback)
@@ -135,7 +135,7 @@ bool PA_Protect_IsTxAllowed(void);
 uint8_t PA_Protect_GetDriveLimit(void);
 
 /**
-  * @brief Continuous ALC drive limit from external PA feedback (PC1/ADC2_INP11).
+  * @brief Continuous ALC drive limit from external PA feedback (PA0/ADC1_INP16).
   *        Returns 100 when g_sdr.ext_alc_on=false or ALC input < 70% threshold.
   *        Returns 30..100 proportional reduction when input exceeds threshold.
   *        Multiply independently into csdr_apply_tx() alongside GetDriveLimit().

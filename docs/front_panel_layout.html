@@ -310,7 +310,7 @@
           <tr><td>MODE</td><td>Đổi mode thu/phát (USB/LSB/AM/FM/CW/DIGI)</td><td class="src">mode_sel.h · PCA_BIT_MODE (P0.2)</td></tr>
           <tr><td>F1–F4</td><td>Phím mềm theo ngữ cảnh — cuộn menu, xác nhận, back, quét SWR nhanh</td><td class="src">csdr_app.c · PCA_BIT_F1..F4 (P0.3–P0.6)</td></tr>
           <tr><td>TUNE</td><td>Phím riêng — push-to-tune, giữ để dò ATU</td><td class="src">input_scan.h · PCA_BIT_TUNE (P0.7)</td></tr>
-          <tr><td>VFO</td><td>Encoder xoay chỉnh tần số + nhấn để chọn bước nhảy</td><td class="src">encoder.h · TIM4 PD12/PD13, ENC_SW PB15</td></tr>
+          <tr><td>VFO</td><td>Encoder xoay chỉnh tần số + nhấn để chọn bước nhảy</td><td class="src">encoder.h · TIM4 PD12/PD13, ENC_SW PC6</td></tr>
           <tr><td>LCD</td><td>ST7796S 480×320, vùng hiển thị 73.44×48.96mm, bus FMC 8080</td><td class="src">lcd_panel_config.h · sdr_ui.h</td></tr>
           <tr><td>LOA</td><td>Loa giám sát nội bộ (không tắt được bằng AUDIO_SD, chỉ codec shutdown)</td><td class="src">wm8731.h · AUDIO_SD PC13</td></tr>
         </tbody>
@@ -411,7 +411,7 @@
         <caption>Chú giải mặt sau — nguồn tham chiếu trong code</caption>
         <thead><tr><th>Cổng</th><th>Chức năng</th><th>Nguồn</th></tr></thead>
         <tbody>
-          <tr><td>ANT</td><td>Anten HF — đường RF qua bộ đo SWR + relay LPF/BPF</td><td class="src">main.h · SWR_FOR PC2, SWR_REF PC3, BPF/LPF PA0-2/PA4-7</td></tr>
+          <tr><td>ANT</td><td>Anten HF — đường RF qua bộ đo SWR + relay LPF/BPF</td><td class="src">main.h · SWR_FOR PA1, SWR_REF PA2, BPF PA5/PA6/PC4/PC5, LPF PC0/PC1/PB5</td></tr>
           <tr><td>DC IN</td><td>Nguồn 13.8V ngoài — có cảm biến áp trên board</td><td class="src">main.h · VOLTAGE_IN_METER PA3</td></tr>
           <tr><td>FAN</td><td>Quạt tản nhiệt tầng PA, điều khiển theo nhiệt độ</td><td class="src">main.h · FAN_Pin PB9</td></tr>
           <tr><td>USB-C</td><td>CAT (TS-2000), USB Audio, nạp firmware/NOR flash qua CDC</td><td class="src">usb_cat.h · usb_audio.h · usb_flash_proto.h</td></tr>

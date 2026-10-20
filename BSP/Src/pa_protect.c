@@ -32,7 +32,7 @@
 #include "hw_fault.h"         /* HW_Fault_PASensorMissing()                    */
 
 /* ─── External ALC constants (fixed, professional-radio style) ──────────── */
-/* PC1 / ADC2_INP11: external PA feedback voltage, 0-100% of ADC range.
+/* PA0 / ADC1_INP16: external PA feedback voltage, 0-100% of ADC range.
  * Attack τ ≈ 28 ms  (α=0.5,  one 20 ms tick).
  * Release τ ≈ 490 ms (α=0.04, one 20 ms tick).
  * Reduction is proportional: threshold..100% input → 100..min_drive output. */

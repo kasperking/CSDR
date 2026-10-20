@@ -153,27 +153,27 @@ void Analog_Init(void)
 
 uint16_t Analog_ReadNTC_Raw(void)
 {
-  return adc_read_ch(&hadc1, ADC_CHANNEL_10);   /* PC0 */
+  return adc_read_ch(&hadc1, ADC_CHANNEL_18);   /* ADC1_INP18 = PA4 */
 }
 
 uint16_t Analog_ReadVoltage_Raw(void)
 {
-  return adc_read_ch(&hadc1, ADC_CHANNEL_15);   /* PA3 */
+  return adc_read_ch(&hadc1, ADC_CHANNEL_15);   /* ADC1_INP15 = PA3 */
 }
 
 uint16_t Analog_ReadALC_Raw(void)
 {
-  return adc_read(&hadc2);   /* ADC2_INP11 = PC1 */
+  return adc_read_ch(&hadc1, ADC_CHANNEL_16);   /* ADC1_INP16 = PA0 */
 }
 
 uint16_t Analog_ReadSWR_For_Raw(void)
 {
-  return adc_read_ch(&hadc3, ADC_CHANNEL_0);   /* ADC3_INP0 = PC2_C */
+  return adc_read_ch(&hadc1, ADC_CHANNEL_17);   /* ADC1_INP17 = PA1 */
 }
 
 uint16_t Analog_ReadSWR_Ref_Raw(void)
 {
-  return adc_read_ch(&hadc3, ADC_CHANNEL_1);   /* ADC3_INP1 = PC3_C */
+  return adc_read_ch(&hadc2, ADC_CHANNEL_14);   /* ADC2_INP14 = PA2 */
 }
 
 /**

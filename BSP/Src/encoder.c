@@ -7,7 +7,7 @@
   *  Đọc TIM4->CNT mỗi 1ms (từ SysTick callback qua Encoder_Poll).
   *  Delta = CNT_now - CNT_prev (signed 16-bit → xử lý wrap-around).
   *  Gia tốc: theo khoảng thời gian giữa 2 step → không phụ thuộc PPR.
-  *  Nút ENC_SW (PB15): polling có debounce + long press.
+  *  Nút ENC_SW (PC6): polling có debounce + long press.
   *
   *  Mọi hằng số phụ thuộc loại encoder (ENC_COUNTS_PER_STEP, ENC_DIR_GUARD_MS,
   *  ngưỡng gia tốc) nằm trong encoder_config.h — file này KHÔNG hard-code.
@@ -73,7 +73,7 @@ void Encoder_Init(Encoder_t *enc, TIM_HandleTypeDef *htim)
   *  1. Đọc TIM4->CNT, tính delta (16-bit signed để xử lý wrap-around 0/65535).
   *  2. Gom raw count thành step theo ENC_COUNTS_PER_STEP, lọc bounce bằng
   *     direction guard, rồi nhân hệ số gia tốc theo dt giữa hai step.
-  *  3. Đọc ENC_SW (PB15) với debounce & long press.
+  *  3. Đọc ENC_SW (PC6) với debounce & long press.
   *
   * @param  enc  Encoder handle
   */
@@ -148,7 +148,7 @@ void Encoder_Poll(Encoder_t *enc)
     }
   }
 
-  /* ── 3. Nút nhấn ENC_SW (PB15) – stability-window debounce ──────────
+  /* ── 3. Nút nhấn ENC_SW (PC6) – stability-window debounce ──────────
    * btn_now=true = pressed (active-low, GPIO_PIN_RESET).
    * Any edge resets the stability timer and un-confirms the press state.
    * Events fire only after the pin holds stable for debounce_ms, preventing

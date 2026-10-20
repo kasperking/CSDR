@@ -414,18 +414,21 @@ CSDR/
 | SAI1 Audio (WM8731) | PE2 (MCLK_A), PE3 (SD_B), PE4 (FS_A), PE5 (SCK_A), PE6 (SD_A) |
 | I2C1 — WM8731 + Si5351 | PB6 (SCL), PB7 (SDA) |
 | I2C2 — PCA9555 keys | PB10 (SCL), PB11 (SDA) |
-| Encoder TIM4 quadrature | PD12 (CH1), PD13 (CH2), PB15 (SW) |
-| BPF SN74CBT3253 ×4 via 74AHC595 | PA4 (SRCLK), PA5 (RCLK), PA6 (595 OE̅, boot HIGH), PA7 (SER) |
-| LPF 74HC238 | PA0 (A0), PA1 (A1), PA2 (A2) |
-| PE4302 ATT (bit-bang SPI) | PC4 (DATA), PC5 (CLK), PB0 (LATCH) |
+| Encoder TIM4 quadrature | PD12 (CH1), PD13 (CH2), PC6 (SW) |
+| Shared control bus (BPF 595 + PE4312 + MCP4822) | PA5 (CTL_SCK), PA6 (CTL_SDO) — xem `BSP/Inc/ctl_bus.h` |
+| BPF SN74CBT3253 ×4 via 74AHC595 | CTL bus + PC4 (RCLK), PC5 (595 OE̅, boot HIGH) |
+| LPF 74HC238 | PC0 (A0), PC1 (A1), PB5 (A2) |
+| PE4312 ATT | CTL bus (DATA qua 10k, CLK) + PB0 (LATCH) |
+| MCP4822 PA bias DAC | CTL bus (SDI, SCK) + PB15 (CS, boot HIGH) |
+| GPS cal (TIM3) | PA7 (Si5351 CLK2, TIM3_CH2), PB4 (1PPS, TIM3_CH1) |
 | Flash W25Q128 (SPI3) | PC10 (SCK), PC11 (MISO), PC12 (MOSI), PA15 (CS) |
 | USB OTG FS | PA11 (DM), PA12 (DP) |
-| ADC NTC | PC0 |
-| ADC ALC | PC1 |
-| ADC SWR forward/reflected | PC2, PC3 |
-| ADC Supply voltage | PA3 |
+| ADC ALC | PA0 (ADC1_INP16) |
+| ADC SWR forward/reflected | PA1 (ADC1_INP17), PA2 (ADC2_INP14) |
+| ADC Supply voltage | PA3 (ADC1_INP15) |
+| ADC NTC | PA4 (ADC1_INP18) |
 | Fan PWM (TIM17_CH1) | PB9 |
-| T/R relay | PB2 |
+| T/R relay | PB1 |
 | PTT | PE1 |
 | DIT / DAH paddle | PE0, PB8 |
 | PW button | PB12 |

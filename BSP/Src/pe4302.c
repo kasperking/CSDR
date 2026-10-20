@@ -83,8 +83,11 @@ static void pe4302_write(PE4302_Handle_t *att, uint8_t val_x2)
 void PE4302_Init(PE4302_Handle_t *att)
 {
   /* USER CODE BEGIN PE4302_Init_0 */
-  att->dat_port = ATT_DAT_GPIO_Port;  att->dat_pin = ATT_DAT_Pin;
-  att->clk_port = ATT_CLK_GPIO_Port;  att->clk_pin = ATT_CLK_Pin;
+  /* DATA/CLK = shared control bus (ctl_bus.h); only LE is ATT-private.
+   * BPF/DAC frames clock junk into the PE4312 shift register while LE
+   * stays LOW — harmless, the 6-bit frame below overwrites it before LE. */
+  att->dat_port = CTL_SDO_GPIO_Port;  att->dat_pin = CTL_SDO_Pin;
+  att->clk_port = CTL_SCK_GPIO_Port;  att->clk_pin = CTL_SCK_Pin;
   att->le_port  = ATT_LATCH_GPIO_Port; att->le_pin = ATT_LATCH_Pin;
   att->current_atten_db = 0U;
   att->current_atten_x2 = 0U;

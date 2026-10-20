@@ -2,13 +2,13 @@
 /**
   ******************************************************************************
   * @file    pa_bias.c
-  * @brief   PA gate-bias — MCP4822 trên SPI3 (share W25Q) / fixed trimmer
+  * @brief   PA gate-bias — MCP4822 trên shared control bus / fixed trimmer
   *
   *  Mọi hàm ở đây chạy trong main-loop context (CSDR_Init/CSDR_Loop/
-  *  csdr_apply_tx/PA_OC_HandleFaultInLoop) — cùng thread với W25Q driver và
-  *  Flash_SaveTick, nên một transaction DAC không bao giờ chen vào giữa một
-  *  transaction flash: không cần bus lock.  Giữa các bước save async, bus
-  *  SPI3 rảnh (W25Q busy là busy NỘI BỘ chip, CS đã nhả).
+  *  csdr_apply_tx/PA_OC_HandleFaultInLoop) — cùng thread với BPF_Set và
+  *  RF AGC (PE4312), những caller khác của bus CTL_SCK/CTL_SDO, nên một
+  *  khung DAC không bao giờ chen vào giữa khung của thiết bị khác: không
+  *  cần bus lock (luật của ctl_bus.h).
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -17,10 +17,11 @@
 #include "pa_overcurrent.h"   /* g_pa_oc.ina_ok/fault, PA_OC_ReadCurrent    */
 #include "fsdr_analog.h"      /* g_analog.temp_c (°C×10) — NTC bù nhiệt     */
 #include "csdr_app.h"         /* g_sdr.tx_mode/pa_watts, CSDR_RequestTX     */
+#include "ctl_bus.h"          /* CtlBus_Shift — SDI/SCK dùng chung          */
 
 PA_Bias_State_t g_pa_bias;
 
-static SPI_HandleTypeDef *s_spi = NULL;
+static bool s_ready = false;   /* chặn ghi trước PA_Bias_Init */
 
 /* Ramp: mỗi PA_BIAS_STEP_MS bước PA_BIAS_STEP_CODE về target →
  * full-scale 4095 hết ≈ 16 bước × 2 ms = 32 ms (trong blanking 100 ms). */
@@ -28,21 +29,18 @@ static SPI_HandleTypeDef *s_spi = NULL;
 #define PA_BIAS_STEP_CODE  256U
 
 /* ── MCP4822 write: 16-bit frame, [15]=B/A [13]=GA(1=×1) [12]=SHDN(1=on) ──
- * SPI3 kernel 120 MHz đang cấu hình /4 = 30 MHz cho W25Q — quá 20 MHz max
- * của MCP4822.  Hạ MBR xuống /16 (7.5 MHz) riêng cho transaction này rồi
- * trả lại: HAL giữ SPE=0 ngoài transfer nên sửa CFG1 tại đây là hợp lệ. */
+ * Bit-bang mode 0,0 trên bus chung, MSB trước.  CTL_BUS_DELAY() giữa mọi
+ * sườn ≥ 40 ns (tCSSR/tHI/tLO/tSU của MCP4822); cả khung ≈ 4 µs.  Sau
+ * sườn lên SCK cuối, CtlBus_Shift còn hạ SCK + delay → tCHS (10 ns) thừa. */
 static void bias_dac_write(uint8_t ch, uint16_t code)
 {
-  if (s_spi == NULL) return;
+  if (!s_ready) return;
   uint16_t w = (uint16_t)(((ch != 0U) ? 0xB000U : 0x3000U) | (code & 0x0FFFU));
-  uint8_t  f[2] = { (uint8_t)(w >> 8), (uint8_t)w };
 
-  uint32_t cfg1 = s_spi->Instance->CFG1;
-  MODIFY_REG(s_spi->Instance->CFG1, SPI_CFG1_MBR, SPI_BAUDRATEPRESCALER_16);
   HAL_GPIO_WritePin(PA_BIAS_CS_GPIO_PORT, PA_BIAS_CS_GPIO_PIN, GPIO_PIN_RESET);
-  HAL_SPI_Transmit(s_spi, f, 2U, PA_BIAS_SPI_TIMEOUT_MS);
+  CTL_BUS_DELAY();                       /* tCSSR: CS low → SCK rise */
+  CtlBus_Shift(w, 16U);
   HAL_GPIO_WritePin(PA_BIAS_CS_GPIO_PORT, PA_BIAS_CS_GPIO_PIN, GPIO_PIN_SET);
-  s_spi->Instance->CFG1 = cfg1;
 
   g_pa_bias.code[ch] = code;
   g_pa_bias.write_count++;
@@ -77,12 +75,11 @@ static int16_t bias_temp_comp_codes(void)
   return (int16_t)((c / 4) * 4);
 }
 
-void PA_Bias_Init(SPI_HandleTypeDef *hspi)
+void PA_Bias_Init(void)
 {
-  s_spi = hspi;
-
-  /* PB4 do module tự init (main.c không đụng).  Idle HIGH trước khi đổi mode
-   * để không glitch CS xuống thấp lúc chuyển sang output. */
+  /* DAC_CS (PB15) đã được MX_GPIO_Init đặt output HIGH; init lại ở đây cho
+   * module tự đứng được.  Ghi HIGH trước khi đổi mode để không glitch CS
+   * xuống thấp lúc chuyển sang output. */
   __HAL_RCC_GPIOB_CLK_ENABLE();
   HAL_GPIO_WritePin(PA_BIAS_CS_GPIO_PORT, PA_BIAS_CS_GPIO_PIN, GPIO_PIN_SET);
   GPIO_InitTypeDef gi = {
@@ -92,6 +89,7 @@ void PA_Bias_Init(SPI_HandleTypeDef *hspi)
     .Speed = GPIO_SPEED_FREQ_LOW,
   };
   HAL_GPIO_Init(PA_BIAS_CS_GPIO_PORT, &gi);
+  s_ready = true;
 
   g_pa_bias.src      = PA_BIAS_SRC_FIXED;
   g_pa_bias.level[0] = 0U;

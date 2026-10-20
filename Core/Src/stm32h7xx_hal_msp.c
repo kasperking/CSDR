@@ -121,21 +121,17 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* hadc)
       __HAL_RCC_ADC12_CLK_ENABLE();
     }
 
-    __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
     /**ADC1 GPIO Configuration
-    PC0     ------> ADC1_INP10
+    PA0     ------> ADC1_INP16
+    PA1     ------> ADC1_INP17
     PA3     ------> ADC1_INP15
+    PA4     ------> ADC1_INP18
     */
-    GPIO_InitStruct.Pin = NTC_Pin;
+    GPIO_InitStruct.Pin = ALC_Pin|SWR_FOR_Pin|VOLTAGE_IN_METER_Pin|NTC_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(NTC_GPIO_Port, &GPIO_InitStruct);
-
-    GPIO_InitStruct.Pin = VOLTAGE_IN_METER_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(VOLTAGE_IN_METER_GPIO_Port, &GPIO_InitStruct);
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     /* USER CODE BEGIN ADC1_MspInit 1 */
 
@@ -152,39 +148,18 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* hadc)
       __HAL_RCC_ADC12_CLK_ENABLE();
     }
 
-    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
     /**ADC2 GPIO Configuration
-    PC1     ------> ADC2_INP11
+    PA2     ------> ADC2_INP14
     */
-    GPIO_InitStruct.Pin = ALC_Pin;
+    GPIO_InitStruct.Pin = SWR_REF_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(ALC_GPIO_Port, &GPIO_InitStruct);
+    HAL_GPIO_Init(SWR_REF_GPIO_Port, &GPIO_InitStruct);
 
     /* USER CODE BEGIN ADC2_MspInit 1 */
 
     /* USER CODE END ADC2_MspInit 1 */
-  }
-  else if(hadc->Instance==ADC3)
-  {
-    /* USER CODE BEGIN ADC3_MspInit 0 */
-
-    /* USER CODE END ADC3_MspInit 0 */
-    /* Peripheral clock enable */
-    __HAL_RCC_ADC3_CLK_ENABLE();
-
-    __HAL_RCC_GPIOC_CLK_ENABLE();
-    /**ADC3 GPIO Configuration
-    PC2_C     ------> ADC3_INP0
-    PC3_C     ------> ADC3_INP1
-    */
-    HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC2, SYSCFG_SWITCH_PC2_OPEN);
-
-    HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC3, SYSCFG_SWITCH_PC3_OPEN);
-
-    /* USER CODE BEGIN ADC3_MspInit 1 */
-
-    /* USER CODE END ADC3_MspInit 1 */
   }
 
 }
@@ -209,12 +184,12 @@ void HAL_ADC_MspDeInit(ADC_HandleTypeDef* hadc)
     }
 
     /**ADC1 GPIO Configuration
-    PC0     ------> ADC1_INP10
+    PA0     ------> ADC1_INP16
+    PA1     ------> ADC1_INP17
     PA3     ------> ADC1_INP15
+    PA4     ------> ADC1_INP18
     */
-    HAL_GPIO_DeInit(NTC_GPIO_Port, NTC_Pin);
-
-    HAL_GPIO_DeInit(VOLTAGE_IN_METER_GPIO_Port, VOLTAGE_IN_METER_Pin);
+    HAL_GPIO_DeInit(GPIOA, ALC_Pin|SWR_FOR_Pin|VOLTAGE_IN_METER_Pin|NTC_Pin);
 
     /* USER CODE BEGIN ADC1_MspDeInit 1 */
 
@@ -232,25 +207,13 @@ void HAL_ADC_MspDeInit(ADC_HandleTypeDef* hadc)
     }
 
     /**ADC2 GPIO Configuration
-    PC1     ------> ADC2_INP11
+    PA2     ------> ADC2_INP14
     */
-    HAL_GPIO_DeInit(ALC_GPIO_Port, ALC_Pin);
+    HAL_GPIO_DeInit(SWR_REF_GPIO_Port, SWR_REF_Pin);
 
     /* USER CODE BEGIN ADC2_MspDeInit 1 */
 
     /* USER CODE END ADC2_MspDeInit 1 */
-  }
-  else if(hadc->Instance==ADC3)
-  {
-    /* USER CODE BEGIN ADC3_MspDeInit 0 */
-
-    /* USER CODE END ADC3_MspDeInit 0 */
-    /* Peripheral clock disable */
-    __HAL_RCC_ADC3_CLK_DISABLE();
-
-    /* USER CODE BEGIN ADC3_MspDeInit 1 */
-
-    /* USER CODE END ADC3_MspDeInit 1 */
   }
 
 }

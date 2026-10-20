@@ -48,7 +48,6 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 ADC_HandleTypeDef hadc2;
-ADC_HandleTypeDef hadc3;
 
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
@@ -80,7 +79,6 @@ static void MX_SAI1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_ADC2_Init(void);
-static void MX_ADC3_Init(void);
 static void MX_SPI3_Init(void);
 static void MX_FMC_Init(void);
 static void MX_I2C2_Init(void);
@@ -281,7 +279,6 @@ int main(void)
   MX_I2C1_Init();
   MX_ADC1_Init();
   MX_ADC2_Init();
-  MX_ADC3_Init();
   MX_SPI3_Init();
   /* FMC + LCD MPU setup MUST precede USB start so the Strongly-Ordered MPU
    * region covering 0x60000000 is active before any bus activity.
@@ -475,7 +472,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_10;
+  sConfig.Channel = ADC_CHANNEL_18;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
@@ -535,7 +532,7 @@ static void MX_ADC2_Init(void)
 
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Channel = ADC_CHANNEL_14;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
@@ -549,65 +546,6 @@ static void MX_ADC2_Init(void)
   /* USER CODE BEGIN ADC2_Init 2 */
 
   /* USER CODE END ADC2_Init 2 */
-
-}
-
-/**
-  * @brief ADC3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC3_Init(void)
-{
-
-  /* USER CODE BEGIN ADC3_Init 0 */
-
-  /* USER CODE END ADC3_Init 0 */
-
-  ADC_ChannelConfTypeDef sConfig = {0};
-
-  /* USER CODE BEGIN ADC3_Init 1 */
-
-  /* USER CODE END ADC3_Init 1 */
-
-  /** Common config
-  */
-  hadc3.Instance = ADC3;
-  hadc3.Init.Resolution = ADC_RESOLUTION_16B;
-  hadc3.Init.ScanConvMode = ADC_SCAN_DISABLE;
-  hadc3.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  hadc3.Init.LowPowerAutoWait = DISABLE;
-  hadc3.Init.ContinuousConvMode = DISABLE;
-  hadc3.Init.NbrOfConversion = 1;
-  hadc3.Init.DiscontinuousConvMode = DISABLE;
-  hadc3.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-  hadc3.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc3.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DR;
-  hadc3.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-  hadc3.Init.LeftBitShift = ADC_LEFTBITSHIFT_NONE;
-  hadc3.Init.OversamplingMode = DISABLE;
-  hadc3.Init.Oversampling.Ratio = 1;
-  if (HAL_ADC_Init(&hadc3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Regular Channel
-  */
-  sConfig.Channel = ADC_CHANNEL_0;
-  sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
-  sConfig.SingleDiff = ADC_SINGLE_ENDED;
-  sConfig.OffsetNumber = ADC_OFFSET_NONE;
-  sConfig.Offset = 0;
-  sConfig.OffsetSignedSaturation = DISABLE;
-  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN ADC3_Init 2 */
-
-  /* USER CODE END ADC3_Init 2 */
 
 }
 
@@ -1148,8 +1086,9 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, BPF_SRCLK_Pin|BPF_RCLK_Pin|BPF_SER_Pin|FLASH_CS_Pin, GPIO_PIN_RESET);
+  /*Configure GPIO pin Output Level — shared control bus idles LOW (595 SRCLK,
+    PE4312 CLK and MCP4822 SCK all shift on the rising edge), BPF RCLK LOW. */
+  HAL_GPIO_WritePin(GPIOA, CTL_SCK_Pin|CTL_SDO_Pin|FLASH_CS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level — 74AHC595 OE is active-LOW and tri-states
     Q0-Q7 when HIGH: park HIGH at boot so the 3253 OE pull-ups hold every mux
@@ -1158,10 +1097,15 @@ static void MX_GPIO_Init(void)
     no relay coil is energised at boot — 000 would close the 160m relay
     until BPF_LPF_Init runs. Do not rely on the GPIO reset default — regen
     can revert it. */
-  HAL_GPIO_WritePin(GPIOA, LPF_A0_Pin|LPF_A1_Pin|LPF_A2_Pin|BPF_OE_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOC, LPF_A0_Pin|LPF_A1_Pin|BPF_OE_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, ATT_DAT_Pin|ATT_CLK_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(BPF_RCLK_GPIO_Port, BPF_RCLK_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level — LPF_A2 HIGH (Y7, see above); DAC_CS
+    (MCP4822) parked HIGH before any shared-bus clock edge so the DAC never
+    sees the BPF/ATT traffic as a frame. PB15 has no reset pull. */
+  HAL_GPIO_WritePin(GPIOB, LPF_A2_Pin|DAC_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, ATT_LATCH_Pin|T_R_SW_Pin, GPIO_PIN_RESET);
@@ -1169,34 +1113,38 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level — LCD_RESET deasserted high before FMC/LCD init */
   HAL_GPIO_WritePin(LCD_RESET_GPIO_Port, LCD_RESET_Pin, GPIO_PIN_SET);
 
-  /*Configure GPIO pins : LPF_A0_Pin LPF_A1_Pin LPF_A2_Pin BPF_SRCLK_Pin
-                           BPF_RCLK_Pin BPF_OE_Pin BPF_SER_Pin FLASH_CS_Pin */
-  GPIO_InitStruct.Pin = LPF_A0_Pin|LPF_A1_Pin|LPF_A2_Pin|BPF_SRCLK_Pin
-                          |BPF_RCLK_Pin|BPF_OE_Pin|BPF_SER_Pin|FLASH_CS_Pin;
+  /*Configure GPIO pins : CTL_SCK_Pin CTL_SDO_Pin FLASH_CS_Pin */
+  GPIO_InitStruct.Pin = CTL_SCK_Pin|CTL_SDO_Pin|FLASH_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ATT_DAT_Pin ATT_CLK_Pin */
-  GPIO_InitStruct.Pin = ATT_DAT_Pin|ATT_CLK_Pin;
+  /*Configure GPIO pins : LPF_A0_Pin LPF_A1_Pin BPF_RCLK_Pin BPF_OE_Pin */
+  GPIO_InitStruct.Pin = LPF_A0_Pin|LPF_A1_Pin|BPF_RCLK_Pin|BPF_OE_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ATT_LATCH_Pin T_R_SW_Pin */
-  GPIO_InitStruct.Pin = ATT_LATCH_Pin|T_R_SW_Pin;
+  /*Configure GPIO pins : ATT_LATCH_Pin T_R_SW_Pin LPF_A2_Pin DAC_CS_Pin */
+  GPIO_InitStruct.Pin = ATT_LATCH_Pin|T_R_SW_Pin|LPF_A2_Pin|DAC_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : DAH_Pin (PB8) PW_Pin (PB12) ENC_SW_Pin (PB15) */
-  GPIO_InitStruct.Pin = DAH_Pin|PW_Pin|ENC_SW_Pin;
+  /*Configure GPIO pins : DAH_Pin (PB8) PW_Pin (PB12) */
+  GPIO_InitStruct.Pin = DAH_Pin|PW_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ENC_SW_Pin (PC6) */
+  GPIO_InitStruct.Pin = ENC_SW_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(ENC_SW_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : DIT_Pin (PE0) PTT_Pin (PE1) */
   GPIO_InitStruct.Pin = DIT_Pin|PTT_Pin;

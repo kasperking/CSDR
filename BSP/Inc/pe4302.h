@@ -5,9 +5,9 @@
   * @brief   PE4302 6-bit Digital Step Attenuator BSP Driver
   *
   *  Giao tiếp: Bit-bang SPI (DATA, CLK, LE/LATCH)
-  *   PC4  ATT_DAT   → DATA pin
-  *   PC5  ATT_CLK   → CLK  pin
-  *   PB0  ATT_LATCH → LE   pin (active high latch)
+  *   PA6  CTL_SDO   → DATA pin (shared control bus, xem ctl_bus.h; 10k nối tiếp)
+  *   PA5  CTL_SCK   → CLK  pin (shared control bus)
+  *   PB0  ATT_LATCH → LE   pin (active high latch, riêng của ATT)
   *
   *  Protocol:
   *   - MSB first, 6-bit word: [D5 D4 D3 D2 D1 D0]
@@ -38,8 +38,8 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 typedef struct {
-  GPIO_TypeDef *dat_port;  uint16_t dat_pin;   /* PC4  ATT_DAT   */
-  GPIO_TypeDef *clk_port;  uint16_t clk_pin;   /* PC5  ATT_CLK   */
+  GPIO_TypeDef *dat_port;  uint16_t dat_pin;   /* PA6  CTL_SDO   */
+  GPIO_TypeDef *clk_port;  uint16_t clk_pin;   /* PA5  CTL_SCK   */
   GPIO_TypeDef *le_port;   uint16_t le_pin;    /* PB0  ATT_LATCH */
   uint8_t current_atten_db;   /*!< Giá trị dB hiện tại (0-31)   */
   uint8_t current_atten_x2;   /*!< Raw register value (0-63)    */

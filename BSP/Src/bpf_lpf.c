@@ -7,18 +7,21 @@
 /* USER CODE END Header */
 #include "bpf_lpf.h"
 #include "csdr_app.h"
+#include "ctl_bus.h"
 
 /* USER CODE BEGIN 0 */
 /* All pins from Core/Inc/main.h (CubeMX generated):
- *  BPF: BPF_SRCLK=PA4, BPF_RCLK=PA5, BPF_SER=PA7 drive a 74AHC595 whose 6
- *       used outputs fan out to 4× SN74CBT3253 (2 banks of QSD-side/ant-side
+ *  BPF: shared control bus CTL_SDO=PA6 (595 SER) / CTL_SCK=PA5 (595 SRCLK)
+ *       — see ctl_bus.h, also carries the PE4312 ATT and MCP4822 bias DAC —
+ *       plus the BPF's own latch BPF_RCLK=PC4.  The 74AHC595's 6 used
+ *       outputs fan out to 4× SN74CBT3253 (2 banks of QSD-side/ant-side
  *       chip pairs) — see bpf_lpf.h header comment for the full bit table.
- *       BPF_OE=PA6 is the 595's OWN output-enable (active-LOW, tri-states
+ *       BPF_OE=PC5 is the 595's OWN output-enable (active-LOW, tri-states
  *       Q0..Q7), not a 3253 OE — see BPF_LPF_Init() for why it must stay
  *       HIGH until the first word is shifted+latched.
  *       Exactly one of the 4 mux-side OE bits may be LOW at a time (never
  *       two — would join TX/RX paths, or bank A/B, through the filters).
- *  LPF: LPF_A0=PA0, LPF_A1=PA1, LPF_A2=PA2 (74HC238 address)
+ *  LPF: LPF_A0=PC0, LPF_A1=PC1, LPF_A2=PB5 (74HC238 address)
  *  T/R: T_R_SW=PB1 (relay control) */
 
 /* 74AHC595 output bit positions (QA=bit0 .. QH=bit7); see bpf_lpf.h.
@@ -91,18 +94,16 @@ const char *BPF_BandName(uint8_t idx) {
 }
 
 /* Shift one byte MSB-first into the 595 (bit7 ends up on QH .. bit0 on QA)
- * and pulse RCLK to commit it to the storage register in one atomic step.
- * No inter-bit delay needed — 74AHC595 clocks well past 100 MHz, far
- * faster than HAL_GPIO_WritePin() can toggle. */
+ * over the shared control bus, then pulse RCLK to commit it to the storage
+ * register in one atomic step.  ATT/DAC frames on the same bus leave junk
+ * in the 595 shift register, but a full 8-bit shift overwrites all of it
+ * before RCLK, and Q never moves without RCLK.  ~2 µs per byte with the
+ * CTL_BUS_DELAY() spacing (see ctl_bus.h). */
 static void bpf595_shift(uint8_t word)
 {
-  for (int8_t i = 7; i >= 0; i--) {
-    HAL_GPIO_WritePin(BPF_SER_GPIO_Port, BPF_SER_Pin,
-                      (word & (1U << i)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(BPF_SRCLK_GPIO_Port, BPF_SRCLK_Pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(BPF_SRCLK_GPIO_Port, BPF_SRCLK_Pin, GPIO_PIN_RESET);
-  }
+  CtlBus_Shift(word, 8U);
   HAL_GPIO_WritePin(BPF_RCLK_GPIO_Port, BPF_RCLK_Pin, GPIO_PIN_SET);
+  CTL_BUS_DELAY();
   HAL_GPIO_WritePin(BPF_RCLK_GPIO_Port, BPF_RCLK_Pin, GPIO_PIN_RESET);
 }
 

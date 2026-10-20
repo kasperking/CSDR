@@ -26,14 +26,14 @@
   *  PB3 carries PinState=GPIO_PIN_SET in the .ioc for the same reason: if
   *  MX_GPIO_Init ever starts configuring this pin (after a regen) it must
   *  park OE HIGH first, never drive it low onto an unknown 595 state.  This
-  *  mirrors what PA6/BPF_OE already does.
+  *  mirrors what PC5/BPF_OE already does.
   *  The ULN2803 relay-driver inputs need 10k pull-DOWNs so Hi-Z reads as
   *  "all relays released" rather than floating.
   *
   *  PB3 IS THE JTDO/TRACESWO PIN.  Using it as GPIO costs SWO trace, which
   *  this project does not use: SWV is off in CSDR.launch, no ITM code exists,
-  *  and the .ioc declares only PA13/PA14 (2-wire SWD).  PB4/NJTRST was
-  *  already repurposed the same way for DAC_CS.  Two consequences to know:
+  *  and the .ioc declares only PA13/PA14 (2-wire SWD).  PB4/NJTRST is
+  *  already repurposed the same way (GPS_1PPS, TIM3_CH1).  Two consequences:
   *    - Do NOT enable SWV in the debugger while the ATU is fitted.  Trace
   *      output would drive OE with serial data and make the relays chatter,
   *      because DBGMCU TRACE_IOEN takes the pin back from GPIO at any time.

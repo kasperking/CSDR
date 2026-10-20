@@ -353,7 +353,9 @@ the RX path, side 2 (2A/2B1..2B4) is the TX path; S0/S1 select the filter
 within the enabled bank for both sides at once.
 
 All control lines come from one 74AHC595 shift register (U7), not direct
-GPIO: PA4=BPF_SRCLK, PA5=BPF_RCLK, PA7=BPF_SER, PA6=BPF_OE (the 595's own
+GPIO: shared control bus PA5=CTL_SCK (SRCLK) / PA6=CTL_SDO (SER) — also
+carries the PE4312 attenuator and MCP4822 bias DAC, see `ctl_bus.h` —
+plus PC4=BPF_RCLK, PC5=BPF_OE (the 595's own
 active-LOW output enable — held HIGH at boot so the outputs stay Hi-Z until
 the first valid word is latched; pull-ups on the 3253 OE nets keep every
 mux side off while floating).
@@ -386,7 +388,7 @@ bank A/B).  `BPF_Set()` shifts an all-off word, then the target word
 
 ### Low-Pass Filter (LPF) — 74HC238 3-to-8 decoder
 
-| Y output | Band | PA2:PA1:PA0 |
+| Y output | Band | A2:A1:A0 (PB5:PC1:PC0) |
 |----------|------|-------------|
 | Y0 | 1.8 MHz (160 m) | 000 |
 | Y1 | 3.5 MHz (80 m)  | 001 |
@@ -398,7 +400,8 @@ bank A/B).  `BPF_Set()` shifts an all-off word, then the target word
 ### RX Attenuator — PE4302 6-bit step attenuator
 
 - **Range:** 0–31.5 dB in 0.5 dB steps.
-- **Interface:** bit-bang SPI on PC4 (DATA), PC5 (CLK), PB0 (LATCH).
+- **Interface:** bit-bang on the shared control bus — PA6 CTL_SDO (DATA, via
+  10 kΩ), PA5 CTL_SCK (CLK) — plus its own PB0 (LATCH).
 - **Current value:** `g_att.current_atten_db`.
 
 ### T/R Switch
@@ -493,12 +496,12 @@ Frame must be **37 data characters** before `;` (38 total). Hamlib 4.7.1 `kenwoo
 | PW button | PB12 — input pull-up, LOW = pressed |
 | PW_HOLD | PB2 — drive HIGH to keep power latched on |
 | Soft shutdown | Hold encoder switch 3 s |
-| Supply ADC | PC0 → ADC3, 1:4 divider |
-| NTC ADC | PC2_C → ADC3, 10 kΩ β=3950 |
+| Supply ADC | PA3 → ADC1_INP15, 1:4 divider |
+| NTC ADC | PA4 → ADC1_INP18, 10 kΩ β=3950 |
 | Fan PWM | TIM17_CH1, PB9; starts 40°C, full at 65°C, range 200–999 |
 | Temp alarm | >70°C |
-| ALC ADC | ADC2_INP11 |
-| SWR ADC | ADC3_INP0 (fwd), ADC3_INP1 (ref) |
+| ALC ADC | PA0 → ADC1_INP16 |
+| SWR ADC | PA1 → ADC1_INP17 (fwd), PA2 → ADC2_INP14 (ref) |
 
 **SWR formula:** `SWR = (Vfor + Vref) / |Vfor − Vref|`, floor 1.0. Alarm: SWR >2.0.
 

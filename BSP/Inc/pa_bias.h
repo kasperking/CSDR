@@ -22,15 +22,15 @@
   *  bao giờ dùng SPI làm đường cắt sự cố.
   *
   *  Phần cứng:
-  *    SPI3 dùng chung với W25Q (mode 3 = CPOL1/CPHA1, MCP4822 hỗ trợ 1,1).
-  *    Kernel SPI3 = 120 MHz, W25Q chạy /4 = 30 MHz — QUÁ 20 MHz max của
-  *    MCP4822, nên mỗi transaction DAC tự hạ prescaler /16 (7.5 MHz) rồi
-  *    trả lại nguyên trạng.  Mọi truy cập SPI3 (W25Q + DAC) đều từ main
-  *    loop, không ISR → không cần lock bus.
+  *    SDI/SCK = shared control bus CTL_SDO (PA6) / CTL_SCK (PA5), bit-bang
+  *    SPI mode 0,0, dùng chung với BPF 595 + PE4312 (xem ctl_bus.h).  Trước
+  *    đây DAC nằm trên SPI3 cùng W25Q — đã tách ra để SPI3 không còn nhánh
+  *    35 mm chạy sang U13 ở vùng PA, và để DAC nằm cùng cạnh MCU với PA.
+  *    Mọi truy cập bus đều từ main loop, không ISR → không cần lock.
   *
-  *    CS: PB4 (chân trống, module tự init GPIO — main.c không đụng tới;
-  *    NJTRST pull-up nội giữ CS HIGH từ reset tới lúc init, khỏi glitch).
-  *    PCB phải nối net DAC_CS về PB4.  LDAC nối GND (update ngay khi CS nhả).
+  *    CS: DAC_CS = PB15 (main.h), MX_GPIO_Init đặt HIGH trước mọi sườn
+  *    clock trên bus chung.  PB15 không có pull nội lúc reset → nên có 10k
+  *    pull-up lên 3V3 trên PCB.  LDAC nối GND (update ngay khi CS nhả).
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -43,14 +43,13 @@ extern "C" {
 #endif
 
 #include "stm32h7xx_hal.h"
+#include "main.h"          /* DAC_CS_Pin / DAC_CS_GPIO_Port */
 #include <stdint.h>
 #include <stdbool.h>
 
 /* ─── CS GPIO — phải khớp routing PCB ──────────────────────────────────── */
-#define PA_BIAS_CS_GPIO_PORT    GPIOB
-#define PA_BIAS_CS_GPIO_PIN     GPIO_PIN_4
-
-#define PA_BIAS_SPI_TIMEOUT_MS  10U
+#define PA_BIAS_CS_GPIO_PORT    DAC_CS_GPIO_Port
+#define PA_BIAS_CS_GPIO_PIN     DAC_CS_Pin
 
 /* Mức bias lưu ở đơn vị 0..200 = 0..100% full-scale DAC (bước 0.5% ≈ 10 mV
  * tại chân DAC ≈ 26 mV tại gate sau op-amp ×2.5) — đủ mịn cho chỉnh Idq. */
@@ -84,10 +83,10 @@ extern PA_Bias_State_t g_pa_bias;
 
 /**
   * @brief  Init CS GPIO + ghi 0 vào cả 2 kênh (MCU soft-reset không reset DAC —
-  *         không được tin POR).  Gọi trong CSDR_Init sau khi SPI3 sẵn sàng,
+  *         không được tin POR).  Gọi trong CSDR_Init (sau MX_GPIO_Init),
   *         SAU csdr_load_settings rồi tiếp PA_Bias_Configure.
   */
-void PA_Bias_Init(SPI_HandleTypeDef *hspi);
+void PA_Bias_Init(void);
 
 /**
   * @brief  Nạp cấu hình từ settings/menu.  Đổi src→FIXED hoặc đổi mức giữa

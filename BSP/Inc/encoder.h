@@ -8,7 +8,7 @@
   *   - Dùng TIM4->CNT (hardware đếm xung A/B tự động)
   *   - Không cần EXTI handler
   *   - Gia tốc tính theo khoảng thời gian giữa 2 step (PPR-independent)
-  *   - Nút nhấn ENC_SW (PB15): polling với debounce
+  *   - Nút nhấn ENC_SW (PC6): polling với debounce
   *
   *  Loại encoder chọn trong encoder_config.h (ENC_PROFILE) — xem file đó để
   *  biết cách đo count/vòng và chọn profile đúng.
@@ -39,7 +39,7 @@ typedef struct {
   uint32_t           dt_avg_ms;     /*!< EMA khoảng cách giữa 2 step (ms)   */
   int32_t            accel_mult;    /*!< Hệ số nhân đang áp dụng            */
   uint32_t           last_step_tick;/*!< Tick của step hợp lệ gần nhất      */
-  /* Nút nhấn (polling PB15) */
+  /* Nút nhấn (polling PC6) */
   volatile bool      btn_pressed;   /*!< Nhấn ngắn pending (ISR→main)       */
   volatile bool      btn_long;      /*!< Nhấn dài pending  (ISR→main)       */
   uint32_t           btn_down_tick; /*!< Tick khi press ổn định (sau debounce) */
