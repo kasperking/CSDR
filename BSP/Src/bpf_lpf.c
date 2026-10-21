@@ -25,21 +25,23 @@
  *  T/R: T_R_SW=PB1 (relay control) */
 
 /* 74AHC595 output bit positions (QA=bit0 .. QH=bit7); see bpf_lpf.h.
- * QA (bit0) and QH (bit7) are left unconnected on the PCB — the six used
- * signals sit on QB..QG, and S0 / OE_1.1 are swapped relative to the
- * obvious ordering (S0 on QD, OE_1.1 on QB), so read the table, do not
- * assume a sequential mapping. */
+ * QA (bit0) is left unconnected on the PCB — the six BPF signals sit on
+ * QB..QG, and S0 / OE_1.1 are swapped relative to the obvious ordering
+ * (S0 on QD, OE_1.1 on QB), so read the table, do not assume a sequential
+ * mapping.  QH (bit7) gates the TX QSE mixer. */
 #define BPF595_BIT_OE1_1  1U  /* QB — bank A (chip pair 1) RX enable, active-LOW */
 #define BPF595_BIT_S1     2U  /* QC */
 #define BPF595_BIT_S0     3U  /* QD */
 #define BPF595_BIT_OE1_2  4U  /* QE — bank A (chip pair 1) TX enable, active-LOW */
 #define BPF595_BIT_OE2_1  5U  /* QF — bank B (chip pair 2) RX enable, active-LOW */
 #define BPF595_BIT_OE2_2  6U  /* QG — bank B (chip pair 2) TX enable, active-LOW */
+#define BPF595_BIT_QSE_OE 7U  /* QH — TX QSE (U19) enable, active-LOW, TX only */
 
-/* Break word: all 4 OE bits HIGH (every mux side off). S0/S1 don't matter
- * while every side is disabled, so they're left 0 here. */
+/* Break word: all 4 OE bits HIGH (every mux side off) plus QSE off. S0/S1
+ * don't matter while every side is disabled, so they're left 0 here. */
 #define BPF595_ALL_OFF    ((1U << BPF595_BIT_OE1_1) | (1U << BPF595_BIT_OE1_2) | \
-                            (1U << BPF595_BIT_OE2_1) | (1U << BPF595_BIT_OE2_2))
+                            (1U << BPF595_BIT_OE2_1) | (1U << BPF595_BIT_OE2_2) | \
+                            (1U << BPF595_BIT_QSE_OE))
 
 /* Cached OE/filter state — source of truth for BPF_SetMode / BPF_SetBand */
 static rf_mode_t   s_rf_mode   = RF_MODE_RX;
@@ -109,7 +111,8 @@ static void bpf595_shift(uint8_t word)
 
 /* Build the "make" word for (mode, filter): S1:S0 set for the requested
  * channel, exactly one OE bit LOW — the bank (from filter's bit 2) and
- * side (RX/TX from mode) being requested. */
+ * side (RX/TX from mode) being requested.  In TX the QSE is enabled too —
+ * it rides the same latch, so it is on exactly while the TX BPF side is. */
 static uint8_t bpf595_word(rf_mode_t mode, bpf_filter_t filter)
 {
   uint8_t bank   = ((uint8_t)filter >> 2) & 0x01U;
@@ -118,6 +121,7 @@ static uint8_t bpf595_word(rf_mode_t mode, bpf_filter_t filter)
                  ? (mode == RF_MODE_TX ? BPF595_BIT_OE2_2 : BPF595_BIT_OE2_1)
                  : (mode == RF_MODE_TX ? BPF595_BIT_OE1_2 : BPF595_BIT_OE1_1);
   uint8_t word = BPF595_ALL_OFF & (uint8_t)~(1U << oe_bit);
+  if (mode == RF_MODE_TX) { word &= (uint8_t)~(1U << BPF595_BIT_QSE_OE); }
   if (ch & 0x01U) { word |= (1U << BPF595_BIT_S0); }
   if (ch & 0x02U) { word |= (1U << BPF595_BIT_S1); }
   return word;

@@ -18,8 +18,8 @@
   *                  shifted + latched — see BPF_LPF_Init().
   *
   *  595 output bit → function (see bpf_lpf.c bpf595_shift() / BPF595_BIT_*).
-  *  NOTE: the six used signals start at QB, not QA (QA and QH are left
-  *  unconnected on the PCB), AND S0 is swapped with OE_1.1 — the mapping is
+  *  NOTE: the BPF signals start at QB, not QA (QA is left unconnected on
+  *  the PCB), AND S0 is swapped with OE_1.1 — the mapping is
   *  not sequential, read it off the table:
   *    QA (bit0) = unused (not connected)
   *    QB (bit1) = OE_1.1 — bank A (chip pair 1) RX side enable, active-LOW
@@ -28,7 +28,12 @@
   *    QE (bit4) = OE_1.2 — bank A (chip pair 1) TX side enable, active-LOW
   *    QF (bit5) = OE_2.1 — bank B (chip pair 2) RX side enable, active-LOW
   *    QG (bit6) = OE_2.2 — bank B (chip pair 2) TX side enable, active-LOW
-  *    QH (bit7) = unused (not connected); QH' cascade output also unused
+  *    QH (bit7) = QSE_OE — TX QSE mixer (U19 1OE/2OE) enable, active-LOW;
+  *                LOW only in RF_MODE_TX. In RX the shared LO keeps clocking
+  *                the QSE while the codec DAC feeds it RX audio (same line-out
+  *                as the headphone) — enabled, it would re-modulate that audio
+  *                onto the RX frequency (RF feedback + emission). Needs a 10k
+  *                pull-up to 3V3 for the boot Hi-Z window. QH' unused.
   *  Exactly one of OE_1.1/OE_1.2/OE_2.1/OE_2.2 may be LOW at a time — never
   *  two at once (would join TX/RX paths, or join bank A/B, through the
   *  filters). BPF_Set() enforces this with a break-before-make shift+latch.

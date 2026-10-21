@@ -369,7 +369,7 @@ mux side off while floating).
 | QE (bit4) | OE_1.2 | bank A TX enable, active-LOW |
 | QF (bit5) | OE_2.1 | bank B RX enable, active-LOW |
 | QG (bit6) | OE_2.2 | bank B TX enable, active-LOW |
-| QH (bit7) | — | not connected (QH' cascade unused) |
+| QH (bit7) | QSE_OE | TX QSE (U19 1OE/2OE) enable, active-LOW, LOW only in TX; 10k pull-up to 3V3 (QH' cascade unused) |
 
 Exactly one OE bit LOW at any time (two at once would join TX/RX paths or
 bank A/B).  `BPF_Set()` shifts an all-off word, then the target word
