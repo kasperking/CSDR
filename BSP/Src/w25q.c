@@ -349,6 +349,38 @@ HAL_StatusTypeDef Flash_SaveBandCal(W25Q_Handle_t *dev,
                     (const uint8_t*)&blk, sizeof(blk));
 }
 
+HAL_StatusTypeDef Flash_LoadTxIqCal(W25Q_Handle_t *dev,
+                                     TxIqCal_t band[BAND_COUNT])
+{
+  TxIqCalBlock_t blk;
+  bool ok = (W25Q_Read(dev, FLASH_ADDR_TX_IQ_CAL,
+                        (uint8_t*)&blk, sizeof(blk)) == HAL_OK)
+            && (blk.magic == TX_IQ_CAL_MAGIC)
+            && (crc32_simple((const uint8_t*)&blk,
+                              sizeof(blk) - sizeof(blk.crc32)) == blk.crc32);
+  if (ok) {
+    memcpy(band, blk.band, BAND_COUNT * sizeof(TxIqCal_t));
+  } else {
+    memset(band, 0, BAND_COUNT * sizeof(TxIqCal_t));   /* identity */
+  }
+  return ok ? HAL_OK : HAL_ERROR;
+}
+
+HAL_StatusTypeDef Flash_SaveTxIqCal(W25Q_Handle_t *dev,
+                                     const TxIqCal_t band[BAND_COUNT])
+{
+  TxIqCalBlock_t blk;
+  memset(&blk, 0, sizeof(blk));    /* unused tail slots = identity */
+  blk.magic = TX_IQ_CAL_MAGIC;
+  memcpy(blk.band, band, BAND_COUNT * sizeof(TxIqCal_t));
+  blk.crc32 = crc32_simple((const uint8_t*)&blk,
+                             sizeof(blk) - sizeof(blk.crc32));
+  HAL_StatusTypeDef r = W25Q_SectorErase(dev, FLASH_ADDR_TX_IQ_CAL);
+  if (r != HAL_OK) return r;
+  return W25Q_Write(dev, FLASH_ADDR_TX_IQ_CAL,
+                    (const uint8_t*)&blk, sizeof(blk));
+}
+
 /* The ATU block's CRC covers sizeof(blk)-4 bytes and Flash_SaveAtuMem does NOT
  * pre-zero the struct, which is only safe because the layout has no implicit
  * padding.  ATU_MEM_SLOTS was chosen (284, not the 283 the band plan needs) to

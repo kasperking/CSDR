@@ -185,6 +185,7 @@ typedef struct {
 
 extern SDR_State_t  g_sdr;
 extern BandCal_t    g_band_cal[BAND_COUNT];   /* per-band cal; loaded from flash at boot */
+extern TxIqCal_t    g_tx_iq_cal[BAND_COUNT];  /* per-band QSE IQ cal; applied at each TX start */
 
 /* ── Application constants ───────────────────────────────── */
 #define CSDR_FREQ_MIN_HZ       100000UL

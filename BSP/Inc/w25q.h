@@ -83,7 +83,7 @@ extern "C" {
 /* Flash layout addresses */
 /* Flash layout — DO NOT overlap regions.
  *  0x000000–0x003FFF  Settings   16KB
- *  0x004000–0x007FFF  Band cal   16KB
+ *  0x004000–0x007FFF  Band cal   16KB  (0x004000 band cal, 0x005000 TX IQ cal)
  *  0x008000–0x052FFF  Logo       300KB max (480×320×2 = 307200 B)
  *  0x053000–0x057FFF  [gap 20KB]
  *  0x058000–0x05FFFF  Font data  32KB  zone
@@ -92,6 +92,9 @@ extern "C" {
  *  0x068000–0xFFFFFF  free (15.6 MB on W25Q128)                    */
 #define FLASH_ADDR_SETTINGS      0x000000UL   /* 16KB: system settings  */
 #define FLASH_ADDR_BAND_CAL      0x004000UL   /* 16KB: band / SI5351 cal */
+#define FLASH_ADDR_TX_IQ_CAL     0x005000UL   /* 4KB: per-band TX (QSE) IQ cal — own
+                                               * sector inside the band-cal zone so the
+                                               * frozen BandCalBlock_t never changes size. */
 #define FLASH_ADDR_LOGO          0x008000UL   /* 300KB max: boot logo up to 480×320 RGB565 */
 #define FLASH_ADDR_LOGO_END      0x053000UL   /* first byte AFTER max logo area */
 #define FLASH_ADDR_FONT_DATA     0x058000UL   /* 32KB zone (0x058000–0x05FFFF): font bitmaps  */
@@ -305,6 +308,29 @@ typedef struct {
 
 #define BAND_CAL_MAGIC  0xCA1BCA1BUL
 
+/* Per-band TX (QSE) IQ imbalance pre-correction, stored at FLASH_ADDR_TX_IQ_CAL.
+ * gain_millis : int16, ×0.001, -100..+100 — Q amplitude: Q *= 1 + gain/1000
+ * phase_mrad  : int16, mrad,   -100..+100 — Q += phase/1000 × I
+ * dc_i / dc_q : int16, PWM code lệch zero, ±TXDC_TRIM_MAX — carrier null
+ *               (tx_dc_trim.h); áp liên tục theo band, không chỉ lúc TX
+ * Default 0/0 = identity (no correction).  Kept in its own block, not in
+ * BandCal_t, so adding it did not reset existing band cal on upgrade. */
+typedef struct {
+  int16_t gain_millis;
+  int16_t phase_mrad;
+  int16_t dc_i;
+  int16_t dc_q;
+} TxIqCal_t;                  /* 8 bytes */
+
+typedef struct {
+  uint32_t  magic;                 /* TX_IQ_CAL_MAGIC when valid           */
+  TxIqCal_t band[BAND_CAL_SLOTS];  /* BAND_CAL_SLOTS×8 = 88 bytes          */
+  uint32_t  crc32;                 /* CRC covers all bytes before this     */
+} TxIqCalBlock_t;                  /* 4 + 88 + 4 = 96 bytes                */
+
+/* Magic đổi khi thêm dc_i/dc_q (2026-10-25): block 4-byte cũ → identity. */
+#define TX_IQ_CAL_MAGIC  0x51E1CA1CUL
+
 /* ── ATU solution memory (atu.c) stored at FLASH_ADDR_ATU_MEM ─────────────
  * One slot per ATU_MEM_BUCKET_HZ of spectrum from ATU_MEM_FREQ_MIN upward,
  * so a tune is remembered per 100 kHz segment rather than per band — an
@@ -389,6 +415,16 @@ HAL_StatusTypeDef Flash_LoadBandCal(W25Q_Handle_t *dev,
                                      BandCal_t band[BAND_COUNT]);
 HAL_StatusTypeDef Flash_SaveBandCal(W25Q_Handle_t *dev,
                                      const BandCal_t band[BAND_COUNT]);
+
+/* Per-band TX IQ cal API — reads/writes FLASH_ADDR_TX_IQ_CAL.
+ * Flash_LoadTxIqCal: on magic/CRC failure (blank sector on first boot after
+ *                    upgrade) zeroes band[] (identity) and returns HAL_ERROR.
+ * Flash_SaveTxIqCal: sector-erase + page-write of TxIqCalBlock_t (96 bytes).
+ *                    Blocking erase — call from RX only. */
+HAL_StatusTypeDef Flash_LoadTxIqCal(W25Q_Handle_t *dev,
+                                     TxIqCal_t band[BAND_COUNT]);
+HAL_StatusTypeDef Flash_SaveTxIqCal(W25Q_Handle_t *dev,
+                                     const TxIqCal_t band[BAND_COUNT]);
 
 /* ATU solution memory API — reads/writes FLASH_ADDR_ATU_MEM.
  * Flash_LoadAtuMem: on magic/CRC failure (including a blank sector on a radio

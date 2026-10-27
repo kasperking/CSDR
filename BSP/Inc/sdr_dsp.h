@@ -197,6 +197,10 @@ typedef struct {
   float        comp_env;     /*!< Compressor peak envelope            */
   float        comp_attack;  /*!< Attack coeff  (~1 ms)               */
   float        comp_decay;   /*!< Release coeff (~50 ms)              */
+  /* QSE IQ imbalance pre-correction (per band, DSP_SetTxIQCorr), applied to
+   * the final IQ pair in every mode:  Q' = iq_q_gain·Q + iq_q_xi·I. */
+  float        iq_q_gain;    /*!< 1 + gain_err  (1.0 = identity)       */
+  float        iq_q_xi;      /*!< phase_err, rad (0.0 = identity)      */
 } TX_State_t;
 
 /** Trạng thái DSP toàn bộ */
@@ -371,6 +375,8 @@ void  DSP_BC_Set(DSP_State_t *dsp, uint8_t mode);
 
 /* IQ correction */
 void  DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad);
+/* TX (QSE) IQ pre-correction: gain ×0.001, phase mrad; 0/0 = identity */
+void  DSP_SetTxIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad);
 
 /* Static DC offset (call after loading cal from flash) */
 void  DSP_SetDCOffset(DSP_State_t *dsp, int32_t dc_i, int32_t dc_q);

@@ -25,6 +25,12 @@
 #include "pe4302.h"     /* g_att — display path adds back front-end attenuation */
 #include "si5351.h"     /* g_si5351 — XTAL correction + CLK2 cal output */
 #include "gps_cal.h"    /* TIM3 reciprocal counter (PA7=CLK2, PB4=1PPS) */
+#include "usb_cat.h"    /* g_cat.split_on — TX IQ test refuses split */
+#include "pa_protect.h"
+#include "pa_overcurrent.h"
+#include "fsdr_analog.h"
+#include "runtime_diag.h"
+#include "tx_dc_trim.h"  /* Carrier I/Q — QSE carrier-leak DC trim */
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -115,6 +121,13 @@ static int32_t v_band_tx_drive;
 static int32_t v_band_swr_scale;
 static char    s_band_cal_title[24] = "Band Cal";
 
+/* ── TX IQ (QSE) cal working storage — per band, like Band Cal ──────────── */
+static int32_t v_txiq_gain;
+static int32_t v_txiq_phase;
+static int32_t v_txiq_dci;    /* carrier null, PWM code lệch zero */
+static int32_t v_txiq_dcq;
+static char    s_txiq_title[24] = "TX IQ (QSE)";
+
 /* ── Value storage ─ mirrors Cal_Params_t fields for live editing ───────── */
 static int32_t v_xtal_ppb;   /* nguồn chân lý — GPS cal ghi ppb chính xác  */
 static int32_t v_xtal_ppm;   /* hiển thị/chỉnh tay, bước 1 ppm             */
@@ -142,6 +155,16 @@ static const CalItem_t items_iq[] = {
   { "IQ Gain",       CAL_T_INT,    -50,    50,     1, &v_iq_gain   },
   { "IQ Phase",      CAL_T_INT,    -50,    50,     1, &v_iq_phase  },
   { "Auto IQ Cal",   CAL_T_ACTION, 0,0,0,            NULL         },
+  { "Exit",          CAL_T_BACK,   0,0,0,            NULL         },
+};
+
+static const CalItem_t items_txiq[] = {
+  { "TX IQ Gain",    CAL_T_INT,   -100,   100,     1, &v_txiq_gain  },
+  { "TX IQ Phase",   CAL_T_INT,   -100,   100,     1, &v_txiq_phase },
+  { "Carrier I",     CAL_T_INT,  -TXDC_TRIM_MAX, TXDC_TRIM_MAX, 10, &v_txiq_dci },
+  { "Carrier Q",     CAL_T_INT,  -TXDC_TRIM_MAX, TXDC_TRIM_MAX, 10, &v_txiq_dcq },
+  { "Test Carrier",  CAL_T_ACTION, 0,0,0,            NULL, NULL, "TX" },
+  { "Save Band",     CAL_T_ACTION, 0,0,0,            NULL, NULL, "SAVE" },
   { "Exit",          CAL_T_BACK,   0,0,0,            NULL         },
 };
 
@@ -189,13 +212,14 @@ static const CalItem_t items_band[] = {
 static CalSection_t s_sections[] = {
   { "Frequency Cal",   items_freq,  4U },
   { "IQ Calibration",  items_iq,    4U },
+  { s_txiq_title,      items_txiq,  7U },
   { "DC Offset",       items_dc,    4U },
   { "Audio Cal",       items_audio, 3U },
   { "RF / Display Cal",items_rf,    6U },
   { "PA Hardware",     items_hw,    4U },
   { s_band_cal_title,  items_band,  7U },
 };
-#define SECTION_COUNT  7U
+#define SECTION_COUNT  8U
 
 /* Top-level item types */
 #define TOP_SECT   0   /* enter section submenu */
@@ -208,6 +232,7 @@ typedef struct { const char *label; int kind; } TopItem_t;
 static const TopItem_t s_top[] = {
   { "Frequency Cal",    TOP_SECT  },
   { "IQ Calibration",  TOP_SECT  },
+  { "TX IQ (QSE)",      TOP_SECT  },
   { "DC Offset",        TOP_SECT  },
   { "Audio Cal",        TOP_SECT  },
   { "RF / Display Cal", TOP_SECT  },
@@ -218,7 +243,7 @@ static const TopItem_t s_top[] = {
   { "Reset Default",    TOP_RESET },
   { "Exit Calibration", TOP_EXIT  },
 };
-#define TOP_COUNT  11U
+#define TOP_COUNT  12U
 
 /* ── Rendering ──────────────────────────────────────────────────────────── */
 
@@ -762,6 +787,141 @@ static void enc_flush(void)
   s_enc_last = __HAL_TIM_GET_COUNTER(&htim4);
 }
 
+/* ── TX IQ (QSE) cal ────────────────────────────────────────────────────────
+ * No RX loopback exists (QSD is gated off during TX), so the image is nulled
+ * by ear/eye on an external receiver.  Test Carrier keys the low-power TUNE
+ * carrier (single tone at LO±pitch, TUNE_POWER_PCT drive, SWR trip ignored,
+ * OC/thermal armed) and lets the user trim gain/phase LIVE while it is on:
+ *   ENC rotate / F1 / F2 = adjust selected,  ENC press = Gain -> Phase ->
+ *   Carrier I -> Carrier Q,  F4 = stop.  Image sits 2×pitch from the tone,
+ *   opposite side of the LO; carrier leak sits AT the LO.
+ * Carrier I/Q drive the TIM1 PWM DC trim into the OPA4350 IN+ (tx_dc_trim.h)
+ * — codec DC cannot reach the QSE through C21/C22.  Null the carrier first,
+ * then the image.  ENC moves carrier ×10 code/detent, F1/F2 ×1 (fine). */
+#define TXIQ_TEST_MAX_MS   90000U   /* safety auto-unkey */
+
+static void txiq_test_run(void)
+{
+  if (!s_dsp) return;
+  if (g_sdr.pa_watts == 0U) {
+    render_cal_result("TX IQ Test:", "PA Power = None (no RF)");
+    return;
+  }
+  if (g_cat.split_on) {
+    render_cal_result("TX IQ Test:", "Turn Split off first");
+    return;
+  }
+  if (g_sdr.tx_mode || !PA_Protect_IsTxAllowed()) {
+    render_cal_result("TX IQ Test:", "TX not allowed now");
+    return;
+  }
+
+  CSDR_RequestTuneCarrier(true);
+  if (!g_sdr.tx_mode) {
+    /* csdr_apply_tx refused (INA226 fault / out of band) — clear tune flags */
+    CSDR_RequestTuneCarrier(false);
+    render_cal_result("TX IQ Test:", "TX refused (see status)");
+    return;
+  }
+  /* csdr_apply_tx loaded the saved set; override with the working values */
+  DSP_SetTxIQCorr(s_dsp, (int16_t)v_txiq_gain, (int16_t)v_txiq_phase);
+  TxDcTrim_Set((int16_t)v_txiq_dci, (int16_t)v_txiq_dcq);
+
+  Key_t k_enc = {0}, k_f1 = {0}, k_f2 = {0}, k_f4 = {0};
+  Key_Init   (&k_enc, ENC_SW_GPIO_Port, ENC_SW_Pin);
+  Key_InitPCA(&k_f1,  &g_pca9555_raw,  PCA_BIT_F1);
+  Key_InitPCA(&k_f2,  &g_pca9555_raw,  PCA_BIT_F2);
+  Key_InitPCA(&k_f4,  &g_pca9555_raw,  PCA_BIT_F4);
+  Key_Sync(&k_enc); Key_Sync(&k_f1); Key_Sync(&k_f2); Key_Sync(&k_f4);
+  enc_flush();
+
+  uint8_t     sel   = 0U;          /* 0 gain, 1 phase, 2 carrier I, 3 carrier Q */
+  bool        dirty = true;
+  const char *why   = NULL;
+  uint32_t    t0    = HAL_GetTick();
+  uint32_t    last_draw = 0U, t_pa = 0U, t_analog = 0U, t_fan = 0U;
+  char        img_dir = g_sdr.cw_reverse ? '+' : '-';
+  unsigned    img_hz  = 2U * (unsigned)g_sdr.cw_pitch_hz;
+
+  for (;;) {
+    /* Same keep-alive set as ft8_app while it owns the loop with TX keyed */
+    CSDR_ProcessAudioPending();
+    CSDR_PollTxSequencing();
+    PA_OC_HandleFaultInLoop();
+    uint32_t now = HAL_GetTick();
+    RuntimeDiag_WatchdogRefreshIfHealthy(now);
+    if ((now - t_pa)     >=   20U) { t_pa     = now; PA_Protect_Update(); }
+    if ((now - t_analog) >=  100U) { t_analog = now; Analog_Update(); }
+    if ((now - t_fan)    >= 1000U) { t_fan    = now; Fan_Update(g_analog.temp_c); }
+
+    Input_Scan();
+    Key_Poll(&k_enc); Key_Poll(&k_f1); Key_Poll(&k_f2); Key_Poll(&k_f4);
+    if (k_enc.state != KS_IDLE) { enc_flush(); }
+
+    int32_t d = enc_read_delta();
+    if (sel >= 2U) d *= 10;          /* carrier: coarse on ENC, fine on F1/F2 */
+    if (Key_PressOrRepeat(&k_f1)) { d += 1; }
+    if (Key_PressOrRepeat(&k_f2)) { d -= 1; }
+    if (d != 0) {
+      if (sel < 2U) {
+        int32_t *v = (sel == 0U) ? &v_txiq_gain : &v_txiq_phase;
+        *v += d;
+        if (*v < -100) *v = -100;
+        if (*v >  100) *v =  100;
+        DSP_SetTxIQCorr(s_dsp, (int16_t)v_txiq_gain, (int16_t)v_txiq_phase);
+      } else {
+        int32_t *v = (sel == 2U) ? &v_txiq_dci : &v_txiq_dcq;
+        *v += d;
+        if (*v < -TXDC_TRIM_MAX) *v = -TXDC_TRIM_MAX;
+        if (*v >  TXDC_TRIM_MAX) *v =  TXDC_TRIM_MAX;
+        TxDcTrim_Set((int16_t)v_txiq_dci, (int16_t)v_txiq_dcq);
+      }
+      dirty = true;
+    }
+    if (Key_Press(&k_enc)) { sel = (uint8_t)((sel + 1U) & 3U); dirty = true; }
+    if (Key_Press(&k_f4))  { break; }
+
+    if (!g_sdr.tx_mode || !PA_Protect_IsTxAllowed()) { why = "TX dropped (protection)"; break; }
+    if ((now - t0) >= TXIQ_TEST_MAX_MS)              { why = "90 s limit - run again"; break; }
+
+    if (dirty || (now - last_draw) >= 500U) {
+      dirty     = false;
+      last_draw = now;
+      char l1[44], l2[44];
+      snprintf(l1, sizeof(l1), "%cG%+4ld %cP%+4ld %cCI%+5ld %cCQ%+5ld",
+               (sel == 0U) ? '>' : ' ', (long)v_txiq_gain,
+               (sel == 1U) ? '>' : ' ', (long)v_txiq_phase,
+               (sel == 2U) ? '>' : ' ', (long)v_txiq_dci,
+               (sel == 3U) ? '>' : ' ', (long)v_txiq_dcq);
+      snprintf(l2, sizeof(l2), "Img %c%uHz  %2lus  F4=stop",
+               img_dir, img_hz,
+               (unsigned long)((TXIQ_TEST_MAX_MS - (now - t0)) / 1000U));
+      render_gps_status(l1, l2);
+    }
+  }
+
+  CSDR_RequestTuneCarrier(false);
+  /* Let the TX→RX release drain (TX_RF_DRAIN_MS) finish — csdr_finish_rx_hw
+   * only runs from CSDR_PollTxSequencing while this overlay owns the loop. */
+  for (uint32_t t = HAL_GetTick(); (HAL_GetTick() - t) < 40U; ) {
+    CSDR_ProcessAudioPending();
+    CSDR_PollTxSequencing();
+  }
+  if (why) { render_cal_result("TX IQ Test stopped:", why); }
+}
+
+static void save_txiq_band(void)
+{
+  uint8_t bi = g_sdr.band_idx;
+  if (bi >= BAND_COUNT) return;
+  g_tx_iq_cal[bi].gain_millis = (int16_t)v_txiq_gain;
+  g_tx_iq_cal[bi].phase_mrad  = (int16_t)v_txiq_phase;
+  g_tx_iq_cal[bi].dc_i        = (int16_t)v_txiq_dci;
+  g_tx_iq_cal[bi].dc_q        = (int16_t)v_txiq_dcq;
+  Flash_SaveTxIqCal(&g_flash, g_tx_iq_cal);
+  render_cal_result("TX IQ Cal saved:", BPF_BandName(bi));
+}
+
 /* ── Sub-level loop ─────────────────────────────────────────────────────── */
 static void render_sublevel(uint8_t sect_idx, uint8_t cursor,
                              bool editing, uint8_t scroll)
@@ -839,12 +999,14 @@ static void run_section(uint8_t sect_idx)
         if (sect_idx == 0U && cursor == 1U) gps_cal_run();
         if (sect_idx == 0U && cursor == 2U) apply_xtal();
         if (sect_idx == 1U && cursor == 2U) auto_iq_cal();
-        if (sect_idx == 2U && cursor == 2U) auto_dc_cal();
-        if (sect_idx == 4U && cursor == 2U) auto_smeter_zero();
-        if (sect_idx == 4U && cursor == 3U) auto_noise_floor();
-        if (sect_idx == 4U && cursor == 4U) auto_agc_ref();
-        if (sect_idx == 6U && cursor == 4U) auto_band_noise_floor();
-        if (sect_idx == 6U && cursor == 5U) save_band_cal();
+        if (sect_idx == 2U && cursor == 4U) txiq_test_run();
+        if (sect_idx == 2U && cursor == 5U) save_txiq_band();
+        if (sect_idx == 3U && cursor == 2U) auto_dc_cal();
+        if (sect_idx == 5U && cursor == 2U) auto_smeter_zero();
+        if (sect_idx == 5U && cursor == 3U) auto_noise_floor();
+        if (sect_idx == 5U && cursor == 4U) auto_agc_ref();
+        if (sect_idx == 7U && cursor == 4U) auto_band_noise_floor();
+        if (sect_idx == 7U && cursor == 5U) save_band_cal();
         /* Actions block for seconds (measure + toast): drop any key press
          * or knob turn made during that time. */
         Key_Sync(&k_enc); Key_Sync(&k_f1); Key_Sync(&k_f2); Key_Sync(&k_f4);
@@ -958,7 +1120,17 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
       const TopItem_t *it = &s_top[cursor];
 
       if (it->kind == TOP_SECT) {
-        if (cursor == 6U) {
+        if (cursor == 2U) {
+          /* TX IQ is per band too: load the current band's pair */
+          uint8_t bi = g_sdr.band_idx;
+          v_txiq_gain  = (int32_t)g_tx_iq_cal[bi].gain_millis;
+          v_txiq_phase = (int32_t)g_tx_iq_cal[bi].phase_mrad;
+          v_txiq_dci   = (int32_t)g_tx_iq_cal[bi].dc_i;
+          v_txiq_dcq   = (int32_t)g_tx_iq_cal[bi].dc_q;
+          snprintf(s_txiq_title, sizeof(s_txiq_title),
+                   "TX IQ [%s]", BPF_BandName(bi));
+        }
+        if (cursor == 7U) {
           /* Load current band's cal into working vars and update section title */
           uint8_t bi = g_sdr.band_idx;
           v_band_rx_gain   = (int32_t)g_band_cal[bi].rx_gain_trim;
@@ -967,9 +1139,12 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
           v_band_swr_scale = (int32_t)g_band_cal[bi].swr_scale;
           snprintf(s_band_cal_title, sizeof(s_band_cal_title),
                    "Band Cal [%s]", BPF_BandName(bi));
-          s_sections[6U].title = s_band_cal_title;
+          s_sections[7U].title = s_band_cal_title;
         }
         run_section((uint8_t)cursor);
+        /* Test Carrier leaves the working carrier trim on the pins — drop
+         * it back to the saved band value (no-op if it was saved). */
+        if (cursor == 2U) TxDcTrim_FollowBand(g_sdr.band_idx);
         /* F4/BACK that closed the section is likely still held — swallow it
          * so it does not re-fire here and exit the whole Cal menu. */
         Key_Sync(&k_enc); Key_Sync(&k_f4);
@@ -1045,8 +1220,14 @@ bool Cal_Run(Cal_Params_t *params, DSP_State_t *dsp)
           g_band_cal[bi].noise_floor_off = 0;
           g_band_cal[bi].tx_drive_trim   = 0;
           g_band_cal[bi].swr_scale       = 100;
+          g_tx_iq_cal[bi].gain_millis    = 0;
+          g_tx_iq_cal[bi].phase_mrad     = 0;
+          g_tx_iq_cal[bi].dc_i           = 0;
+          g_tx_iq_cal[bi].dc_q           = 0;
         }
         Flash_SaveBandCal(&g_flash, g_band_cal);
+        Flash_SaveTxIqCal(&g_flash, g_tx_iq_cal);
+        TxDcTrim_FollowBand(g_sdr.band_idx);
         render_cal_result("Reset to defaults", "Cal saved to flash");
         return true;
 

@@ -858,6 +858,7 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   dsp->tx.comp_env    = 0.0f;
   dsp->tx.comp_attack = expf(-1.0f / (0.001f * (float)sample_rate)); /* 1 ms  */
   dsp->tx.comp_decay  = expf(-1.0f / (0.050f * (float)sample_rate)); /* 50 ms */
+  DSP_SetTxIQCorr(dsp, 0, 0);   /* identity until per-band cal is loaded */
 
   CWEnv_Init(&dsp->cw_env, sample_rate);
 
@@ -1140,6 +1141,19 @@ void DSP_SetIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad)
   dsp->iq_g_inv = 1.0f / (1.0f + g);             /* Q amplitude correction */
   dsp->iq_p     = p;                              /* Q phase correction     */
   /* USER CODE END DSP_SetIQCorr_0 */
+}
+
+/* Load TX (QSE) IQ pre-correction.  The QSE's I/Q paths (DAC channels,
+ * OPA4350 bias stages, mux timing) never match exactly, so a pure +f tone
+ * also leaks an image at −f (opposite sideband).  Pre-distorting Q with the
+ * inverse imbalance cancels it at the mixer output:
+ *   Q' = (1 + gain)·Q + phase·I
+ * gain_millis: ×0.001 (-100..+100 → ±10 %), phase_mrad: -100..+100 (≈ ±5.7°).
+ * Signs are hardware-dependent — the user nulls the image empirically. */
+void DSP_SetTxIQCorr(DSP_State_t *dsp, int16_t gain_millis, int16_t phase_mrad)
+{
+  dsp->tx.iq_q_gain = 1.0f + (float)gain_millis * 0.001f;
+  dsp->tx.iq_q_xi   = (float)phase_mrad * 0.001f;
 }
 
 /* ============================================================
@@ -1886,6 +1900,10 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         dsp->fft_fill  = 0U;
       }
     }
+
+    /* ── 6b. QSE IQ pre-correction — after the FFT feed so the TX spectrum
+     *        shows the ideal signal, not the cal predistortion. */
+    tx_q = dsp->tx.iq_q_gain * tx_q + dsp->tx.iq_q_xi * tx_i;
 
     /* ── 7. Write to SAI TX DMA: 16-bit sample right-justified in bits[15:0] */
     int32_t i_val = (int32_t)(tx_i * 32767.0f);

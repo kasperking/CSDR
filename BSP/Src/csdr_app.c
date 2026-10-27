@@ -32,6 +32,7 @@
 #include "pa_overcurrent.h"
 #include "pa_protect.h"
 #include "pa_bias.h"
+#include "tx_dc_trim.h"
 #include "atu.h"
 #include "usb_flash_proto.h"
 #include "selftest.h"
@@ -75,6 +76,8 @@ BandCal_t g_band_cal[BAND_COUNT] = {
   {0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100},
   {0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100},{0,0,0,100}
 };
+
+TxIqCal_t g_tx_iq_cal[BAND_COUNT];   /* zero-init = identity until flash load */
 
 SDR_State_t g_sdr = {
   .freq_hz       = CSDR_FREQ_DEFAULT_HZ,
@@ -611,6 +614,7 @@ void CSDR_Init(void)
     }
     SPI_Assets_LoadAll(&g_flash);
     Flash_LoadBandCal(&g_flash, g_band_cal);  /* defaults kept on failure */
+    Flash_LoadTxIqCal(&g_flash, g_tx_iq_cal); /* blank sector → identity */
     ATU_MemLoad();   /* blank sector (no ATU ever fitted) → empty memory */
     /* Restore out-of-band TX unlock state + audit log (own flash sector,
      * survives Factory Reset).  Blank/invalid sector → locked, no history. */
@@ -679,6 +683,10 @@ void CSDR_Init(void)
    * Init ép DAC về 0 (soft-reset không reset DAC), rồi nạp cấu hình đã load. */
   PA_Bias_Init();
   PA_Bias_Configure(g_sdr.pa_bias_src, g_sdr.pa_bias1, g_sdr.pa_bias2);
+
+  /* QSE carrier-null DC trim (TIM1 PWM PA8/PA9) — g_tx_iq_cal đã load ở trên */
+  TxDcTrim_Init();
+  TxDcTrim_FollowBand(g_sdr.band_idx);
   if (g_sdr.pa_idq_ma < 50U || g_sdr.pa_idq_ma > 2000U)
     g_sdr.pa_idq_ma = 500U;   /* no-blob boot path: g_sdr zero-init */
 
@@ -1927,6 +1935,10 @@ void CSDR_Loop(void)
 
   /* DAC bias ramp + bù nhiệt — no-op khi FIXED hoặc đã tới target */
   PA_Bias_Tick();
+
+  /* Carrier-null trim theo band RX; lúc TX giữ nguyên mức csdr_apply_tx đặt
+   * (split khác band).  Chỉ ghi CCR khi đổi band/giá trị. */
+  if (!g_sdr.tx_mode) TxDcTrim_FollowBand(g_sdr.band_idx);
 
   /* Auto-cal Idq: bơm máy trạng thái; khi xong commit mức mới + arm save.
    * Kết quả in ra dòng INFO (CW text) — decoder sẽ ghi đè sau. */
@@ -3718,6 +3730,15 @@ static void csdr_apply_tx(void)
     s_rx_drain_pending = false;
   } else if (tx_transition && g_sdr.tx_mode) {
     PA_Protect_OnTxStart();
+    /* QSE IQ pre-correction for the band actually carrying RF (split may TX
+     * on another band than the RX one); out-of-band → current band's cal. */
+    { uint8_t tb = BPF_FreqToBand(tx_carrier_hz);
+      if (tb >= BAND_COUNT) tb = g_sdr.band_idx;
+      DSP_SetTxIQCorr(&g_dsp, g_tx_iq_cal[tb].gain_millis,
+                      g_tx_iq_cal[tb].phase_mrad);
+      /* No-op trừ split khác band: khi đó trim đổi lúc key, lọc RC ~18 ms
+       * → carrier leak chưa tối ưu vài chục ms đầu — chấp nhận. */
+      TxDcTrim_FollowBand(tb); }
     /* Nạp ngưỡng INA226: base từ cài đặt, CW/DIGI thấp hơn 0.5/0.3A */
     { float base = (float)g_sdr.pa_oc_limit_idx * 0.1f;
       float lim  = (g_sdr.mode == MODE_CW)                                ? base - 0.5f :
