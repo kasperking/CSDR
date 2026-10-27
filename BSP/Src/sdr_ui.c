@@ -866,7 +866,11 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
   else
     snprintf(att_hdr, sizeof(att_hdr), "ATT:%uDB", ui->att_x2 / 2U);
   uint16_t att_vc  = ui->rf_agc_on ? UI_STATUS_ON : UI_STATUS_VAL;
-  uint16_t sep1_x  = (uint16_t)(4U + (uint16_t)(strlen(agc_str) * Font8x10.width) + 4U);
+  /* FN badge: inverted amber "F" at the very start of the header while the
+   * PW-key FN layer is latched; the AGC label shifts right to make room. */
+  uint16_t fn_w    = (uint16_t)(Font8x10.width + 6U);
+  uint16_t agc_x   = ui->fn_active ? (uint16_t)(2U + fn_w + 4U) : 4U;
+  uint16_t sep1_x  = (uint16_t)(agc_x + (uint16_t)(strlen(agc_str) * Font8x10.width) + 4U);
   uint16_t att_x   = (uint16_t)(sep1_x + (uint16_t)Font8x10.width + 4U);
   uint16_t left_end = (uint16_t)(att_x + (uint16_t)(strlen(att_hdr) * Font8x10.width) + 4U);
   uint16_t volt_x  = (uint16_t)(LCD_W - (uint16_t)(strlen(vstr) * Font8x10.width) - 4U);
@@ -976,9 +980,15 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
     if (gps_str[0]) {
       LCD_LineFill(ln, sep_gps_x, 1U, UI_DIVIDER);
     }
+    if (ui->fn_active && row >= 2U && row < HDR_H - 3U) {
+      LCD_LineFill(ln, 2U, fn_w, UI_STATUS_WARN);
+    }
     if (row >= txt_y && row < txt_y + Font8x10.height) {
       uint16_t fr = row - txt_y;
-      LCD_LineStrW(ln, 4U,     fr, agc_str,  &Font8x10, UI_STATUS_LBL, UI_HDR_BG);
+      if (ui->fn_active) {
+        LCD_LineStrW(ln, 5U, fr, "F", &Font8x10, UI_HDR_BG, UI_STATUS_WARN);
+      }
+      LCD_LineStrW(ln, agc_x,  fr, agc_str,  &Font8x10, UI_STATUS_LBL, UI_HDR_BG);
       LCD_LineStrW(ln, att_x,  fr, att_hdr,  &Font8x10, att_vc,        UI_HDR_BG);
       if (clk_fits) {
         LCD_LineStrW(ln, clock_x, fr, clk_str, &Font8x10, UI_STATUS_HINT, UI_HDR_BG);

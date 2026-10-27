@@ -8,7 +8,7 @@ Tài liệu này hướng dẫn **vận hành** máy CSDR đã lắp ráp/nạp 
 
 ## Mục lục
 
-1. [Mặt máy – phím và núm](#1-mặt-máy--phím-và-núm)
+1. [Mặt máy – phím và núm](#1-mặt-máy--phím-và-núm) · [1.1 Lớp chức năng F (phím PW)](#11-lớp-chức-năng-f-phím-pw)
 2. [Bố cục màn hình chính](#2-bố-cục-màn-hình-chính)
 3. [Bật / tắt máy](#3-bật--tắt-máy)
 4. [Vận hành cơ bản](#4-vận-hành-cơ-bản)
@@ -46,11 +46,34 @@ Tài liệu này hướng dẫn **vận hành** máy CSDR đã lắp ráp/nạp 
 | **PTT** | Chuyển sang phát (TX) khi nhấn, về thu (RX) khi thả | — |
 | **DIT / DAH** (paddle) | Bàn khóa điện tử CW (Iambic A/B hoặc Straight key) | — |
 | **Encoder (núm xoay)** | Xoay: chỉnh tần số theo Step hiện tại · Nhấn: đổi Step (1Hz→10Hz→100Hz→1kHz→10kHz→100kHz) | Giữ: đổi Span màn hình phổ (±24k→±12k→±6k→±3k) |
-| **PW (nguồn)** | — | Giữ **> 3 giây** để tắt máy an toàn (lưu cài đặt trước khi cắt nguồn) |
+| **PW (nguồn)** | Bật/tắt **lớp chức năng F** (xem mục 1.1) | Giữ **> 3 giây** để tắt máy an toàn (lưu cài đặt trước khi cắt nguồn) |
 
 Khi bảng chọn Band/Mode đang mở: **F1**/**F2** = di chuyển con trỏ lên/xuống (hoặc xoay encoder), **F3** (hoặc nhấn encoder) = chọn, **F4** hoặc phím BAND/MODE = hủy.
 
 > Khi menu đang mở, phím **TUNE** bị vô hiệu hóa để tránh phát nhầm.
+
+### 1.1 Lớp chức năng F (phím PW)
+
+Phím PW ngoài việc bật/tắt máy còn dùng như một phím **Shift có chốt**: không cần giữ PW, chỉ cần **nhấn nhanh PW một lần** (nhả ra trước ~0.6 giây).
+
+- Nhấn nhanh PW → ô **F** màu hổ phách hiện ở **đầu thanh HEADER** (bên trái nhãn AGC). Lúc này các phím bên dưới làm chức năng phụ.
+- F **giữ nguyên** (chốt) cho tới khi bạn nhấn nhanh PW lần nữa — tiện chỉnh liên tục nhiều lần (ví dụ bấm F2 vài lần để tăng Squelch) mà không phải bật lại.
+- F **tự tắt** khi: chuyển sang phát (PTT, VOX, CAT…), mở MENU, hoặc mở bảng chọn Band/Mode.
+- Không bật được F khi đang phát hoặc khi menu/bảng chọn đang mở.
+
+| Khi F đang bật | Chức năng phụ |
+|---|---|
+| **F1** / **F2** | Giảm / tăng **Squelch** 5 đơn vị (giữ để lặp) |
+| **F3** | **A=B**: chép VFO đang dùng (tần số, mode, BW…) sang VFO còn lại |
+| **F4** | Xoay vòng **NR**: Tắt → NR1 → NR2 → Tắt |
+| **BAND** | **Lùi** về băng tần trước |
+| **MODE** | **Lùi** về mode trước |
+| **Xoay encoder** | Chỉnh **RIT** ±10 Hz mỗi nấc (tối đa ±999 Hz) |
+| **Nhấn encoder** | Đưa **RIT về 0** |
+| **MENU** | Mở menu như bình thường (F tự tắt) |
+| **PTT / TUNE** | **Không có chức năng phụ** — luôn hoạt động bình thường, vì an toàn |
+
+> Nếu phím bấm ra kết quả lạ (ví dụ F1 không giảm âm lượng mà lại đổi SQL), hãy nhìn HEADER — nhiều khả năng ô **F** vẫn đang bật. Nhấn nhanh PW một lần để tắt.
 
 ---
 
@@ -60,7 +83,7 @@ Khi bảng chọn Band/Mode đang mở: **F1**/**F2** = di chuyển con trỏ l�
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  HEADER 480×24                               13.9V           │  ← điện áp nguồn, cảnh báo phần cứng
+│ [F] AGC · ATT        HEADER 480×24           13.9V           │  ← ô F (lớp chức năng), điện áp nguồn, cảnh báo phần cứng
 ├─────────┬────────────────────────────────────┬─────────────┤
 │ SBL 80  │  VFO  320×64                       │ SBR 80      │
 │ Mode    │  14.200.000                         │BW 2.7k ST1k│
@@ -110,8 +133,10 @@ Ghi chú chung:
 
 ## 3. Bật / tắt máy
 
-- **Bật máy**: nhấn phím PW — nguồn tự giữ (latch), máy chạy tự-kiểm tra phần cứng (self-test) khi khởi động rồi vào màn hình chính.
+- **Bật máy**: nhấn phím PW — nguồn tự giữ (latch), máy chạy tự-kiểm tra phần cứng (self-test) khi khởi động rồi vào màn hình chính. Lần nhấn bật máy này **không** làm bật ô F và **không** làm máy tắt lại dù bạn giữ PW lâu — máy chỉ bắt đầu theo dõi phím PW sau khi bạn đã nhả nó ra lần đầu.
 - **Tắt máy**: **giữ phím PW hơn 3 giây**. Màn hình hiện "POWERING OFF…", máy tự lưu toàn bộ cài đặt rồi cắt nguồn an toàn. **Không rút nguồn đột ngột** khi máy đang ghi cài đặt (xem mục 18).
+- Giữ PW để tắt máy dùng được ở **mọi màn hình**, kể cả các màn hình toàn màn hình (Calibration, FT8, SWR Scan, Terms, mở khóa TX). Nếu máy đang phát (FT8 đang TX, SWR Scan đang quét, TUNE…), máy **ngắt phát trước** rồi mới lưu cài đặt và tắt nguồn.
+- Nhấn nhanh PW (không giữ) **không** tắt máy — đó là thao tác bật/tắt lớp chức năng F (mục 1.1).
 - Nếu một mục tự-kiểm tra thất bại lúc khởi động, thanh HEADER hiện cảnh báo màu hổ phách — xem mục 17.
 
 ---
@@ -120,10 +145,11 @@ Ghi chú chung:
 
 - **Chỉnh tần số**: xoay encoder — bước nhảy theo **Step** hiện hành (hiển thị ở sidebar phải trên panel lớn, hoặc STATUS bar trên panel nhỏ).
 - **Đổi Step**: nhấn encoder (ngoài menu) để xoay vòng 1Hz → 10Hz → 100Hz → 1kHz → 10kHz → 100kHz; hoặc vào **Tuning → Step**.
-- **Đổi băng tần**: nhấn nhanh **BAND** để nhảy băng kế tiếp, hoặc giữ **BAND** để mở bảng chọn nhanh 2 cột (10 băng: 160m–10m). Máy tự chuyển bộ lọc BPF/LPF tương ứng.
-- **Đổi mode**: nhấn nhanh **MODE** để xoay vòng AM→FM→USB→LSB→CW→DIGU→DIGL, hoặc giữ **MODE** để mở bảng chọn nhanh.
-- **Đảo VFO A/B**: nhấn nhanh **F3** khi menu đang đóng.
-- **RIT** (Receiver Incremental Tuning): chỉnh trong **RX → RIT(Hz)**, phạm vi ±999 Hz — chỉ lệch tần số thu, không ảnh hưởng tần số phát. RIT **không được lưu** vào bộ nhớ khi tắt máy (luôn về 0 khi khởi động lại), theo thiết kế.
+- **Đổi băng tần**: nhấn nhanh **BAND** để nhảy băng kế tiếp, hoặc giữ **BAND** để mở bảng chọn nhanh 2 cột (10 băng: 160m–10m). Máy tự chuyển bộ lọc BPF/LPF tương ứng. Muốn lùi băng: bật **F** (nhấn nhanh PW) rồi nhấn **BAND**.
+- **Đổi mode**: nhấn nhanh **MODE** để xoay vòng AM→FM→USB→LSB→CW→DIGU→DIGL, hoặc giữ **MODE** để mở bảng chọn nhanh. Muốn lùi mode: **F** + **MODE**.
+- **Đảo VFO A/B**: nhấn nhanh **F3** khi menu đang đóng. Chép VFO đang dùng sang VFO kia (A=B): **F** + **F3**.
+- **RIT** (Receiver Incremental Tuning): chỉnh trong **RX → RIT(Hz)**, hoặc nhanh hơn: bật **F** rồi **xoay encoder** (±10 Hz mỗi nấc), **nhấn encoder** để về 0. Phạm vi ±999 Hz — chỉ lệch tần số thu, không ảnh hưởng tần số phát. Giá trị RIT khác 0 hiển thị ở sidebar phải và dòng phụ dưới VFO. RIT **không được lưu** vào bộ nhớ khi tắt máy (luôn về 0 khi khởi động lại), theo thiết kế.
+  - Mỗi VFO giữ RIT riêng; khi đảo A↔B, RIT của VFO mới được áp dụng ngay. RIT vẫn còn hiệu lực sau khi rút/cắm lại cáp USB. Phần mềm CAT vẫn có thể bật/tắt RIT bằng lệnh RT; lần chỉnh RIT kế tiếp trên máy sẽ lại áp dụng theo giá trị (khác 0 = bật).
 - **RX Shift**: dịch dải nghe (IF shift) ±2000 Hz mà không đổi tần số VFO — hữu ích khi có nhiễu/đài lân cận đè lên tín hiệu cần nghe (**RX → RX Shift**).
 - **Zoom phổ**: giữ encoder để xoay vòng span ±24k → ±12k → ±6k → ±3k, hoặc vào **RX → Span**.
 - **Marker Track**: **Tuning → Marker** = FIX (mặc định) hoặc TRACK. Ở TRACK, xoay encoder di chuyển điểm nghe trong dải hiển thị mà không làm giật hình phổ — tiện khi rà nhiều đài gần nhau.
@@ -417,6 +443,9 @@ NORMAL → FOLDBACK (còn 75% → 50%) → LIMIT (còn 25%) → TRIP (cắt 0%, 
 | Không thấy đài nào trong FT8/RTTY | Chưa đúng mode (nên để DIGU/DIGL hoặc USB/LSB), chưa bật Decode | Kiểm tra **Tuning → Mode**, bật **RTTY Decode** hoặc mở app **FT8** |
 | Không phát được CQ FT8 | Chưa khai báo Call/Grid | Vào app FT8 → **F1** nhập callsign + grid trước khi bấm **F2** |
 | Máy không lưu cài đặt sau khi tắt | Rút nguồn đột ngột thay vì giữ PW ≥3 giây | Luôn tắt máy bằng cách giữ phím PW cho đến khi thấy "POWERING OFF" |
+| Phím làm chức năng khác thường (F1/F2 đổi SQL thay vì Volume, BAND lùi băng…) | Lớp chức năng **F** đang bật (ô F hổ phách ở đầu HEADER) | Nhấn nhanh PW một lần để tắt F (mục 1.1) |
+| Chỉnh RIT trong menu mà tần số nghe không đổi | Firmware cũ: RIT chỉ có tác dụng khi phần mềm CAT bật bằng lệnh RT1 | Cập nhật firmware — bản hiện hành áp dụng RIT ngay khi giá trị khác 0 |
+| Máy tắt ngay sau khi vừa bật | Firmware cũ: giữ PW lúc bật máy quá 3 giây bị hiểu là lệnh tắt | Cập nhật firmware, hoặc nhả PW ngay sau khi màn hình sáng |
 | Cảnh báo hổ phách trên HEADER lúc khởi động | Một hạng mục self-test lỗi (FLASH/CODEC/PLL/INA/SAI/KEYS) | Xem mục 17; nếu lặp lại, kiểm tra kết nối phần cứng tương ứng |
 
 ---
@@ -456,3 +485,5 @@ NORMAL → FOLDBACK (còn 75% → 50%) → LIMIT (còn 25%) → TRIP (cắt 0%, 
 - Đảo VFO A/B: **F3** (ngoài menu).
 - SWR Scan nhanh: **F4** (ngoài menu).
 - Bật/tắt CW hoặc RTTY Decode: giữ **F3** khi đúng mode tương ứng.
+- Bật/tắt lớp chức năng **F**: nhấn nhanh **PW**. Khi F bật: **F1/F2** = Squelch −/+, **F3** = A=B, **F4** = NR, **BAND** = lùi băng, **MODE** = lùi mode, **encoder** = RIT (nhấn = RIT 0). Chi tiết ở mục 1.1.
+- Tắt máy: giữ **PW** > 3 giây (dùng được ở mọi màn hình).

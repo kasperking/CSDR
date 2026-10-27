@@ -129,6 +129,13 @@ void PWR_Poll(void)
   bool btn_pressed = (HAL_GPIO_ReadPin(PW_GPIO_Port, PW_Pin) == GPIO_PIN_RESET);
   uint32_t now = HAL_GetTick();
 
+  /* The press that powered the radio on is usually still held when polling
+   * starts: ignore PW until it has been released once, otherwise holding the
+   * power-on press (or a missed DFU combo) shuts the radio straight back off. */
+  static bool s_released_once = false;
+  if (!btn_pressed) s_released_once = true;
+  if (!s_released_once) return;
+
   if (btn_pressed) {
     if (s_btn_down_tick == 0U) { s_btn_down_tick = now; }
     else if ((now - s_btn_down_tick) >= POWER_OFF_HOLD_MS) {

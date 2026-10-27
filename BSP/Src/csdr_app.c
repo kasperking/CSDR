@@ -260,6 +260,21 @@ static uint32_t s_rx_drain_tick    = 0U;
 
 /* ── Function key state machines ── */
 static Key_t k_menu, k_f1, k_f2, k_f3, k_f4, k_band, k_mode, k_ptt, k_tune;
+/* PW key (PB12) doubles as an FN latch: a short tap toggles the FN layer,
+ * holding ≥ POWER_OFF_HOLD_MS still powers off (PWR_Poll).  While latched,
+ * F1-F4/BAND/MODE/encoder run their alternate functions; PTT/TUNE never do. */
+static Key_t k_pw;
+static bool  s_fn_active = false;
+
+/* csdr_apply_nco_if only adds RIT while g_cat.rit_on is set, and only CAT RT
+ * used to set it — so RIT from the menu / panel / saved settings was silently
+ * ignored.  Panel paradigm: a non-zero offset means RIT on.  CAT RT0/RT1 still
+ * overrides until the next panel-side RIT change. */
+static void csdr_rit_sync(void)
+{
+  g_cat.rit_on = (g_sdr.rit_hz != 0);
+  g_sdr.cat_rit_dirty = true;   /* CSDR_Loop recomputes nco_if */
+}
 
 /* ── CAT callbacks ── */
 static void     cat_set_freq(uint32_t f);
@@ -785,6 +800,7 @@ void CSDR_Init(void)
   Key_InitPCA(&k_mode, &g_pca9555_raw, PCA_BIT_MODE);
   Key_InitPCA(&k_tune, &g_pca9555_raw, PCA_BIT_TUNE);
   Key_Init(&k_ptt, PTT_GPIO_Port, PTT_Pin);   /* PE1 – direct MCU */
+  Key_Init(&k_pw,  PW_GPIO_Port,  PW_Pin);    /* PB12 – synced at end of init */
 
   /* Analog subsystem */
   Analog_Init();
@@ -850,6 +866,7 @@ void CSDR_Init(void)
     .get_tune        = cat_get_tune,
   };
   CAT_Init(&g_cat, &cb);
+  csdr_rit_sync();   /* re-arm RIT restored from settings (CAT_Init clears rit_on) */
 
   /* USB Audio */
   USB_Audio_Init(&g_usb_audio);
@@ -965,6 +982,10 @@ void CSDR_Init(void)
 #endif
   if (SelfTest_AnyFail()) g_sdr.display_dirty |= DIRTY_HDR;
 
+  /* PW is typically still held from the power-on press: swallow it so its
+   * release doesn't latch the FN layer. */
+  Key_Sync(&k_pw);
+
   g_sdr.pwr_hold = true;
 }
 
@@ -1076,6 +1097,12 @@ static void csdr_process_audio_pending(void)
 void CSDR_ProcessAudioPending(void)
 {
   csdr_process_audio_pending();
+  /* Every blocking full-screen loop (Cal, FT8, SWR scan, Terms, TX unlock)
+   * pumps through here and never reaches CSDR_Loop — poll the power key at
+   * the same 100 ms cadence so hold-to-power-off works on those screens too. */
+  static uint32_t s_pwr_poll_ms = 0U;
+  uint32_t now = HAL_GetTick();
+  if ((now - s_pwr_poll_ms) >= 100U) { s_pwr_poll_ms = now; PWR_Poll(); }
 }
 
 /* Draw a one-shot hardware-missing warning covering the SPEC+WF zone.
@@ -1172,6 +1199,25 @@ static void csdr_draw_hw_fault_warning(void)
 
 void CSDR_PrepareShutdown(void)
 {
+  /* Re-entrancy guard: blocking helpers below may pump
+   * CSDR_ProcessAudioPending → PWR_Poll while PW is still held. */
+  static bool s_shutting_down = false;
+  if (s_shutting_down) return;
+  s_shutting_down = true;
+
+  /* Power-off may now arrive from a blocking screen mid-TX (FT8 slot, SWR
+   * scan carrier, TUNE): unkey first so RF stops before the 800 ms animation. */
+  if (g_sdr.tx_mode || g_sdr.tune_mode) {
+    g_sdr.tune_mode      = false;
+    g_dsp.tx.tune_active = false;
+    g_dsp.cw_key_out     = false;
+    g_sdr.tx_mode        = false;
+    csdr_apply_tx();
+  }
+  /* SWR scan keys T/R directly without touching tx_mode — drop it regardless
+   * (a no-op when already in RX). */
+  HAL_GPIO_WritePin(T_R_SW_GPIO_Port, T_R_SW_Pin, GPIO_PIN_RESET);
+
   csdr_save_settings();
   /* Save is asynchronous (Flash_SaveSettingsAsync) and the animation below
    * never runs Flash_SaveTick — force completion before power drops. */
@@ -2049,6 +2095,7 @@ void CSDR_CDC_ResetCAT(void)
   g_cat.rx_len = 0U;
   __set_BASEPRI(0U);
   CAT_Init(&g_cat, &saved_cb);
+  csdr_rit_sync();   /* CAT_Init cleared rit_on: a USB disconnect must not kill RIT */
   /* If a freq change was pending (not yet flushed by debounce timer), save on next loop tick */
   if (s_freq_save_tick) s_save_on_disconnect = true;
   /* Open a 500ms window to suppress SAI stop/start volume apply during flrig init */
@@ -2279,8 +2326,72 @@ static void csdr_factory_reset(void)
   g_sdr.display_dirty |= DIRTY_ALL;
 }
 
+/* ── PW-key FN layer ─────────────────────────────────────────────────────── */
+#define FN_RIT_STEP_HZ   10
+#define FN_RIT_MAX_HZ    999    /* same range as menu RX → RIT(Hz) */
+#define FN_SQL_STEP      5U
+
+static void csdr_fn_set(bool on)
+{
+  if (s_fn_active == on) return;
+  s_fn_active = on;
+  g_sdr.display_dirty |= DIRTY_HDR;
+}
+
+static void csdr_fn_set_rit(int32_t hz)
+{
+  if (hz >  FN_RIT_MAX_HZ) hz =  FN_RIT_MAX_HZ;
+  if (hz < -FN_RIT_MAX_HZ) hz = -FN_RIT_MAX_HZ;
+  g_sdr.rit_hz = (int16_t)hz;
+  csdr_rit_sync();
+  g_sdr.display_dirty |= (DIRTY_VFO | DIRTY_SBR);   /* RIT is not persisted */
+}
+
+static void csdr_fn_set_squelch(int16_t sq)
+{
+  if (sq < 0)   sq = 0;
+  if (sq > 100) sq = 100;
+  g_sdr.squelch = (uint8_t)sq;
+  DSP_SetSquelch(&g_dsp, g_sdr.squelch);
+  g_sdr.display_dirty |= DIRTY_SBL;
+  s_freq_save_tick = HAL_GetTick();
+}
+
+/* A=B: copy the active VFO into the inactive one (shown on the VFO sub-line) */
+static void csdr_fn_vfo_copy(void)
+{
+  g_sdr.vfo_b.freq_hz     = g_sdr.freq_hz;
+  g_sdr.vfo_b.mode        = g_sdr.mode;
+  g_sdr.vfo_b.band_idx    = g_sdr.band_idx;
+  g_sdr.vfo_b.step        = g_sdr.step;
+  g_sdr.vfo_b.rit_hz      = g_sdr.rit_hz;
+  g_sdr.vfo_b.bw_hz       = g_sdr.bw_hz;
+  g_sdr.vfo_b.sl_hz       = g_sdr.sl_hz;
+  g_sdr.vfo_b.if_shift_hz = g_sdr.if_shift_hz;
+  g_sdr.display_dirty |= DIRTY_VFO;
+  s_freq_save_tick = HAL_GetTick();
+}
+
+static void csdr_fn_cycle_nr(void)
+{
+  g_sdr.nr_mode = (uint8_t)((g_sdr.nr_mode + 1U) % 3U);   /* off → NR1 → NR2 */
+  DSP_NR_Set(&g_dsp, g_sdr.nr_mode, g_sdr.nr_level);
+  g_sdr.display_dirty |= DIRTY_SBL;
+  s_freq_save_tick = HAL_GetTick();
+}
+
 static void csdr_handle_encoder(void)
 {
+  /* FN layer: rotate = RIT (raw detents, no acceleration), push = RIT clear.
+   * Long-press is drained so it can't fire a zoom change after FN drops. */
+  if (s_fn_active && !BandSel_IsOpen() && !ModeSel_IsOpen() && !Menu_IsOpen(&g_menu)) {
+    int32_t n = Encoder_GetSteps(&g_encoder);
+    if (n != 0) csdr_fn_set_rit((int32_t)g_sdr.rit_hz + n * FN_RIT_STEP_HZ);
+    if (Encoder_GetButton(&g_encoder)) csdr_fn_set_rit(0);
+    (void)Encoder_GetLongPress(&g_encoder);
+    return;
+  }
+
   int32_t delta = Encoder_GetDelta(&g_encoder);
   if (delta != 0) {
     if (BandSel_IsOpen()) {
@@ -2491,6 +2602,41 @@ static void csdr_handle_keys(void)
   Key_Poll(&k_menu); Key_Poll(&k_f1);   Key_Poll(&k_f2); Key_Poll(&k_f3);
   Key_Poll(&k_f4);   Key_Poll(&k_band); Key_Poll(&k_mode); Key_Poll(&k_ptt);
   Key_Poll(&k_tune);
+  Key_Poll(&k_pw);
+
+  /* PW tap (released before KEY_HOLD_MS) toggles the FN latch.  A hold is
+   * the power-off gesture owned by PWR_Poll and must never toggle FN. */
+  { static bool s_pw_pending = false;
+    bool fn_allowed = !g_sdr.tx_mode && !Menu_IsOpen(&g_menu)
+                      && !BandSel_IsOpen() && !ModeSel_IsOpen();
+    if (Key_Press(&k_pw))   { s_pw_pending = true; }
+    if (Key_Hold(&k_pw))    { s_pw_pending = false; }
+    if (Key_Release(&k_pw)) {
+      if (s_pw_pending && fn_allowed) csdr_fn_set(!s_fn_active);
+      s_pw_pending = false;
+    }
+    if (!fn_allowed) csdr_fn_set(false);   /* TX / menu / overlay drops FN */
+  }
+
+  /* FN layer: consumes F1-F4/BAND/MODE events before the normal handlers
+   * below see them.  PTT and TUNE are deliberately not part of it.  Single-
+   * shot keys are Key_Sync'd so their hold/release can't fire the normal
+   * action (VFO swap, band/mode overlay) afterwards. */
+  if (s_fn_active) {
+    if (Key_PressOrRepeat(&k_f1)) csdr_fn_set_squelch((int16_t)g_sdr.squelch - (int16_t)FN_SQL_STEP);
+    if (Key_PressOrRepeat(&k_f2)) csdr_fn_set_squelch((int16_t)g_sdr.squelch + (int16_t)FN_SQL_STEP);
+    if (Key_Press(&k_f3))   { csdr_fn_vfo_copy();  Key_Sync(&k_f3); }
+    if (Key_Press(&k_f4))   { csdr_fn_cycle_nr();  Key_Sync(&k_f4); }
+    if (Key_Press(&k_band)) { csdr_apply_band(BPF_BandDown(g_sdr.band_idx)); Key_Sync(&k_band); }
+    if (Key_Press(&k_mode)) {
+      csdr_apply_mode_idx((uint8_t)((g_sdr.mode + MODE_COUNT - 1U) % MODE_COUNT));
+      Key_Sync(&k_mode);
+    }
+    /* Drain hold/release left over from presses that began before FN latched */
+    (void)Key_Hold(&k_f3);   (void)Key_Release(&k_f3);
+    (void)Key_Hold(&k_band); (void)Key_Release(&k_band);
+    (void)Key_Hold(&k_mode); (void)Key_Release(&k_mode);
+  }
 
   if (Key_Press(&k_menu)) {
     g_sdr.display_dirty = 0U;  /* prevent status panel overwriting menu */
@@ -2895,6 +3041,7 @@ static void csdr_refresh_display(void)
     ui.fwd_power_mw = PA_Protect_GetFwdPowerEnvelope_mW();
     ui.freq_b_hz = g_sdr.vfo_b.freq_hz; /* inactive VFO shown in sub-line */
     ui.active_vfo = g_sdr.active_vfo;
+    ui.fn_active  = s_fn_active;
 
     if (BandSel_IsOpen()) {
       BandSel_Render();
@@ -3096,8 +3243,10 @@ static void menu_apply_cb(void)
   DSP_NB_Set(&g_dsp, nb, nb_level);
   DSP_NR_Set(&g_dsp, nr, nr_level);
   DSP_BC_Set(&g_dsp, bc);
-  g_sdr.rit_hz = rit;
-  g_sdr.cat_rit_dirty = true;  /* apply new RIT offset to nco_if via CSDR_Loop */
+  if (rit != g_sdr.rit_hz) {   /* only on change: don't override a CAT RT0 */
+    g_sdr.rit_hz = rit;
+    csdr_rit_sync();           /* apply new RIT offset to nco_if via CSDR_Loop */
+  }
   if (vol != g_sdr.volume) csdr_apply_volume(vol);
   g_sdr.squelch = sq; DSP_SetSquelch(&g_dsp, sq);
   g_sdr.step = (FreqStep_t)step;
@@ -3383,6 +3532,7 @@ static void csdr_vfo_swap(void)
   g_sdr.active_vfo ^= 1U;
   /* Keep CAT routing state in sync so VS; query and AI IF-frame reflect reality */
   g_cat.active_vfo = g_sdr.active_vfo;
+  csdr_rit_sync();   /* RIT on/off follows the swapped-in VFO's offset */
 
   BPF_SetBand(g_sdr.band_idx);
   LPF_SetBand(g_sdr.band_idx);

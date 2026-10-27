@@ -441,6 +441,7 @@ typedef struct {
   uint16_t  filter_len;
   uint8_t   dsp_level;
   uint8_t   active_vfo;    /*!< 0 = VFO A active, 1 = VFO B active */
+  bool      fn_active;     /*!< PW-key FN layer latched — "F" badge at header start */
 } SDR_UI_State_t;
 
 /* ── API ─────────────────────────────────────────────────────────────────────
