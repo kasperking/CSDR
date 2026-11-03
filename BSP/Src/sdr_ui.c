@@ -991,7 +991,7 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
       LCD_LineStrW(ln, agc_x,  fr, agc_str,  &Font8x10, UI_STATUS_LBL, UI_HDR_BG);
       LCD_LineStrW(ln, att_x,  fr, att_hdr,  &Font8x10, att_vc,        UI_HDR_BG);
       if (clk_fits) {
-        LCD_LineStrW(ln, clock_x, fr, clk_str, &Font8x10, UI_STATUS_HINT, UI_HDR_BG);
+        LCD_LineStrW(ln, clock_x, fr, clk_str, &Font8x10, UI_STATUS_VAL,  UI_HDR_BG);
       }
       if (gps_str[0]) {
         LCD_LineStrW(ln, gps_x, fr, gps_str, &Font8x10, gps_col, UI_HDR_BG);
