@@ -1,7 +1,7 @@
 # CSDR – Hướng dẫn cài đặt
 ## Tạo project từ CubeMX → copy BSP → patch → build
 
-**MCU:** STM32H750VBT6 (480 MHz Cortex-M7) · **Display:** ST7796 480×320 FMC (default) hoặc ST7789 240×320 FMC · **Last updated:** 2026-05-28
+**MCU:** STM32H750VBT6 (480 MHz Cortex-M7) · **Display:** 480×320 FMC — ST7796S (default) hoặc ILI9488 · **Last updated:** 2026-05-28
 
 ---
 
@@ -316,7 +316,7 @@ CSDR/
 │   │   ├── lcd_bus_fmc.h       ← FMC 8080 LCD bus + MPU setup
 │   │   ├── lcd_dma.h           ← DMA2 Stream0 async pixel push
 │   │   ├── lcd_render.h        ← Primitive drawing helpers
-│   │   ├── lcd_panel_config.h  ← Panel select (ST7796/ST7789)
+│   │   ├── lcd_panel_config.h  ← Controller ID (ST7796/ILI9488)
 │   │   ├── lcd_test_fmc.h      ← FMC bus test (dev only)
 │   │   ├── hw_config_active.h  ← AUTO-GENERATED bởi hw_config.py
 │   │   ├── bpf_lpf.h           ← BPF SN74CBT3253 + LPF 74HC238

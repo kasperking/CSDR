@@ -1,6 +1,6 @@
 # CSDR – Hướng dẫn sử dụng
 
-## Máy thu phát SDR HF 160m–10m · STM32H750 · màn hình FMC 480×320 (ST7796) hoặc 240×320 (ST7789)
+## Máy thu phát SDR HF 160m–10m · STM32H750 · màn hình FMC 480×320 (ST7796 hoặc ILI9488)
 
 Tài liệu này hướng dẫn **vận hành** máy CSDR đã lắp ráp/nạp firmware xong. Nếu bạn cần build firmware từ mã nguồn, xem **README_INSTALL.md**. Nếu cần chi tiết bảo vệ PA quá dòng, xem **docs/pa_overcurrent_guide.md**.
 
@@ -100,26 +100,6 @@ Phím PW ngoài việc bật/tắt máy còn dùng như một phím **Shift có 
 ├─────────────────────────────────────────────────────────────┤
 │  FOOTER 480×32     -24k        0        +24k                │
 └─────────────────────────────────────────────────────────────┘
-```
-
-### Panel ST7789 240×320 (compact)
-
-```
-┌───────────────────────┐
-│  HEADER 240×16        │  điện áp
-├───────────────────────┤
-│  VFO 240×48           │  14.200.000  A USB RX
-├───────────────────────┤
-│  METER 240×24         │  S 1 3 5 7 9 +20 +40
-├───────────────────────┤
-│  SPECTRUM 240×76      │
-├───────────────────────┤
-│  WATERFALL 240×96     │
-├───────────────────────┤
-│  STATUS 240×28        │  USB VOL:78 SQL:0 / BW:2.7k NR NB
-├───────────────────────┤
-│  FOOTER 240×32        │  -24k   0   +24k
-└───────────────────────┘
 ```
 
 Ghi chú chung:

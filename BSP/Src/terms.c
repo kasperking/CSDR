@@ -62,9 +62,8 @@ static const char *const s_paragraphs[] = {
 #define TERMS_PARA_COUNT ((uint8_t)(sizeof(s_paragraphs) / sizeof(s_paragraphs[0])))
 
 /* Wrapped-line buffer, rebuilt once per screen open for the active panel's
- * actual width. 80 cols covers the widest panel today (ST7796: (480-20)/6 =
- * 76) with margin; 64 lines covers this content even on the narrowest panel
- * (ST7789: (240-20)/6 = 36 cols wraps the same paragraphs into ~45 lines). */
+ * actual width. 80 cols covers the 480 px panel ((480-20)/6 = 76) with
+ * margin; 64 lines leaves ample headroom for this content at 76 cols. */
 #define TM_MAX_COLS   80U
 #define TM_MAX_LINES  64U
 static char    s_wrapped[TM_MAX_LINES][TM_MAX_COLS];

@@ -45,27 +45,27 @@ SETTINGS = OrderedDict([
         "label":   "LCD Controller",
         "choices": OrderedDict([
             ("ST7796", "ST7796  (480x320 landscape chip)"),
-            ("ST7789", "ST7789  (240x320 portrait chip)"),
+            ("ILI9488", "ILI9488  (480x320 landscape chip, ST7796 layout)"),
         ]),
         "default": "ST7796",
     }),
-    ("lcd_orientation", {
-        "label":   "LCD Orientation",
+    ("lcd_invert", {
+        "label":      "  Color Inversion",
         "choices": OrderedDict([
-            ("LANDSCAPE", "Landscape  (axis swap MV)"),
-            ("PORTRAIT",  "Portrait   (no axis swap)"),
+            ("OFF", "INVOFF  (most ILI9488 TN modules)"),
+            ("ON",  "INVON   (IPS modules showing negative colors)"),
         ]),
-        "default": "LANDSCAPE",
+        "default":    "OFF",
+        "parent":     "lcd_controller",
+        "parent_val": "ILI9488",
     }),
     ("lcd_color_order", {
-        "label":      "  Color Order",
+        "label":      "LCD Color Order",
         "choices": OrderedDict([
             ("BGR", "BGR  (most panels — swap R↔B in controller)"),
             ("RGB", "RGB  (no swap)"),
         ]),
         "default":    "BGR",
-        "parent":     "lcd_orientation",
-        "parent_val": "LANDSCAPE",
     }),
     ("fmc_bus_width", {
         "label":   "FMC Bus Width",
@@ -174,7 +174,7 @@ PRESETS = OrderedDict([
     ("hw_test_fmc", {
         "label": "Test board -- ST7796 landscape BGR, MEDIUM GPIO, 25 MHz crystal",
         "config": {
-            "lcd_controller":  "ST7796", "lcd_orientation": "LANDSCAPE", "lcd_color_order": "BGR",
+            "lcd_controller":  "ST7796", "lcd_color_order": "BGR",
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "MEDIUM",
             "board_type":      "TEST",   "dma_chunk_rows":  "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
@@ -185,7 +185,7 @@ PRESETS = OrderedDict([
     ("hw_prod_v1", {
         "label": "Production board -- ST7796 landscape BGR, VERY_HIGH GPIO",
         "config": {
-            "lcd_controller":  "ST7796", "lcd_orientation": "LANDSCAPE", "lcd_color_order": "BGR",
+            "lcd_controller":  "ST7796", "lcd_color_order": "BGR",
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "VERY_HIGH",
             "board_type":      "PRODUCTION", "dma_chunk_rows": "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
@@ -196,7 +196,7 @@ PRESETS = OrderedDict([
     ("hw_long_fpc_debug", {
         "label": "Long FPC debug cable -- relaxed FMC timing",
         "config": {
-            "lcd_controller":  "ST7796", "lcd_orientation": "LANDSCAPE", "lcd_color_order": "BGR",
+            "lcd_controller":  "ST7796", "lcd_color_order": "BGR",
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "MEDIUM",
             "board_type":      "LONG_FPC", "dma_chunk_rows": "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
@@ -204,10 +204,11 @@ PRESETS = OrderedDict([
             "encoder_type":    "EC11",
         },
     }),
-    ("hw_compact_st7789", {
-        "label": "Compact panel ST7789 -- portrait BGR, MEDIUM GPIO",
+    ("hw_ili9488", {
+        "label": "ILI9488 3.5in -- landscape BGR, MEDIUM GPIO, 25 MHz crystal",
         "config": {
-            "lcd_controller":  "ST7789", "lcd_orientation": "PORTRAIT",
+            "lcd_controller":  "ILI9488", "lcd_color_order": "BGR",
+            "lcd_invert":      "OFF",
             "fmc_bus_width":   "8BIT",   "gpio_speed":      "MEDIUM",
             "board_type":      "TEST",   "dma_chunk_rows":  "8",
             "hse_source":      "CRYSTAL","hse_freq_hz":     "25000000",
@@ -223,19 +224,15 @@ PRESETS = OrderedDict([
 MADCTL_TABLE = {
     ("ST7796", "LANDSCAPE_BGR"): (0xE8, "MY|MX|MV|BGR  landscape, BGR filter"),
     ("ST7796", "LANDSCAPE_RGB"): (0xE0, "MY|MX|MV       landscape, RGB filter"),
-    ("ST7796", "PORTRAIT"):      (0x08, "BGR            portrait,  BGR filter"),
-    ("ST7789", "LANDSCAPE_BGR"): (0x68, "MX|MV|BGR      landscape, BGR filter"),
-    ("ST7789", "LANDSCAPE_RGB"): (0x60, "MX|MV          landscape, RGB filter"),
-    ("ST7789", "PORTRAIT"):      (0x08, "BGR            portrait,  BGR filter"),
+    ("ILI9488", "LANDSCAPE_BGR"): (0xE8, "MY|MX|MV|BGR  landscape, BGR filter"),
+    ("ILI9488", "LANDSCAPE_RGB"): (0xE0, "MY|MX|MV       landscape, RGB filter"),
 }
 
 LCD_DIMENSIONS = {
     ("ST7796", "LANDSCAPE_BGR"): (480, 320),
     ("ST7796", "LANDSCAPE_RGB"): (480, 320),
-    ("ST7796", "PORTRAIT"):      (320, 480),
-    ("ST7789", "LANDSCAPE_BGR"): (320, 240),
-    ("ST7789", "LANDSCAPE_RGB"): (320, 240),
-    ("ST7789", "PORTRAIT"):      (240, 320),
+    ("ILI9488", "LANDSCAPE_BGR"): (480, 320),
+    ("ILI9488", "LANDSCAPE_RGB"): (480, 320),
 }
 
 FMC_TIMING = {
@@ -266,33 +263,27 @@ HSE_RCC_MODE = {
     "BYPASS":  "RCC_HSE_BYPASS",
 }
 
-PANEL_ID = {"ST7796": 1, "ST7789": 2}
+# ID 2 was ST7789 (removed 2026-11-12) — retired, never reuse.
+PANEL_ID = {"ST7796": 1, "ILI9488": 3}
 
 ORIENT_LABEL = {
     "LANDSCAPE_BGR": "Landscape BGR",
     "LANDSCAPE_RGB": "Landscape RGB",
-    "PORTRAIT":      "Portrait",
 }
 
 # Default color order per controller (panel glass characteristic)
 DEFAULT_COLOR_ORDER = {
     "ST7796": "BGR",
-    "ST7789": "RGB",
+    "ILI9488": "BGR",
 }
 
 
 def _resolve_orient(cfg):
     """Return the internal orientation key used in MADCTL_TABLE / LCD_DIMENSIONS.
 
-    Handles both new format (lcd_orientation=LANDSCAPE + lcd_color_order=BGR/RGB)
-    and old format (lcd_orientation=LANDSCAPE_BGR / LANDSCAPE_RGB) so saved
-    configs from before the split remain compatible.
+    The UI has a single 480x320 landscape layout, so orientation is always
+    landscape; only the panel colour order (BGR/RGB) varies.
     """
-    orient = cfg.get("lcd_orientation", "LANDSCAPE")
-    if orient in ("LANDSCAPE_BGR", "LANDSCAPE_RGB", "PORTRAIT"):
-        return orient                          # old format — pass through unchanged
-    if orient == "PORTRAIT":
-        return "PORTRAIT"
     ctrl   = cfg.get("lcd_controller", "ST7796")
     color  = cfg.get("lcd_color_order", DEFAULT_COLOR_ORDER.get(ctrl, "BGR"))
     return f"LANDSCAPE_{color}"
@@ -516,27 +507,17 @@ def validate(cfg):
     if width == "16BIT":
         warnings.append(
             "16-bit FMC requires DA8-DA15 (8 extra GPIO pins) routed on the PCB "
-            "and the ST7796/ST7789 MCU interface strapped for 16-bit mode. "
+            "and the LCD controller's MCU interface strapped for 16-bit mode "
+            "(ILI9488: IM[2:0]=010 for 16-bit, 011 for 8-bit). "
             "Verify hardware before enabling. DMA pixel path falls back to CPU in 16-bit mode."
         )
-    if ctrl == "ST7789" and "LANDSCAPE" in orient:
+    color = "BGR" if "BGR" in orient else "RGB"
+    expected = DEFAULT_COLOR_ORDER.get(ctrl, "BGR")
+    if color != expected:
         warnings.append(
-            "ST7789 landscape is non-native (MV axis swap required). "
-            "Verify MADCTL on oscilloscope before production use."
-        )
-    if "LANDSCAPE" in orient:
-        color = "BGR" if "BGR" in orient else "RGB"
-        expected = DEFAULT_COLOR_ORDER.get(ctrl, "BGR")
-        if color != expected:
-            warnings.append(
-                f"{ctrl} panel color order is {color} but typical {ctrl} panels "
-                f"use {expected}. If colors look wrong (red/blue swap symptom), "
-                f"change Color Order to {expected}."
-            )
-    if ctrl == "ST7796" and orient == "PORTRAIT":
-        warnings.append(
-            "ST7796 portrait (320x480): SDR UI zones were designed for 480x320 "
-            "landscape. Expect layout issues until sdr_ui.h is updated."
+            f"{ctrl} panel color order is {color} but typical {ctrl} panels "
+            f"use {expected}. If colors look wrong (red/blue swap symptom), "
+            f"change Color Order to {expected}."
         )
     if board == "PRODUCTION" and speed in ("LOW", "MEDIUM"):
         warnings.append(
@@ -548,10 +529,12 @@ def validate(cfg):
             "VERY_HIGH GPIO speed on test/breadboard wiring may cause ringing. "
             "MEDIUM is safer for non-production boards."
         )
-    if ctrl == "ST7789" and board == "PRODUCTION":
+    if ctrl == "ILI9488":
         warnings.append(
-            "ST7789 on production board timing is untested. "
-            "Validate with oscilloscope."
+            "ILI9488 init sequence is untested on CSDR hardware. Strap the "
+            "module for 8080 parallel (IM pins), not SPI. If the picture is "
+            "rotated 180 deg, the module mounts the other way: MADCTL 0x28 "
+            "instead of 0xE8. Negative colors -> set Color Inversion = ON."
         )
 
     # ── HSE / PLL ──
@@ -615,6 +598,7 @@ def resolve(cfg):
 
     return {
         "panel":                PANEL_ID[ctrl],
+        "lcd_invert":           1 if (ctrl == "ILI9488" and cfg.get("lcd_invert") == "ON") else 0,
         "madctl":               madctl_val,
         "madctl_desc":          madctl_desc,
         "lcd_w":                w,
@@ -750,11 +734,14 @@ def generate_header(cfg, r):
         "\n"
         "/* -- Panel ---------------------------------------------------------------\n"
         " * HW_LCD_PANEL is read by lcd_panel_config.h to select the driver path.\n"
-        " * LCD_W / LCD_H are provided here so portrait and landscape both resolve\n"
-        " * correctly without editing lcd_panel_config.h.                          */\n"
+        " * LCD_W / LCD_H: 480x320 landscape (the only UI layout).                 */\n"
         f"#define HW_LCD_PANEL        {r['panel']}   /* {cfg['lcd_controller']} */\n"
         f"#define LCD_W               {r['lcd_w']}U\n"
         f"#define LCD_H               {r['lcd_h']}U\n"
+        "\n"
+        "/* -- Display inversion ---------------------------------------------------\n"
+        " * 1 = send INVON in init (ILI9488 IPS modules).  Ignored by ST7796.   */\n"
+        f"#define HW_LCD_INVERT       {r['lcd_invert']}\n"
         "\n"
         "/* -- MADCTL (register 0x36) ----------------------------------------------\n"
         f" * {mdesc:<68s}*/\n"
@@ -788,7 +775,7 @@ def generate_header(cfg, r):
         f"#define HW_FMC_DATA_ADDR_OFFSET 0x{r['fmc_data_addr_offset']:05X}UL\n"
         "\n"
         "/* -- LCD DMA push chunk size (spectrum strip height) --------------------\n"
-        " * Must be <= SPEC_H (72 for ST7796, 76 for ST7789). Valid range 1-64.  */\n"
+        " * Must be <= SPEC_H (72). Valid range 1-64.                             */\n"
         f"#define HW_DMA_CHUNK_ROWS   {r['dma_rows']}U\n"
         "\n"
         "/* -- HSE clock source and PLL configuration -----------------------------\n"
@@ -977,6 +964,12 @@ def load_state():
         with open(STATE_FILE, encoding="utf-8") as fh:
             data = json.load(fh)
         cfg = default_config()
+        # Legacy: colour order used to be folded into lcd_orientation
+        # (LANDSCAPE_BGR / LANDSCAPE_RGB).  Orientation itself was dropped
+        # with ST7789 — only 480x320 landscape exists now.
+        legacy = data.get("lcd_orientation", "")
+        if legacy in ("LANDSCAPE_BGR", "LANDSCAPE_RGB") and "lcd_color_order" not in data:
+            data["lcd_color_order"] = legacy.split("_")[1]
         for k in SETTINGS:
             if k not in data:
                 continue

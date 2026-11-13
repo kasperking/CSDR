@@ -52,7 +52,7 @@ extern "C" {
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
-#define MENU_W  (LCD_W - 2U * MENU_X)  /* adaptive: 460 on ST7796, 220 on ST7789 */
+#define MENU_W  (LCD_W - 2U * MENU_X)  /* 460 px on the 480-wide panel */
 #define MENU_Y               ZONE_SPEC_Y   /* Overlay on spectrum  */
 #define MENU_HEADER_BG      0xF800U
 #define MENU_GROUP_COLOR    0x07FFU   /* (unused — groups render like items, all text white) */

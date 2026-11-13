@@ -57,7 +57,7 @@
 #define HW_FMC_DATA_ADDR_OFFSET 0x20000UL
 
 /* -- LCD DMA push chunk size (spectrum strip height) --------------------
- * Must be <= SPEC_H (72 for ST7796, 76 for ST7789). Valid range 1-64.  */
+ * Must be <= SPEC_H (72). Valid range 1-64.                             */
 #define HW_DMA_CHUNK_ROWS   8U
 
 /* -- HSE clock source and PLL configuration -----------------------------

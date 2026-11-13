@@ -53,7 +53,7 @@ Applies a named preset directly.  Available presets:
   CSDR Firmware -- Hardware Configuration
 ========================================================
   1.  LCD Controller      : ST7796
-  2.  LCD Orientation     : Landscape BGR
+  2.  LCD Color Order     : BGR
   3.  FMC Bus Width       : 8-bit
   4.  GPIO Speed          : MEDIUM
   5.  Board Type          : Test board
@@ -79,8 +79,9 @@ named hardware profile, or choose **Generate** to write the header.
 
 | Setting | Options | Effect |
 |---|---|---|
-| LCD Controller | ST7796, ST7789 | Selects init sequence and MADCTL base |
-| LCD Orientation | Landscape BGR/RGB, Portrait | Sets MADCTL byte and LCD_W/LCD_H |
+| LCD Controller | ST7796, ILI9488 | Selects init sequence and MADCTL base (both 480×320 landscape) |
+| Color Inversion *(sub)* | OFF / ON | ILI9488 only — sends INVON for IPS modules (`HW_LCD_INVERT`) |
+| LCD Color Order | BGR / RGB | Sets the MADCTL BGR bit |
 | FMC Bus Width | 8-bit | Bus width (16-bit not yet supported) |
 | GPIO Speed | LOW / MEDIUM / HIGH / VERY_HIGH | FMC GPIO drive strength |
 | Board Type | Test / Production / Long FPC | FMC timing preset (AHB cycles) |
@@ -96,10 +97,12 @@ named hardware profile, or choose **Generate** to write the header.
 |---|---|---|---|
 | ST7796 | Landscape BGR | `0xE8` | MY\|MX\|MV\|BGR |
 | ST7796 | Landscape RGB | `0xE0` | MY\|MX\|MV |
-| ST7796 | Portrait | `0x08` | BGR only |
-| ST7789 | Landscape BGR | `0x68` | MX\|MV\|BGR |
-| ST7789 | Landscape RGB | `0x60` | MX\|MV |
-| ST7789 | Portrait | `0x08` | BGR only |
+| ILI9488 | Landscape BGR | `0xE8` | MY\|MX\|MV\|BGR (`0x28` if module mounted 180°) |
+| ILI9488 | Landscape RGB | `0xE0` | MY\|MX\|MV |
+
+Portrait and the ST7789 240×320 compact panel were removed 2026-11-12:
+the UI has a single 480×320 landscape layout (`sdr_ui.h` `#error`s on
+anything else). `HW_LCD_PANEL = 2` is retired.
 
 ### FMC timing presets (AHB cycles at 200 MHz HCLK)
 
@@ -204,9 +207,8 @@ main.c          → lcd_bus_fmc.h        ← HW_FMC_* used in FMC timing re-init
 stm32h7xx_hal_msp.c  (user-code block) ← HW_FMC_GPIO_SPEED for GPIO speed
 ```
 
-`LCD_W` and `LCD_H` are defined directly in the generated header so that
-portrait and all orientation combinations resolve correctly without any
-conditional logic in `lcd_panel_config.h`.
+`LCD_W` and `LCD_H` are defined directly in the generated header (always
+480×320); `lcd_panel_config.h` only falls back to them for profile headers.
 
 ### CubeMX regeneration
 
@@ -324,11 +326,9 @@ The interactive tool rejects or warns on:
 | 16-bit FMC bus selected | Error — not implemented |
 | HSE outside 1–50 MHz | Error — out of STM32H7 PLL input range |
 | No integer PLL1 solution for SYSCLK = 480 MHz | Error — try 24/25/26 MHz |
-| ST7789 + landscape orientation | Warning — non-native, verify MADCTL |
-| ST7796 + portrait | Warning — UI zones designed for landscape |
+| ILI9488 selected | Warning — init untested on CSDR HW; IM strap / 180° / inversion hints |
 | Production board + MEDIUM/LOW GPIO | Warning — VERY_HIGH recommended |
 | Test board + VERY_HIGH GPIO | Warning — ringing risk on unmatched wiring |
-| ST7789 + production timing | Warning — untested combination |
 | SAI1 error > 1% (>122 kHz) | Warning — USB/audio drift will be significant |
 
 ---
@@ -379,10 +379,11 @@ Add an entry to `PRESETS` in `tools/hw_config.py`:
 
 ```python
 ("hw_my_board", {
-    "label": "My custom board -- ST7789 portrait",
+    "label": "My custom board -- ILI9488 landscape",
     "config": {
-        "lcd_controller":  "ST7789",
-        "lcd_orientation": "PORTRAIT",
+        "lcd_controller":  "ILI9488",
+        "lcd_color_order": "BGR",
+        "lcd_invert":      "OFF",
         "fmc_bus_width":   "8BIT",
         "gpio_speed":      "MEDIUM",
         "board_type":      "TEST",

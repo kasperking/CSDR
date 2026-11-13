@@ -14,7 +14,7 @@
 
 /* ── LCD panel ──────────────────────────────────────────────────────────────
  * 1 = ST7796S 480x320 landscape
- * 2 = ST7789V 240x320 portrait                                              */
+ * 3 = ILI9488 480x320 landscape  (2 = ST7789, removed)                    */
 #define HW_LCD_PANEL       1
 
 /* MY|MX|MV|BGR landscape — same orientation as test board.                  */

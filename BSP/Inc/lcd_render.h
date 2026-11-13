@@ -31,14 +31,7 @@ extern "C" {
  * DMA/FMC write order is correct (low byte sent first = original MSB). */
 #define SWAP16_RAW(x)  ((uint16_t)((((x) & 0x00FFU) << 8U) | (((x) >> 8U) & 0x00FFU)))
 
-/* ST7789 uses INVON (0x21) which inverts every displayed pixel.
- * Pre-invert colours in software so the net result is correct on screen.
- * ~SWAP16_RAW(x) == SWAP16_RAW(~x) — commutativity of NOT and byte-swap. */
-#if LCD_PANEL == LCD_PANEL_ST7789
-  #define SWAP16(x)  ((uint16_t)(~SWAP16_RAW(x)))
-#else
-  #define SWAP16(x)  SWAP16_RAW(x)
-#endif
+#define SWAP16(x)  SWAP16_RAW(x)
 
 /* ── Font ───────────────────────────────────────────── */
 typedef struct {

@@ -2,9 +2,9 @@
 /**
   ******************************************************************************
   * @file    sdr_ui.h
-  * @brief   CSDR SDR UI – zone layout over FMC LCD (ST7796 480×320 or ST7789 240×320)
+  * @brief   CSDR SDR UI – zone layout over FMC LCD (480×320 landscape)
   *
-  *  ── ST7796 480×320 (LCD_PANEL_ST7796, default) ─────────────────────────────
+  *  ── 480×320 wide layout (ST7796S / ILI9488) ──────────────────────────────────
   *  ┌─────────────────────────────────────────────────────────────┐  Y=0
   *  │  HEADER  480×24                              13.9V          │
   *  ├─────────┬────────────────────────────────────┬─────────────┤  Y=24
@@ -25,24 +25,7 @@
   *  │  FOOTER  480×32   -24k      0      +24k                    │
   *  └─────────────────────────────────────────────────────────────┘  Y=320
   *
-  *  ── ST7789 240×320 (LCD_PANEL_ST7789, compact) ─────────────────────────────
-  *  ┌───────────────────────┐  Y=0
-  *  │  HEADER  240×16       │  voltage
-  *  ├───────────────────────┤  Y=16
-  *  │  VFO  240×48          │  14.200.000  A  USB  RX
-  *  ├───────────────────────┤  Y=64
-  *  │  METER  240×24        │  S 1  3  5  7  9  +20 +40
-  *  ├───────────────────────┤  Y=88
-  *  │  SPECTRUM  240×76     │
-  *  ├───────────────────────┤  Y=164
-  *  │  WATERFALL  240×96    │
-  *  ├───────────────────────┤  Y=260
-  *  │  STATUS  240×28       │  USB  VOL:78  SQL:0 / BW:2.7k  NR NB
-  *  ├───────────────────────┤  Y=288
-  *  │  FOOTER  240×32       │  -24k   0   +24k
-  *  └───────────────────────┘  Y=320
-  *
-  *  Panel is selected in lcd_panel_config.h (LCD_PANEL define).
+  *  Controller is selected by tools/hw_config.py (see lcd_panel_config.h).
   *  Transport: FMC 8080-mode via LCD_PushWindow / LCD_Clear.
   ******************************************************************************
   */
@@ -60,11 +43,13 @@ extern "C" {
 #include "pa_protect.h"    /* PA_State_t, PA_Fault_t for TX warning overlay      */
 
 /* ════════════════════════════════════════════════════════════════════════════
- *  Zone geometry — two conditional layouts selected by lcd_panel_config.h
+ *  Zone geometry — single 480×320 landscape layout
  * ════════════════════════════════════════════════════════════════════════════ */
 
-#if LCD_PANEL == LCD_PANEL_ST7796
-/* ── ST7796 480×320 layout (9-zone with sidebars) ────────────────────────── */
+/* ── 480×320 layout (9-zone with sidebars) ───────────────────────────────── */
+#if (LCD_W != 480U) || (LCD_H != 320U)
+#  error "sdr_ui.h: only the 480x320 landscape layout exists — fix orientation in tools/hw_config.py"
+#endif
 
 #define HDR_Y    0U
 #define HDR_H   24U
@@ -123,230 +108,25 @@ extern "C" {
  *   row  22:    bottom rail; rows 23+: TX meter / unused           */
 
 /* No compact STATUS zone on ST7796 */
-#define STS_Y   FTR_Y
-#define STS_H    0U
-#define STS_Y2  FTR_Y
 
-#elif LCD_PANEL == LCD_PANEL_ST7789
-/* ── ST7789: orientation-split layout ───────────────────────────────────── *
- *
- *  Landscape (320x240): 12+44+20+56+60+24+24 = 240 px
- *  Portrait  (240x320): 16+48+24+76+96+28+32 = 320 px
- *
- *  SBL/SBR are zero-size on both orientations — DrawSidebarLeft renders the
- *  STATUS bar; DrawSidebarRight is a no-op.
- */
-#if LCD_W > LCD_H
-/* ── ST7789 320×240 landscape ──────────────────────────────────────────── *
- *
- *  New layout — STS zone eliminated, params merged into VFO zone:
- *
- *  ┌──────────────────────────────────────────────────────────────────┐  Y=0
- *  │  HEADER  320×12  AGC-F                              13.8V       │
- *  ├──────────────────────────────────────────────────────────────────┤  Y=12
- *  │  VFO  320×60   [A] 14.200.000    │ USB ← right 120px           │
- *  │                                  │ RX                           │
- *  │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ (divider row 36)            │
- *  │  STP:100  VOL:70  [NB]                                          │
- *  │  BW:3000  SQL:0   [NR]                                          │
- *  ├──────────────────────────────────────────────────────────────────┤  Y=72
- *  │  METER  320×20   S-meter ruler                                  │
- *  ├──────────────────────────────────────────────────────────────────┤  Y=92
- *  │  SPECTRUM  320×60                                               │
- *  ├──────────────────────────────────────────────────────────────────┤  Y=152
- *  │  WATERFALL  320×64                                              │
- *  ├──────────────────────────────────────────────────────────────────┤  Y=216
- *  │  FOOTER  320×24  -24k        0        +24k                      │
- *  └──────────────────────────────────────────────────────────────────┘  Y=240
- *
- *  Total: 12+60+20+60+64+24 = 240 ✓
- */
-
-#define HDR_Y    0U
-#define HDR_H   12U
-#define HDR_Y2  12U
-
-#define SBL_X    0U
-#define SBL_W    0U
-#define SBL_H    0U
-#define SBL_Y   HDR_Y2
-#define SBL_Y2  HDR_Y2
-
-#define SBR_W    0U
-#define SBR_X   LCD_W
-#define SBR_Y   HDR_Y2
-#define SBR_H    0U
-#define SBR_Y2  HDR_Y2
-
-#define VFO_X    0U
-#define VFO_W   LCD_W
-#define VFO_Y   HDR_Y2   /* = 12 */
-#define VFO_H   60U
-#define VFO_Y2  72U
-
-/* Right panel split: digits centered in left 180px; right 140px for status inline */
-#define VFO_RIGHT_X    180U
-
-#define MTR_X    0U
-#define MTR_W   LCD_W
-#define MTR_Y   VFO_Y2   /* = 72 */
-#define MTR_H   20U
-#define MTR_Y2  92U
-
-#define INFO_Y  MTR_Y2
-#define INFO_H    0U
-#define INFO_Y2 MTR_Y2
-
-#define SPEC_X    0U
-#define SPEC_W   LCD_W
-#define SPEC_Y   MTR_Y2  /* = 92 */
-#define SPEC_H   60U
-#define SPEC_Y2 152U
-
-#define WF_X     0U
-#define WF_W    LCD_W
-#define WF_Y    SPEC_Y2  /* = 152 */
-#define WF_H    64U
-#define WF_Y2  216U
-
-#define STS_Y   WF_Y2    /* = 216 */
-#define STS_H    0U
-#define STS_Y2  216U
-
-#define FTR_Y   STS_Y2   /* = 216 */
-#define FTR_H   24U
-#define FTR_Y2  LCD_H    /* = 240 */
-
-/* S-meter ruler (ST7789 landscape 20-row MTR zone):
- *   rows  0– 9: scale labels + inline S-value (Font8x10)
- *   rows 10–11: major ticks (2 px), row 11: minor ticks (1 px)
- *   row  12:    top rail (1-px horizontal line)
- *   rows 13–16: 4-px signal line (SM_LINE_R0..+SM_LINE_H-1)
- *   row  18:    bottom rail; TX ALC/SWR text omitted (MTR too short) */
-
-#else
-/* ── ST7789 240×320 portrait ───────────────────────────────────────────── *
- *
- *  New layout — STS zone eliminated, params merged into VFO zone right panel:
- *
- *  ┌───────────────────────┐  Y=0
- *  │  HEADER  240×16       │  AGC-F / 13.8V
- *  ├───────────────────────┤  Y=16
- *  │  VFO  240×72          │  [A] 7.100.000 │ USB  ← right panel 48px
- *  │                       │                │ RX
- *  │  B 14.200.000         │  sub-VFO MED 12x16 (row 28..43)
- *  │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │  (divider @ row 38 within VFO)
- *  │  STP:xxx  VOL:xx  NB  │  full-width params row A (row 46)
- *  │  BW:xxx   SQL:x   NR  │  full-width params row B (row 55)
- *  ├───────────────────────┤  Y=88
- *  │  METER  240×24        │  S-meter ruler
- *  ├───────────────────────┤  Y=112
- *  │  SPECTRUM  240×88     │
- *  ├───────────────────────┤  Y=200
- *  │  WATERFALL  240×88    │
- *  ├───────────────────────┤  Y=288
- *  │  FOOTER  240×32       │  -24k   0   +24k
- *  └───────────────────────┘  Y=320
- *
- *  Total: 16+72+24+88+88+32 = 320 ✓
- */
-
-#define HDR_Y    0U
-#define HDR_H   16U
-#define HDR_Y2  16U
-
-#define SBL_X    0U
-#define SBL_W    0U
-#define SBL_H    0U
-#define SBL_Y   HDR_Y2
-#define SBL_Y2  HDR_Y2
-
-#define SBR_W    0U
-#define SBR_X   LCD_W
-#define SBR_Y   HDR_Y2
-#define SBR_H    0U
-#define SBR_Y2  HDR_Y2
-
-#define VFO_X    0U
-#define VFO_W   LCD_W
-#define VFO_Y   HDR_Y2   /* = 16 */
-#define VFO_H   72U       /* expanded: right panel + params rows inline */
-#define VFO_Y2  88U
-
-/* Right panel split: left 192px = digit area; right 48px = mode/RX labels */
-#define VFO_RIGHT_X    192U
-/* Params rows within s_vfo_buf (below digit/badge area, full-width) */
-#define VFO_PARAMS_Y    46U   /* row for params row A (STP/VOL/NB) -- below sub-VFO */
-#define VFO_PARAMS_B_Y  55U   /* row for params row B (BW/SQL/NR)  */
-
-#define MTR_X    0U
-#define MTR_W   LCD_W
-#define MTR_Y   VFO_Y2   /* = 88 */
-#define MTR_H   24U
-#define MTR_Y2  112U
-
-#define INFO_Y  MTR_Y2
-#define INFO_H    0U
-#define INFO_Y2 MTR_Y2
-
-#define SPEC_X    0U
-#define SPEC_W   LCD_W
-#define SPEC_Y   MTR_Y2  /* = 112 */
-#define SPEC_H   88U
-#define SPEC_Y2 200U
-
-#define WF_X     0U
-#define WF_W    LCD_W
-#define WF_Y    SPEC_Y2  /* = 200 */
-#define WF_H    88U
-#define WF_Y2  288U
-
-/* STS zone eliminated — status info merged into VFO zone right panel */
-#define STS_Y   WF_Y2    /* = 288 */
-#define STS_H    0U
-#define STS_Y2  288U
-
-#define FTR_Y   STS_Y2   /* = 288 */
-#define FTR_H   32U
-#define FTR_Y2  LCD_H    /* = 320 */
-
-/* S-meter ruler (ST7789 portrait 24-row MTR zone):
- *   rows  0– 9: scale labels + inline S-value (Font8x10)
- *   rows 10–11: major ticks (2 px), row 11: minor ticks (1 px)
- *   row  12:    top rail (1-px horizontal line)
- *   rows 13–16: 4-px signal line (SM_LINE_R0..+SM_LINE_H-1)
- *   row  18:    bottom rail; rows 19+: TX meter / unused          */
-
-#endif /* LCD_W > LCD_H */
-
-#else
-#  error "Unknown LCD_PANEL in sdr_ui.h — check lcd_panel_config.h"
-#endif /* LCD_PANEL */
 
 /* ── Zoom levels: 0=±24k  1=±12k  2=±6k  3=±3k ─────────────────────────── */
 #define SPEC_ZOOM_COUNT  4U
 
-/* ── S-meter ruler geometry (shared, fits both MTR widths) ──────────────── *
+/* ── S-meter ruler geometry ─────────────────────────────────────────────── *
  *  SM_UNIT_W  : tick pitch (18 px); 12 × 18 = 216 px ruler
  *  SM_RULER_W : derived — total ruler span in pixels
  *  SM_START_X : left margin before first tick
  *
- *  Fit check (tightest panel: ST7789 MTR_W=240):
+ *  Fit check (MTR_W=312):
  *    ruler_end = SM_START_X + SM_RULER_W = 218
  *    val_x     = ruler_end + 4 = 222
- *    max label "+40" = 3 × 6 px = 18 px → ends at 240 = MTR_W  ✓
+ *    max label "+40" = 3 × 6 px = 18 px → ends at 240 ≤ MTR_W  ✓
  * ─────────────────────────────────────────────────────────────────────────── */
 #define SM_BARS      12U
 #define SM_UNIT_W    18U
 #define SM_START_X    2U
 #define SM_RULER_W   (SM_BARS * SM_UNIT_W)   /* 216 px */
-/* Landscape ST7789 (320×240): narrower tick pitch so ruler ≈ 50% of screen */
-#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-#undef  SM_UNIT_W
-#define SM_UNIT_W   13U
-#undef  SM_RULER_W
-#define SM_RULER_W  (SM_BARS * SM_UNIT_W)   /* 156 px */
-#endif
 
 /* ── Legacy aliases (used by menu.c / sdr_scan.c) ──── */
 #define ZONE_SPEC_Y   SPEC_Y

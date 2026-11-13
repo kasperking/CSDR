@@ -2,27 +2,16 @@
 /**
   ******************************************************************************
   * @file    sdr_ui.c
-  * @brief   CSDR SDR UI – zone layout, FMC burst pushes (ST7796 480×320 / ST7789 240×320)
+  * @brief   CSDR SDR UI – zone layout, FMC burst pushes (480×320 wide layout)
   *
-  *  Panel is selected at compile time via LCD_PANEL in lcd_panel_config.h.
-  *
-  *  ST7796 480×320: 9-zone layout with sidebars.  All zone buffers live in
-  *  DMA_SRAM (RAM_D1).  Spectrum/waterfall use async DMA2 Stream0 M2M.
-  *  Total RAM_D1 footprint: ~253 KB.
-  *
-  *  ST7789 240×320: compact layout — no sidebars, status bar replaces them.
-  *  Smaller buffers (SPEC 240×76, WF 240×96 vs. 480×72 each).  Waterfall row
-  *  push is 480 B (~56 µs) vs. 960 B (~112 µs) at the same FMC clock.
-  *  Total RAM_D1 footprint: ~148 KB.
-  *
-  *  DrawSidebarLeft renders the compact STATUS zone on ST7789.
-  *  DrawSidebarRight is a no-op on ST7789.
+  *  One layout: 480×320 landscape, 9 zones with sidebars.  Shared by every
+  *  supported controller (ST7796S, ILI9488 — see lcd_panel_config.h).
+  *  All zone buffers live in DMA_SRAM (RAM_D1).  Spectrum/waterfall use async
+  *  DMA2 Stream0 M2M.  Total RAM_D1 footprint: ~253 KB.
   *
   *  Single-zone transfer times (8-bit FMC, 116.7 ns/byte):
-  *    ST7796  Spectrum  (480×72):   ~8.06 ms   (9 × 8-row strips)
-  *    ST7796  WF row   (480×1):     ~112 µs
-  *    ST7789  Spectrum  (240×76):   ~4.26 ms   (10 × 8-row strips)
-  *    ST7789  WF row   (240×1):      ~56 µs
+  *    Spectrum  (480×72):   ~8.06 ms   (9 × 8-row strips)
+  *    WF row   (480×1):     ~112 µs
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -85,35 +74,21 @@ static inline uint32_t ui_cyc_to_us(uint32_t cycles)
 
 /* ── DMA-accessible zone buffers (RAM_D1, 512 KB) ───────────────────────── *
  *
- *  ST7796 480×320:                      ST7789 240×320:
- *   s_hdr_buf  : 24×480×2 =  23,040 B   16×240×2 =   7,680 B
- *   s_sbl_buf  : 96×80 ×2 =  15,360 B   — (not on ST7789)
- *   s_sbr_buf  : 96×88 ×2 =  16,896 B   — (not on ST7789)
- *   s_sts_buf  :     — (not on ST7796)   28×240×2 =  13,440 B
- *   s_vfo_buf  : 64×320×2 =  40,960 B   48×240×2 =  23,040 B
- *   s_mtr_buf  : 32×320×2 =  20,480 B   24×240×2 =  11,520 B
- *   s_spec_buf : 72×480×2 =  69,120 B   76×240×2 =  36,480 B
- *   s_wf_buf   : 72×480×2 =  69,120 B   96×240×2 =  46,080 B
- *   Total UI             : ~253 KB                 ~148 KB
+ *   s_hdr_buf  : 24×480×2 =  23,040 B
+ *   s_sbl_buf  : 96×80 ×2 =  15,360 B
+ *   s_sbr_buf  : 96×88 ×2 =  16,896 B
+ *   s_vfo_buf  : 64×320×2 =  40,960 B
+ *   s_mtr_buf  : 32×320×2 =  20,480 B
+ *   s_spec_buf : 72×480×2 =  69,120 B
+ *   s_wf_buf   : 72×480×2 =  69,120 B
+ *   Total UI             : ~253 KB
  */
 static uint16_t s_hdr_buf[HDR_H  * LCD_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
-#if LCD_PANEL == LCD_PANEL_ST7796
 static uint16_t s_sbl_buf[SBL_H  * SBL_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 static uint16_t s_sbr_buf[SBR_H  * SBR_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
-#else
-/* On ST7789 the sidebar functions return before touching these buffers.
- * Declare 1-element dummies so the dead-code function bodies compile. */
-static uint16_t s_sbl_buf[1U] __attribute__((section(".DMA_SRAM")));
-static uint16_t s_sbr_buf[1U] __attribute__((section(".DMA_SRAM")));
-/* Compact status bar: only allocated when STS_H > 0 */
-#if STS_H > 0U
-static uint16_t s_sts_buf[STS_H * LCD_W]
-    __attribute__((aligned(32), section(".DMA_SRAM")));
-#endif
-#endif
 static uint16_t s_vfo_buf[VFO_H  * VFO_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 static uint16_t s_mtr_buf[MTR_H  * MTR_W]
@@ -133,8 +108,7 @@ static uint16_t s_spec_py     [SPEC_W]
 static uint16_t s_spec_strip[SPEC_CHUNK_ROWS * SPEC_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
 
-/* PA warn zone: full INFO-zone buffer (ST7796 only: 24×480×2 = 23 KB).
- * Not allocated on ST7789 (INFO_H = 0). */
+/* PA warn zone: full INFO-zone buffer (24×480×2 = 23 KB). */
 #if INFO_H > 0
 static uint16_t s_info_buf[INFO_H][LCD_W]
     __attribute__((aligned(32), section(".DMA_SRAM")));
@@ -195,14 +169,6 @@ static struct {
   uint8_t  tx_power;
   uint8_t  pa_watts;
   uint32_t fwd_power_mw;
-  /* Inline-params fields (ST7789 portrait right panel) */
-  uint8_t  mode;
-  uint8_t  volume;
-  uint8_t  squelch;
-  uint32_t step;
-  uint32_t bw_hz;
-  bool     nb_on;
-  bool     nr_on;
   bool     valid;
   /* Glyph-level cache for upper-section partial push */
   char     mhz_s[6];
@@ -1008,138 +974,6 @@ void SDR_UI_DrawHeader(const SDR_UI_State_t *ui)
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
- *  draw_compact_status  (ST7789 only)  STS_H=28 × LCD_W=240
- *
- *  Two-row status bar that replaces the sidebars on the 240×320 compact layout.
- *
- *  Row 0 (y≈5): [Mode]  VOL:xx  SQL:xx
- *  Row 1 (y≈16): BW:xxx  ST:xxx  [NR] [NB]
- *
- *  NR/NB drawn as coloured badges (green=ON, red=OFF) matching sidebar style.
- * ════════════════════════════════════════════════════════════════════════════ */
-#if LCD_PANEL == LCD_PANEL_ST7789 && STS_H > 0U
-static void draw_compact_status(const SDR_UI_State_t *ui)
-{
-#if STS_H == 0U
-  /* New portrait layout: status info is embedded in the VFO zone — no-op here */
-  (void)ui;
-  return;
-#endif /* STS_H == 0U */
-  /* Cache guard */
-  if (s_sbl_cache.valid
-      && s_sbl_cache.mode       == ui->mode
-      && s_sbl_cache.volume     == ui->volume
-      && s_sbl_cache.squelch    == ui->squelch
-      && s_sbl_cache.nr_on      == ui->nr_on
-      && s_sbl_cache.nb_on      == ui->nb_on
-      && s_sbr_cache.bw_hz      == ui->bw_hz
-      && s_sbr_cache.step       == ui->step) return;
-
-  s_sbl_cache.mode       = ui->mode;
-  s_sbl_cache.volume     = ui->volume;
-  s_sbl_cache.squelch    = ui->squelch;
-  s_sbl_cache.nr_on      = ui->nr_on;
-  s_sbl_cache.nb_on      = ui->nb_on;
-  s_sbl_cache.active_vfo = ui->active_vfo;
-  s_sbl_cache.valid      = true;
-  s_sbr_cache.bw_hz      = ui->bw_hz;
-  s_sbr_cache.step       = ui->step;
-  s_sbr_cache.valid      = true;
-
-  static const char *const mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
-  const char *mode_str = (ui->mode < 7U) ? mode_s[ui->mode] : "---";
-
-  char vol_str[8]; snprintf(vol_str, sizeof(vol_str), "VOL:%u",  ui->volume);
-  char sql_str[8]; snprintf(sql_str, sizeof(sql_str), "SQL:%u",  ui->squelch);
-
-  /* uint32_t = long unsigned int on this toolchain → %lu.
-   * Decimal branch avoids snprintf: two %lu would need a 26-byte buffer.
-   * Integer split used directly (same pattern as fmt_1dp / no-float rule). */
-  char bw_str[16];
-  if (ui->bw_hz >= 10000U)
-    snprintf(bw_str, sizeof(bw_str), "BW:%luk",
-             (unsigned long)(ui->bw_hz / 1000U));
-  else if (ui->bw_hz >= 1000U) {
-    uint32_t k = ui->bw_hz / 1000U;           /* 1-9 */
-    uint32_t f = (ui->bw_hz % 1000U) / 100U;  /* 0-9 */
-    bw_str[0]='B'; bw_str[1]='W'; bw_str[2]=':';
-    bw_str[3]=(char)('0'+(int)k); bw_str[4]='.';
-    bw_str[5]=(char)('0'+(int)f); bw_str[6]='k'; bw_str[7]='\0';
-  } else
-    snprintf(bw_str, sizeof(bw_str), "BW:%luHz",
-             (unsigned long)ui->bw_hz);
-
-  char step_str[12];
-  uint32_t st = ui->step;
-  if      (st >= 100000U) snprintf(step_str, sizeof(step_str), "ST:100k");
-  else if (st >=  10000U) snprintf(step_str, sizeof(step_str), "ST:10k");
-  else if (st >=   1000U) snprintf(step_str, sizeof(step_str), "ST:1k");
-  else if (st >=    100U) snprintf(step_str, sizeof(step_str), "ST:100");
-  else if (st >=     10U) snprintf(step_str, sizeof(step_str), "ST:10");
-  else                    snprintf(step_str, sizeof(step_str), "ST:1");
-
-  uint16_t nr_bg = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
-  uint16_t nb_bg = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
-
-  buf_fill(s_sts_buf, (uint32_t)STS_H * LCD_W, UI_BG);
-
-  /* Vertical placement: two Font8x10 rows (height=10 each).
-   * Landscape STS_H=24: margin 2, gap 2 — row0 rows 2-11, row1 rows 14-23.
-   * Portrait  STS_H=28: margin 4, gap 4 — row0 rows 4-13, row1 rows 18-27. */
-#if LCD_W > LCD_H
-  const uint16_t row0_y = 2U;
-  const uint16_t row1_y = (uint16_t)(row0_y + Font8x10.height + 2U);  /* = 14 */
-#else
-  const uint16_t row0_y = 4U;
-  const uint16_t row1_y = (uint16_t)(row0_y + Font8x10.height + 4U);  /* = 18 */
-#endif
-
-  /* Thin top border */
-  for (uint16_t x = 0U; x < LCD_W; x++)
-    s_sts_buf[x] = SWAP16(UI_DIVIDER);
-
-  uint16_t fh = Font8x10.height;
-  for (uint16_t fr = 0U; fr < fh; fr++) {
-    /* Row 0: mode  vol_str  sql_str */
-    {
-      uint16_t r = (uint16_t)(row0_y + fr);
-      if (r < STS_H) {
-        uint16_t *ln = s_sts_buf + (uint32_t)r * LCD_W;
-        uint16_t col_mode = (ui->mode < 7U) ? UI_STATUS_VAL : UI_STATUS_LBL;
-        LCD_LineStrW(ln, 4U,  fr, mode_str, &Font8x10, col_mode, UI_BG);
-        /* vol and sql left-placed with gap after mode field */
-        uint16_t vx = (uint16_t)(4U + 6U * Font8x10.width);  /* after "USB " gap */
-        LCD_LineStrW(ln, vx,  fr, vol_str, &Font8x10, UI_STATUS_VAL, UI_BG);
-        uint16_t sx = (uint16_t)(vx + (uint16_t)(strlen(vol_str) + 2U) * Font8x10.width);
-        LCD_LineStrW(ln, sx,  fr, sql_str, &Font8x10, UI_STATUS_VAL, UI_BG);
-      }
-    }
-    /* Row 1: bw_str  step_str  [NR] [NB] */
-    {
-      uint16_t r = (uint16_t)(row1_y + fr);
-      if (r < STS_H) {
-        uint16_t *ln = s_sts_buf + (uint32_t)r * LCD_W;
-        LCD_LineStrW(ln, 4U, fr, bw_str,   &Font8x10, UI_FREQ_KHZ, UI_BG);
-        uint16_t bx = (uint16_t)(4U + (uint16_t)(strlen(bw_str) + 2U) * Font8x10.width);
-        LCD_LineStrW(ln, bx, fr, step_str, &Font8x10, UI_FREQ_KHZ, UI_BG);
-        /* NR badge */
-        uint16_t nr_x = (uint16_t)(LCD_W - 50U);
-        uint16_t nb_x = (uint16_t)(LCD_W - 26U);
-        LCD_LineFill(ln, nr_x, 22U, nr_bg);
-        LCD_LineStrW(ln, (uint16_t)(nr_x + 4U), fr, "NR", &Font8x10, UI_BG, nr_bg);
-        LCD_LineFill(ln, nb_x, 22U, nb_bg);
-        LCD_LineStrW(ln, (uint16_t)(nb_x + 4U), fr, "NB", &Font8x10, UI_BG, nb_bg);
-      }
-    }
-  }
-
-  LCD_PushWindow(0U, STS_Y,
-                 (uint16_t)(LCD_W - 1U), (uint16_t)(STS_Y2 - 1U),
-                 s_sts_buf, (uint32_t)LCD_W * STS_H);
-}
-#endif /* LCD_PANEL_ST7789 && STS_H > 0 */
-
-/* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawSidebarLeft  (SBL_W=80 × SBL_H=96)
  *
  *  4 items × 24 rows each:
@@ -1148,18 +982,6 @@ static void draw_compact_status(const SDR_UI_State_t *ui)
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
 {
-#if LCD_PANEL == LCD_PANEL_ST7789
-#if STS_H == 0U
-  /* New portrait layout: params are in the VFO zone — delegate so DIRTY_SBL
-   * triggers a VFO re-render when vol/sql/nr/nb change */
-  SDR_UI_DrawVFO(ui);
-  return;
-#else
-  draw_compact_status(ui);
-  return;
-#endif /* STS_H */
-#endif /* LCD_PANEL_ST7789 */
-
   /* Cache guard — skip rebuild when nothing changed */
   if (s_sbl_cache.valid
       && s_sbl_cache.mode       == ui->mode
@@ -1292,17 +1114,6 @@ void SDR_UI_DrawSidebarLeft(const SDR_UI_State_t *ui)
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawSidebarRight(const SDR_UI_State_t *ui)
 {
-#if LCD_PANEL == LCD_PANEL_ST7789
-#if STS_H == 0U
-  /* New portrait layout: BW/STP are in VFO zone — delegate so DIRTY_SBR
-   * triggers a VFO re-render when bw/step/mode-dependent params change */
-  SDR_UI_DrawVFO(ui);
-  return;
-#else
-  (void)ui;  /* landscape/old portrait: no right sidebar */
-  return;
-#endif /* STS_H */
-#endif /* LCD_PANEL_ST7789 */
 
   /* Cache guard — avoid rebuild when nothing changed */
   if (s_sbr_cache.valid
@@ -1424,13 +1235,8 @@ static void vfo_push_x_band(uint16_t x_lo, uint16_t x_hi,
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_DrawVFO  (VFO_W × VFO_H)
  *
- *  ST7796  (64 px): 7-seg digits rows 2..25, gap, divider row 33,
- *                   sub-line rows 41..50 (Font8x10).  VFO_SPLIT=28.
- *  ST7789 landscape (44 px): digits rows 2..25, sub-line rows 34..43.
- *  ST7789 portrait  (72 px): digits rows 2..25; right panel (x=192..239):
- *                   mode rows 2..17, RX/TX rows 20..35; divider row 38;
- *                   params row A rows 40..47, params row B rows 49..56;
- *                   sub-line rows 60..69.  VFO_SPLIT=36.
+ *  64 px: 7-seg digits rows 2..25, gap, divider row 33,
+ *         sub-line rows 41..50 (Font8x10).  VFO_SPLIT=28.
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
 {
@@ -1458,16 +1264,10 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   }
 
   /* RX = green (subtle), TX = red — per UI spec */
-#if LCD_PANEL == LCD_PANEL_ST7789
-  /* ST7796: mode lives in the left sidebar (SBL), not beside the digits */
-  static const char *const vfo_mode_s[] = {"AM","FM","USB","LSB","CW","DIGU","DIGL"};
-  const char *vfo_mode_str = (ui->mode < 7U) ? vfo_mode_s[ui->mode] : "---";
-#endif
   const char *rt_str       = ui->tx_mode ? "TX" : "RX";
   uint16_t    rt_color     = ui->tx_mode ? UI_TX_BG : UI_RX_BG;
 
-  /* PW badge (ST7796 only — no vertical room on ST7789) */
-#if LCD_PANEL != LCD_PANEL_ST7789
+  /* PW badge (TX only) */
   char pw_str[8] = "";
   if (ui->tx_mode) {
     /* Measured fwd power (tandem match) when a PA is fitted; falls back to
@@ -1480,140 +1280,39 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
         : (uint16_t)ui->tx_power;
     snprintf(pw_str, sizeof(pw_str), "%dW", (int)actual_w);
   }
-#endif
 
   buf_fill(s_vfo_buf, (uint32_t)VFO_H * VFO_W, UI_VFO_BG);
-
-  /* ── ST7789 landscape: pre-compute right-panel strings + colors ──────────── */
-#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-  char rp_step_s[12], rp_vol_s[10], rp_bw_s[14], rp_sql_s[10];
-  {
-    uint32_t st = ui->step;
-    if      (st >= 100000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:100k");
-    else if (st >=  10000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:10k");
-    else if (st >=   1000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:1k");
-    else if (st >=    100U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:100");
-    else if (st >=     10U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:10");
-    else                    snprintf(rp_step_s, sizeof(rp_step_s), "STP:1");
-
-    snprintf(rp_vol_s,  sizeof(rp_vol_s),  "VOL:%u",  ui->volume);
-    snprintf(rp_sql_s,  sizeof(rp_sql_s),  "SQL:%u",  ui->squelch);
-
-    if (ui->bw_hz >= 10000U)
-      snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%luk", (unsigned long)(ui->bw_hz / 1000U));
-    else if (ui->bw_hz >= 1000U) {
-      uint32_t bk = ui->bw_hz / 1000U;
-      uint32_t bf = (ui->bw_hz % 1000U) / 100U;
-      if (bf) snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%lu.%luk", (unsigned long)bk, (unsigned long)bf);
-      else    snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%luk", (unsigned long)bk);
-    } else
-      snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%lu", (unsigned long)ui->bw_hz);
-  }
-  static const uint16_t rp_mode_col_ls[7] = {
-    UI_MODE_AM, UI_MODE_FM, UI_MODE_USB, UI_MODE_LSB,
-    UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL
-  };
-  uint16_t rp_mc = (ui->mode < 7U) ? rp_mode_col_ls[ui->mode] : UI_STATUS_LBL;
-  uint16_t rp_nb = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
-  uint16_t rp_nr = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
-#endif /* ST7789 landscape pre-compute */
-
-  /* ── ST7789 portrait: pre-compute right-panel strings + colors ───────────── */
-#if LCD_PANEL == LCD_PANEL_ST7789 && !(LCD_W > LCD_H)
-  char rp_step_s[12], rp_vol_s[10], rp_bw_s[14], rp_sql_s[10];
-  {
-    uint32_t st = ui->step;
-    if      (st >= 100000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:100k");
-    else if (st >=  10000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:10k");
-    else if (st >=   1000U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:1k");
-    else if (st >=    100U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:100");
-    else if (st >=     10U) snprintf(rp_step_s, sizeof(rp_step_s), "STP:10");
-    else                    snprintf(rp_step_s, sizeof(rp_step_s), "STP:1");
-
-    snprintf(rp_vol_s,  sizeof(rp_vol_s),  "VOL:%u",  ui->volume);
-    snprintf(rp_sql_s,  sizeof(rp_sql_s),  "SQL:%u",  ui->squelch);
-
-    if (ui->bw_hz >= 10000U)
-      snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%luk", (unsigned long)(ui->bw_hz / 1000U));
-    else if (ui->bw_hz >= 1000U) {
-      uint32_t bk = ui->bw_hz / 1000U;
-      uint32_t bf = (ui->bw_hz % 1000U) / 100U;
-      if (bf) snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%lu.%luk", (unsigned long)bk, (unsigned long)bf);
-      else    snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%luk", (unsigned long)bk);
-    } else
-      snprintf(rp_bw_s, sizeof(rp_bw_s), "BW:%lu", (unsigned long)ui->bw_hz);
-  }
-  static const uint16_t rp_mode_col[7] = {
-    UI_MODE_AM, UI_MODE_FM, UI_MODE_USB, UI_MODE_LSB,
-    UI_MODE_CW, UI_MODE_DIGU, UI_MODE_DIGL
-  };
-  uint16_t rp_mc = (ui->mode < 7U) ? rp_mode_col[ui->mode] : UI_STATUS_LBL;
-  uint16_t rp_nb = ui->nb_on ? UI_STATUS_ON : UI_STATUS_OFF;
-  uint16_t rp_nr = ui->nr_on ? UI_STATUS_ON : UI_STATUS_OFF;
-#endif /* ST7789 portrait pre-compute */
 
   const uint16_t freq_top = 2U;
   const uint16_t vfoi_y   = 1U;
 
   /* Gap between primary and secondary VFO.  Secondary uses MED (12x16 px). */
-#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-  /* Landscape 320x240: sub-VFO below main digits (rows 34..49) */
-  const uint16_t sub_y  = 34U;
-  const uint16_t div_y  = 0xFFFFU;
-#elif LCD_PANEL == LCD_PANEL_ST7789
-  /* Portrait 240x320: sub-VFO rows 28..43 (MED 12x16); divider row 38 within it;
-   * params row A at 46 → 2-row gap after sub-VFO; no overlap. */
-  const uint16_t sub_y  = 28U;
-  const uint16_t div_y  = 0xFFFFU;
-#else
   const uint16_t sub_y  = (uint16_t)(freq_top + BIG_H + 10U);  /* row 36: below divider */
   const uint16_t div_y  = (uint16_t)(freq_top + BIG_H + 7U);   /* row 33, centred in gap */
-#endif
-  /* RX/TX text-only badge (ST7796 only) — ST7789 uses right panel instead.
+  /* RX/TX text-only badge.
    * rt_by chosen so text rows (rt_by+2 .. rt_by+2+MED_H) coincide with
    * the vertical centre of the BIG digits, giving side-by-side alignment. */
-#if LCD_PANEL != LCD_PANEL_ST7789
   const uint16_t rt_bad_w = (uint16_t)(2U * MED_W + 6U);
   const uint16_t rt_bad_h = (uint16_t)(MED_H + 4U);
   uint16_t rt_bx    = (uint16_t)(VFO_W - 22U - rt_bad_w);
   const uint16_t rt_by    = (uint16_t)(freq_top + (BIG_H - MED_H) / 2U - 2U);
-#else
-  const uint16_t rt_bad_h = (uint16_t)(MED_H + 4U);
-  const uint16_t rt_bx    = VFO_W;   /* out-of-range: disables legacy badge */
-  const uint16_t rt_by    = VFO_H;
-#endif
 
   /* Frequency centering: each digit = BIG_W px, each '.' = 6 px */
   uint16_t total_w = 0U;
   for (const char *p = full_freq; *p; p++)
     total_w += (*p == '.') ? 6U : BIG_W;
-  /* ST7789: right portion reserved for mode/RT panel — center digits in left area only */
-#if LCD_PANEL == LCD_PANEL_ST7789
-  uint16_t dig_area = VFO_RIGHT_X;
-#else
   uint16_t dig_area = VFO_W;
-#endif
   uint16_t fx_base = (dig_area > total_w) ? (uint16_t)((dig_area - total_w) / 2U) : 2U;
-#if LCD_PANEL == LCD_PANEL_ST7796
   /* Right-align digits: units column always at x=180 (= xx.xxx.xxx right edge) */
   const uint16_t vfo_right_edge = 2U + MED_W + 10U + 8U * BIG_W + 2U * 6U;  /* 180 */
   fx_base = (uint16_t)(vfo_right_edge - total_w);
   /* RX/TX badge right after the digits (mode moved to SBL) — fixed x=190 */
   rt_bx = (uint16_t)(vfo_right_edge + 10U);
-#else
-  fx_base = (fx_base >= 14U) ? (uint16_t)(fx_base - 14U) : 0U;
-#endif
 
   /* VFO_SPLIT defined here (before the row loop) so pw_by can reference it.
    * PW badge starts exactly at the split → always lands in the lower section,
    * so lower_chg alone keeps it current without needing an upper-section push. */
-#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-  const uint16_t VFO_SPLIT = 27U;
-#elif LCD_PANEL == LCD_PANEL_ST7789
-  const uint16_t VFO_SPLIT = 26U;
-#else
   const uint16_t VFO_SPLIT = 28U;
-#endif
 
   for (uint16_t row = 0; row < VFO_H; row++) {
     uint16_t *ln = s_vfo_buf + (uint32_t)row * VFO_W;
@@ -1646,7 +1345,6 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
         ln_medstr(ln, (uint16_t)(rt_bx + 3U), br - 2U, rt_str, rt_color, UI_VFO_BG);
     }
 
-#if LCD_PANEL != LCD_PANEL_ST7789
     /* Watts readout — MED font, right-aligned under TX badge, TX mode only.
      * pw_by = VFO_SPLIT so the wattage text lives entirely in the lower section;
      * lower_chg triggers on tx_power/pa_watts changes → no stale upper rows. */
@@ -1659,109 +1357,15 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
         ln_medstr(ln, pw_x, med_row, pw_str, UI_TX_BG, UI_VFO_BG);
       }
     }
-#endif
 
     (void)div_y;
-
-#if LCD_PANEL == LCD_PANEL_ST7789 && !(LCD_W > LCD_H)
-    /* ── ST7789 portrait: right panel (x=VFO_RIGHT_X..239) ──────────────── */
-    /* Mode label rows 2..17 */
-    if (row >= 2U && (row - 2U) < MED_H) {
-      ln_medstr(ln, (uint16_t)(VFO_RIGHT_X + 4U), row - 2U,
-                vfo_mode_str, rp_mc, UI_VFO_BG);
-    }
-    /* RX/TX label rows 20..35 */
-    if (row >= 20U && (row - 20U) < MED_H) {
-      ln_medstr(ln, (uint16_t)(VFO_RIGHT_X + 4U), row - 20U,
-                rt_str, rt_color, UI_VFO_BG);
-    }
-    /* Full-width horizontal divider at row 38 */
-    if (row == 38U) {
-      for (uint16_t x = 0U; x < VFO_W; x++)
-        ln[x] = SWAP16(UI_DIVIDER);
-    }
-    /* Params row A: STP / VOL / NB badge */
-    if (row >= VFO_PARAMS_Y && row < VFO_PARAMS_Y + Font5x8.height) {
-      uint16_t fr = row - VFO_PARAMS_Y;
-      LCD_LineStr(ln,  4U, fr, rp_step_s, &Font5x8, UI_FREQ_KHZ,   UI_VFO_BG);
-      LCD_LineStr(ln, 64U, fr, rp_vol_s,  &Font5x8, UI_STATUS_VAL, UI_VFO_BG);
-      LCD_LineFill(ln, (uint16_t)(LCD_W - 20U), 16U, rp_nb);
-      LCD_LineStr(ln,  (uint16_t)(LCD_W - 17U), fr, "NB", &Font5x8, UI_BG, rp_nb);
-    }
-    /* Params row B: BW / SQL / NR badge */
-    if (row >= VFO_PARAMS_B_Y && row < VFO_PARAMS_B_Y + Font5x8.height) {
-      uint16_t fr = row - VFO_PARAMS_B_Y;
-      LCD_LineStr(ln,  4U, fr, rp_bw_s,  &Font5x8, UI_FREQ_KHZ,   UI_VFO_BG);
-      LCD_LineStr(ln, 64U, fr, rp_sql_s, &Font5x8, UI_STATUS_VAL, UI_VFO_BG);
-      LCD_LineFill(ln, (uint16_t)(LCD_W - 20U), 16U, rp_nr);
-      LCD_LineStr(ln,  (uint16_t)(LCD_W - 17U), fr, "NR", &Font5x8, UI_BG, rp_nr);
-    }
-#endif /* ST7789 portrait row rendering */
-
-#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-    /* ── ST7789 landscape: 4-row right panel, evenly distributed ───────────
-     * Row 1 rows  1..16  MED_H   : Mode  |  RX/TX
-     * Row 2 rows 19..28  Font8x10: STP   |  BW
-     * Row 3 rows 31..40  Font8x10: VOL   |  SQL
-     * Row 4 rows 43..52  Font8x10: NB    |  NR  (colored: green=ON red=OFF)
-     * ─────────────────────────────────────────────────────────────────────── */
-    {
-      uint16_t bg16 = SWAP16(UI_VFO_BG);
-      for (uint16_t x = VFO_RIGHT_X; x < VFO_W; x++) ln[x] = bg16;
-    }
-    /* Row 1 — Mode (MED_H) + RX/TX (MED_H) */
-    if (row >= 1U && (row - 1U) < MED_H) {
-      uint16_t fr = row - 1U;
-      ln_medstr(ln, (uint16_t)(VFO_RIGHT_X + 3U),  fr, vfo_mode_str, rp_mc,    UI_VFO_BG);
-      ln_medstr(ln, (uint16_t)(VFO_RIGHT_X + 57U), fr, rt_str,       rt_color, UI_VFO_BG);
-    }
-    /* Row 2 — STP (Font8x10) + BW (Font8x10) */
-    if (row >= 19U && (row - 19U) < (uint16_t)Font8x10.height) {
-      uint16_t fr = row - 19U;
-      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X + 3U),  fr, rp_step_s, &Font8x10, UI_FREQ_KHZ, UI_VFO_BG);
-      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X + 75U), fr, rp_bw_s,   &Font8x10, UI_FREQ_KHZ, UI_VFO_BG);
-    }
-    /* Row 3 — VOL (Font8x10) + SQL (Font8x10) */
-    if (row >= 31U && (row - 31U) < (uint16_t)Font8x10.height) {
-      uint16_t fr = row - 31U;
-      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X + 3U),  fr, rp_vol_s,  &Font8x10, UI_STATUS_VAL, UI_VFO_BG);
-      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X + 75U), fr, rp_sql_s,  &Font8x10, UI_STATUS_VAL, UI_VFO_BG);
-    }
-    /* Row 4 — NB + NR: small badge (Font8x10 height), colored fill + black text */
-    if (row >= 43U && (row - 43U) < (uint16_t)Font8x10.height) {
-      uint16_t fr = row - 43U;
-      LCD_LineFill(ln, (uint16_t)(VFO_RIGHT_X +  3U), 20U, rp_nb);
-      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X +  5U), fr, "NB", &Font8x10, UI_BG, rp_nb);
-      LCD_LineFill(ln, (uint16_t)(VFO_RIGHT_X + 75U), 20U, rp_nr);
-      LCD_LineStrW(ln, (uint16_t)(VFO_RIGHT_X + 77U), fr, "NR", &Font8x10, UI_BG, rp_nr);
-    }
-#endif /* ST7789 landscape row rendering */
   }
 
-  /* Right-panel changed: forces redraw of both sections on ST7789.
-   * Landscape: rp_chg propagates to lower_chg so params (rows 19..58) all refresh.
-   * Portrait: params are in lower section → only mode/tx_mode need upper push.
-   * ST7796: RT badge ("TX"/"RX") sits in the upper section; tx_mode pushes
-   *         it on every TX key/unkey (mode is drawn in SBL, not here). */
+  /* RT badge ("TX"/"RX") sits in the upper section; tx_mode pushes it on
+   * every TX key/unkey (mode is drawn in SBL, not here). */
   bool rp_chg = false;
-#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-  rp_chg = !s_vfo_cache.valid
-          || s_vfo_cache.mode    != ui->mode
-          || s_vfo_cache.tx_mode != ui->tx_mode
-          || s_vfo_cache.volume  != ui->volume
-          || s_vfo_cache.squelch != ui->squelch
-          || s_vfo_cache.step    != ui->step
-          || s_vfo_cache.bw_hz   != ui->bw_hz
-          || s_vfo_cache.nb_on   != ui->nb_on
-          || s_vfo_cache.nr_on   != ui->nr_on;
-#elif LCD_PANEL == LCD_PANEL_ST7789
-  rp_chg = !s_vfo_cache.valid
-          || s_vfo_cache.mode    != ui->mode
-          || s_vfo_cache.tx_mode != ui->tx_mode;
-#else /* ST7796 */
   rp_chg = !s_vfo_cache.valid
           || s_vfo_cache.tx_mode != ui->tx_mode;  /* RT badge rows 6..21 in upper section */
-#endif
 
   bool upper_chg = !s_vfo_cache.valid
       || s_vfo_cache.freq_hz    != ui->freq_hz
@@ -1776,19 +1380,6 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
       || s_vfo_cache.tx_power   != ui->tx_power
       || s_vfo_cache.pa_watts   != ui->pa_watts
       || s_vfo_cache.fwd_power_mw != ui->fwd_power_mw
-#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-      /* Landscape: NB/NR (row 4, rows 43..58) are in lower section → push on any rp change */
-      || rp_chg
-#elif LCD_PANEL == LCD_PANEL_ST7789
-      /* Portrait: params rows are in lower section */
-      || s_vfo_cache.mode    != ui->mode
-      || s_vfo_cache.volume  != ui->volume
-      || s_vfo_cache.squelch != ui->squelch
-      || s_vfo_cache.step    != ui->step
-      || s_vfo_cache.bw_hz   != ui->bw_hz
-      || s_vfo_cache.nb_on   != ui->nb_on
-      || s_vfo_cache.nr_on   != ui->nr_on
-#endif
       ;
 
   /* Glyph-level dirty flags — compare against OLD cache values */
@@ -1809,15 +1400,6 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
   s_vfo_cache.tx_power   = ui->tx_power;
   s_vfo_cache.pa_watts   = ui->pa_watts;
   s_vfo_cache.fwd_power_mw = ui->fwd_power_mw;
-#if LCD_PANEL == LCD_PANEL_ST7789
-  s_vfo_cache.mode    = ui->mode;
-  s_vfo_cache.volume  = ui->volume;
-  s_vfo_cache.squelch = ui->squelch;
-  s_vfo_cache.step    = ui->step;
-  s_vfo_cache.bw_hz   = ui->bw_hz;
-  s_vfo_cache.nb_on   = ui->nb_on;
-  s_vfo_cache.nr_on   = ui->nr_on;
-#endif
   strncpy(s_vfo_cache.mhz_s, mhz_s, sizeof(s_vfo_cache.mhz_s) - 1U);
   s_vfo_cache.mhz_s[sizeof(s_vfo_cache.mhz_s) - 1U] = '\0';
   strncpy(s_vfo_cache.khz_s, khz_s, sizeof(s_vfo_cache.khz_s) - 1U);
@@ -1892,17 +1474,10 @@ void SDR_UI_DrawVFO(const SDR_UI_State_t *ui)
  */
 #define SM_LBL_R0     0U    /* label band start (rows 0-9, Font8x10 height) */
 #define SM_TICK_R0   10U    /* first tick row */
-#if LCD_PANEL == LCD_PANEL_ST7796
 #  define SM_TICK_H_MAJ  4U   /* major tick height: rows 10-13 */
 #  define SM_TICK_H_MIN  2U   /* minor tick height: rows 12-13 */
 #  define SM_RAIL_TOP_R 14U   /* top rail row */
 #  define SM_RAIL_BOT_R 22U   /* bottom rail row */
-#else /* ST7789 — 24 rows */
-#  define SM_TICK_H_MAJ  2U   /* major tick height: rows 10-11 */
-#  define SM_TICK_H_MIN  1U   /* minor tick height: row 11 */
-#  define SM_RAIL_TOP_R 12U   /* top rail row */
-#  define SM_RAIL_BOT_R 18U   /* bottom rail row */
-#endif
 #define SM_LINE_H   4U        /* signal line height in rows */
 #define SM_LINE_R0  ((SM_RAIL_TOP_R + SM_RAIL_BOT_R + 1U - SM_LINE_H) / 2U)  /* centred between rails */
 #define SM_VAL_CLR_W  48U     /* pixel columns cleared per row for S-value update */
@@ -1919,37 +1494,14 @@ static inline uint16_t sm_mark_x(int32_t bars)
 
 /* RSSI label geometry — panel-specific.
  *
- * ST7796 (MTR_W=320): RSSI sits RIGHT of S-value.
+ * MTR_W=320: RSSI sits RIGHT of S-value.
  *   S-value at val_x=222, clears [222..269].
  *   RSSI at [272..307] (2px gap); max "-120dB"=6×6=36px = RSSI_CLR_W.
- *   Clamped to [-120,0] so text never overruns.
- *
- * ST7789 landscape (MTR_W=320): matches ST7796 style.
- *   S-value at val_x=162 (Font8x10, SM_VAL_CLR_W=48px), RSSI right after.
- *   RSSI at 212 (val_x+SM_VAL_CLR_W+2); RSSI_CLR_W=48; max "-120dB"=6ch×6px=36px.
- *
- * ST7789 portrait (MTR_W=240): RSSI REPLACES S-value text at val_x=222.
- *   Available [222..239] = 18px = 3 chars × Font5x8.width(6).
- *   Clamped to [-99,0]; "-99"=3×6=18px fits exactly.
- *   mk_col used so colour still tracks signal level. */
-#if LCD_PANEL == LCD_PANEL_ST7796
+ *   Clamped to [-120,0] so text never overruns. */
 #  define RSSI_X       272U
 #  define RSSI_CLR_W    36U
 #  define RSSI_DB_MIN  (-99)   /* max "-99dBm"=6ch×6px=36px fits RSSI_CLR_W exactly */
 #  define RSSI_FMT    "%ddBm"
-#elif LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-   /* Landscape 320×20: S-value at val_x=162 (Font8x10), RSSI right after with "dBm" unit.
-    * RSSI_X = ruler_end(158)+4+SM_VAL_CLR_W(48)+2 = 212; "-120dBm"=7ch×6px=42px < CLR_W=48. */
-#  define RSSI_X       (SM_START_X + SM_RULER_W + 4U + SM_VAL_CLR_W + 2U)
-#  define RSSI_CLR_W    48U
-#  define RSSI_DB_MIN (-120)
-#  define RSSI_FMT    "%ddBm"
-#else
-#  define RSSI_X       222U   /* = val_x (portrait 240px) */
-#  define RSSI_CLR_W    18U
-#  define RSSI_DB_MIN  (-99)
-#  define RSSI_FMT    "%d"
-#endif
 
 /* ════════════════════════════════════════════════════════════════════════════
  *  draw_smeter_rows  — full MTR zone redraw, calibrated ruler + signal line
@@ -1994,30 +1546,13 @@ static void draw_smeter_rows(int32_t bars)
       for (uint8_t t = 0U; t < 8U; t++) {
         uint16_t half_w = (uint16_t)(strlen(lbl_str[t]) * Font8x10.width / 2U);
         uint16_t lx;
-#if LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H
-        /* Landscape: last label "40" left-aligned at tick — avoids overlap with "20" */
-        lx = (t == 7U) ? maj_tx[t] : ((maj_tx[t] >= half_w) ? (maj_tx[t] - half_w) : 0U);
-#else
         lx = (maj_tx[t] >= half_w) ? (maj_tx[t] - half_w) : 0U;
-#endif
         LCD_LineStrW(ln, lx, fr, lbl_str[t], &Font8x10, UI_SMETER_TICK, UI_MTR_BG);
       }
-#if LCD_PANEL == LCD_PANEL_ST7796 || (LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H)
-      /* ST7796 + ST7789 landscape: S-value to the left of RSSI */
+      /* S-value to the left of RSSI */
       if (val_x < MTR_W)
         LCD_LineStrW(ln, val_x, fr, s_str, &Font8x10, mk_col, UI_MTR_BG);
-#endif
-      /* RSSI: ST7796 shows it in INFO zone; other panels show inline here */
-#if LCD_PANEL != LCD_PANEL_ST7796
-      if (fr < Font5x8.height && s_rssi_db > RSSI_DB_MIN - 1) {
-        char rbuf[8];
-        int rv = (int)s_rssi_db;
-        if (rv < RSSI_DB_MIN) rv = RSSI_DB_MIN;
-        if (rv > 0)           rv = 0;
-        snprintf(rbuf, sizeof(rbuf), RSSI_FMT, rv);
-        LCD_LineStr(ln, RSSI_X, fr, rbuf, &Font5x8, mk_col, UI_MTR_BG);
-      }
-#endif
+      /* RSSI is shown in the INFO zone, not here */
     }
 
     /* ── Major ticks: SM_TICK_H_MAJ rows tall, all 8 labeled positions ── */
@@ -2068,9 +1603,7 @@ void SDR_UI_DrawMeter(const SDR_UI_State_t *ui)
                  s_mtr_buf, (uint32_t)MTR_W * MTR_H);
 }
 
-#if LCD_PANEL == LCD_PANEL_ST7796
 static void rssi_info_draw(void);  /* defined near CW text section below */
-#endif
 
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_UpdateSMeter  – fast RX meter refresh (10 Hz)
@@ -2113,9 +1646,7 @@ void SDR_UI_UpdateSMeter(float signal_db)
   s_rx_meter_bars = bars;
   s_rssi_db = rssi_db;
 
-#if LCD_PANEL == LCD_PANEL_ST7796
   if (rssi_changed) rssi_info_draw();
-#endif
 
   if (!s_mtr_static_valid) {
     draw_smeter_rows(bars);
@@ -2172,31 +1703,13 @@ void SDR_UI_UpdateSMeter(float signal_db)
     for (uint16_t row = row_top; row < row_end; row++) {
       uint16_t *ln = s_mtr_buf + (uint32_t)row * MTR_W;
       uint16_t  fr = row - row_top;
-#if LCD_PANEL == LCD_PANEL_ST7796 || (LCD_PANEL == LCD_PANEL_ST7789 && LCD_W > LCD_H)
-      /* ST7796: S-value only (RSSI moved to INFO zone). ST7789 landscape: S-value + RSSI. */
+      /* S-value only (RSSI moved to INFO zone) */
       if (bars_changed) {
         for (uint16_t x = val_x; x < val_x + SM_VAL_CLR_W && x < MTR_W; x++)
           ln[x] = SWAP16(UI_MTR_BG);
         if (val_x < MTR_W)
           LCD_LineStrW(ln, val_x, fr, s_str, &Font8x10, mk_col, UI_MTR_BG);
       }
-#if LCD_PANEL != LCD_PANEL_ST7796
-      if (rssi_changed) {
-        for (uint16_t x = RSSI_X; x < (uint16_t)(RSSI_X + RSSI_CLR_W) && x < MTR_W; x++)
-          ln[x] = SWAP16(UI_MTR_BG);
-        if (fr < Font5x8.height)
-          LCD_LineStr(ln, RSSI_X, fr, rssi_str, &Font5x8, UI_SMETER_TICK, UI_MTR_BG);
-      }
-#endif
-#else
-      /* ST7789 portrait: RSSI at val_x replaces S-value */
-      if (rssi_changed) {
-        for (uint16_t x = RSSI_X; x < (uint16_t)(RSSI_X + RSSI_CLR_W) && x < MTR_W; x++)
-          ln[x] = SWAP16(UI_MTR_BG);
-        if (fr < Font5x8.height)
-          LCD_LineStr(ln, RSSI_X, fr, rssi_str, &Font5x8, mk_col, UI_MTR_BG);
-      }
-#endif
     }
   }
 
@@ -2211,12 +1724,7 @@ void SDR_UI_UpdateSMeter(float signal_db)
                    s_mtr_buf + (uint32_t)r0 * MTR_W,
                    (uint32_t)MTR_W * (r1 - r0 + 1U));
   }
-  /* Push B: label rows.
-   * ST7796 + ST7789 landscape: push when bars or RSSI changed (both in label band).
-   * ST7789 portrait: push only when RSSI changed (no separate S-value text). */
-#if LCD_PANEL == LCD_PANEL_ST7789 && !(LCD_W > LCD_H)
-  if (rssi_changed)
-#endif
+  /* Push B: label rows — push when bars or RSSI changed (both in label band). */
   {
     uint16_t r0 = SM_LBL_R0;
     uint16_t r1 = (uint16_t)(SM_LBL_R0 + (uint16_t)Font8x10.height - 1U);
@@ -2240,12 +1748,7 @@ void SDR_UI_UpdateSMeter(float signal_db)
  * rows TX_SWR_R0..TX_SWR_R0+Font8x10.height-1 = 12..21.
  * Ruler spans x=2..217; x=222+ is background in every ruler row — no overlap.
  * 10/10 rows visible, zero clip. */
-#if LCD_PANEL == LCD_PANEL_ST7796
 #  define TX_SWR_R0  12U
-#else
-/* ST7789: SWR is suppressed (MTR too short). TX_VAL_R0 sets static_end only. */
-#  define TX_VAL_R0  ((uint16_t)(SM_RAIL_BOT_R + 2U))
-#endif
 
 static void tx_meter_render_rows(uint16_t row0, uint16_t row1,
                                  int32_t alc_b, int32_t alc_pct,
@@ -2323,7 +1826,6 @@ static void tx_meter_render_rows(uint16_t row0, uint16_t row1,
         ln[px] = pm;
     }
 
-#if LCD_PANEL == LCD_PANEL_ST7796
     /* SWR text: right-column overlay (x=ruler_end+4=222), rows TX_SWR_R0..TX_SWR_R0+9.
      * Ruler content (ticks/rails/bar) ends at x=217; x=222+ is always background. */
     if (row >= (uint16_t)TX_SWR_R0 && (row - (uint16_t)TX_SWR_R0) < (uint16_t)Font8x10.height) {
@@ -2333,7 +1835,6 @@ static void tx_meter_render_rows(uint16_t row0, uint16_t row1,
       LCD_LineStrW(ln, vx,  fr, "SWR", &Font8x10, UI_STATUS_LBL, UI_MTR_BG);
       LCD_LineStrW(ln, svx, fr, swr_val, &Font8x10, swr_col, UI_MTR_BG);
     }
-#endif
   }
 }
 
@@ -2366,20 +1867,15 @@ void SDR_UI_UpdateTXMeters(int32_t alc_pct, int32_t swr_x10)
   if (first) s_tx_meter_active = true;
 
   /* Static content: label band (0..9), ticks (10..13), rails (14,22), SWR zone (12..21).
-   * ST7796: static_end=SM_RAIL_BOT_R=22 covers rows 0..22, which includes SWR rows 12..21.
-   * ST7789: static_end=TX_VAL_R0-1=19 (SWR suppressed). */
+   * static_end=SM_RAIL_BOT_R=22 covers rows 0..22, which includes SWR rows 12..21. */
   if (first) {
-#if LCD_PANEL == LCD_PANEL_ST7796
     uint16_t static_end = (uint16_t)SM_RAIL_BOT_R;   /* 22 */
-#else
-    uint16_t static_end = (TX_VAL_R0 - 1U < (uint16_t)MTR_H) ? (uint16_t)(TX_VAL_R0 - 1U) : (uint16_t)(MTR_H - 1U);
-#endif
     tx_meter_render_rows(0U, static_end, alc_b, alc_pct, swr_x10);
     tx_meter_push_rows(0U, static_end);
   }
 
   /* Dynamic: cursor zone (SM_RAIL_TOP_R..SM_RAIL_BOT_R) — push when ALC bar moves.
-   * On ST7796 this also re-renders SWR rows 14..21 (within the cursor zone range). */
+   * This also re-renders SWR rows 14..21 (within the cursor zone range). */
   if (first || alc_b != s_tx_alc_bars) {
     uint16_t r0 = SM_RAIL_TOP_R;
     uint16_t r1 = SM_RAIL_BOT_R;
@@ -2390,16 +1886,13 @@ void SDR_UI_UpdateTXMeters(int32_t alc_pct, int32_t swr_x10)
   }
 
   /* Dynamic: SWR text update.
-   * ST7796: push TX_SWR_R0..TX_SWR_R0+9 (rows 12..21, full 10/10 rows, no clip).
-   *         Rows 12..13 (above cursor zone) only updated here, not in cursor push.
-   * ST7789: suppressed (zone too short for readable text). */
+   * Push TX_SWR_R0..TX_SWR_R0+9 (rows 12..21, full 10/10 rows, no clip).
+   * Rows 12..13 (above cursor zone) only updated here, not in cursor push. */
   if (first || swr_x10 != s_tx_swr_x10) {
-#if LCD_PANEL == LCD_PANEL_ST7796
     uint16_t r0 = (uint16_t)TX_SWR_R0;
     uint16_t r1 = (uint16_t)(TX_SWR_R0 + (uint16_t)Font8x10.height - 1U);
     tx_meter_render_rows(r0, r1, alc_b, alc_pct, swr_x10);
     tx_meter_push_rows(r0, r1);
-#endif
     s_tx_alc_pct = alc_pct;
     s_tx_swr_x10 = swr_x10;
   }
@@ -2408,16 +1901,13 @@ void SDR_UI_UpdateTXMeters(int32_t alc_pct, int32_t swr_x10)
 /* ════════════════════════════════════════════════════════════════════════════
  *  SDR_UI_UpdatePAWarn — persistent PA protection warning in the INFO zone.
  *
- *  ST7796: INFO zone (Y=120..144, 24 px) sits between the S-meter and spectrum.
+ *  INFO zone (Y=120..144, 24 px) sits between the S-meter and spectrum.
  *  This zone is NOT touched by any dirty-flag redraw path, so the warning
  *  persists across TX→RX transitions, including PA TRIP.
  *
  *  When PA state is NORMAL the zone is cleared once and then left alone.
  *  When PA state is not NORMAL the zone is redrawn on every call so it
  *  survives SDR_UI_DrawCWText overwriting it.
- *
- *  ST7789 (INFO_H = 0): no-op — warning already appears in the left SPEC
- *  strip via pa_warn_render_push() inside DrawTXSpectrum.
  * ════════════════════════════════════════════════════════════════════════════ */
 void SDR_UI_UpdatePAWarn(PA_State_t state, PA_Fault_t fault)
 {
@@ -2974,7 +2464,6 @@ void SDR_UI_SetCWDecActive(bool on)       { s_cw_dec_active = on; cw_text_draw_r
 
 /* RSSI display in the right column of INFO zone (below SBR, above spectrum).
  * Writes only [SBR_X .. SBR_X+SBR_W-1] per row — CW text in the left portion is unaffected. */
-#if LCD_PANEL == LCD_PANEL_ST7796
 static void rssi_info_draw(void)
 {
   /* number (Font8x10, uppercase-safe) + unit "dBm" (Font6x8, full lowercase) */
@@ -3005,7 +2494,6 @@ static void rssi_info_draw(void)
                    ln + SBR_X, SBR_W);
   }
 }
-#endif /* LCD_PANEL_ST7796 */
 
 #else
 void SDR_UI_DrawCWText(const char *text)  { (void)text; }

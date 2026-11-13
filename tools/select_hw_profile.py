@@ -133,11 +133,12 @@ def validate(defines, profile_name):
             f'HW_PROFILE_NAME "{name_val}" does not match filename "{profile_name}"'
         )
 
-    # 3. HW_LCD_PANEL: 1 or 2
+    # 3. HW_LCD_PANEL: 1 or 3  (2 = ST7789, removed)
     panel = parse_int(defines["HW_LCD_PANEL"])
-    if panel not in (1, 2):
+    if panel not in (1, 3):
         errors.append(
-            f"HW_LCD_PANEL must be 1 (ST7796) or 2 (ST7789), "
+            f"HW_LCD_PANEL must be 1 (ST7796) or 3 (ILI9488) "
+            f"(2 = ST7789 was removed), "
             f"got: {defines['HW_LCD_PANEL']}"
         )
 
@@ -309,7 +310,7 @@ def main():
         fh.write(content)
 
     # ── Report ────────────────────────────────────────────────────────────────
-    panel_names = {"1": "ST7796 480x320 landscape", "2": "ST7789 240x320 portrait"}
+    panel_names = {"1": "ST7796 480x320 landscape", "3": "ILI9488 480x320 landscape"}
     panel_key   = defines["HW_LCD_PANEL"].rstrip("uUlL")
     panel_desc  = panel_names.get(panel_key, f"panel {panel_key}")
 

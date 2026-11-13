@@ -1138,8 +1138,7 @@ static void csdr_draw_hw_fault_warning(void)
 
   static uint16_t s_ln[LCD_W];
   /* Raw RGB565 — LCD_LineStr/LCD_LineFill apply SWAP16 internally.
-   * Do NOT pre-wrap with SWAP16 here; double-SWAP produces wrong colours
-   * on ST7789 where SWAP16 includes colour inversion (not pure byte-swap). */
+   * Do NOT pre-wrap with SWAP16 here; double-SWAP produces wrong colours. */
   const uint16_t FG1 = 0xF800U;   /* red      */
   const uint16_t FG2 = 0xF040U;   /* dark red */
   const uint16_t BG  = 0x0000U;

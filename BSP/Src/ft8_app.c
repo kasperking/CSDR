@@ -37,7 +37,7 @@
 
 /* ── Layout ───────────────────────────────────────────────────────────────
  * Header (14 px) / decode list (10 px per row, Font6x8) / footer (12 px).
- * Sized from LCD_W/LCD_H so both ST7796 (480×320) and ST7789 (320×240) work. */
+ * Sized from LCD_W/LCD_H (480×320). */
 #define APP_HDR_H   14U
 #define APP_FTR_H   12U
 #define APP_ROW_H   10U

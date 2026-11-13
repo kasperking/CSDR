@@ -1,7 +1,7 @@
 /* USER CODE BEGIN Header */
 /**
  * @file  lcd_bus_fmc.h
- * @brief FMC 8080-mode LCD bus driver for STM32H750 – ST7796S/ST7789.
+ * @brief FMC 8080-mode LCD bus driver for STM32H750 – ST7796S/ILI9488.
  *
  *  FMC Bank1 NE1 memory-mapped access.  No SPI — pure FMC.
  *  A16 (PD11) drives LCD RS/DC:
@@ -107,26 +107,35 @@ extern "C" {
 /* COLMOD: 16-bit/pixel (RGB565) for both DPI and DBI */
 #define ST7796_COLMOD_16BIT      0x55U
 
-/* ── ST7789V command set (portrait 240×320) ──────────────────────────────── *
- * Shared commands (CASET/RASET/RAMWR/MADCTL/COLMOD/SWRESET/SLPOUT/DISPON)   *
- * use the same opcodes as ST7796S — LCD_SetWindow works unchanged.           */
-#define ST7789_SWRESET    0x01U
-#define ST7789_SLPOUT     0x11U
-#define ST7789_INVOFF     0x20U   /* Inversion off                            */
-#define ST7789_INVON      0x21U   /* Inversion on — required for normal mode  */
-#define ST7789_DISPON     0x29U
-#define ST7789_CASET      0x2AU
-#define ST7789_RASET      0x2BU
-#define ST7789_RAMWR      0x2CU
-#define ST7789_MADCTL     0x36U
-#define ST7789_COLMOD     0x3AU
+/* ── ILI9488 command set (native 320×480, used landscape 480×320) ─────────── *
+ * Standard MIPI DCS opcodes (CASET/RASET/RAMWR/MADCTL/COLMOD/SLPOUT/DISPON)  *
+ * are identical to ST7796S — LCD_SetWindow / LCD_PushWindow / lcd_dma.c work *
+ * unchanged.  MADCTL bit layout is also identical (MY|MX|MV|ML|BGR|MH).      *
+ *                                                                           *
+ * COLMOD NOTE: ILI9488 supports 16 bpp (0x55) ONLY on the DBI parallel       *
+ * (8080) interface.  On SPI it is 18 bpp only — irrelevant here (FMC).       */
+#define ILI9488_SWRESET   0x01U
+#define ILI9488_SLPOUT    0x11U
+#define ILI9488_NORON     0x13U
+#define ILI9488_INVOFF    0x20U
+#define ILI9488_INVON     0x21U
+#define ILI9488_DISPON    0x29U
+#define ILI9488_MADCTL    0x36U
+#define ILI9488_COLMOD    0x3AU
+#define ILI9488_IFMODE    0xB0U   /* Interface mode control                  */
+#define ILI9488_FRMCTR1   0xB1U   /* Frame rate control (normal mode)        */
+#define ILI9488_INVTR     0xB4U   /* Display inversion control (dot type)    */
+#define ILI9488_DFUNCTR   0xB6U   /* Display function control                */
+#define ILI9488_ETMOD     0xB7U   /* Entry mode set                          */
+#define ILI9488_PWCTR1    0xC0U   /* Power control 1 (VREG1OUT/VREG2OUT)     */
+#define ILI9488_PWCTR2    0xC1U   /* Power control 2 (VGH/VGL step-up)       */
+#define ILI9488_VMCTR1    0xC5U   /* VCOM control                            */
+#define ILI9488_PGAMCTRL  0xE0U   /* Positive gamma                          */
+#define ILI9488_NGAMCTRL  0xE1U   /* Negative gamma                          */
+#define ILI9488_SETIMAGE  0xE9U   /* Set image function (24-bit bus enable)  */
+#define ILI9488_ADJCTL3   0xF7U   /* Adjust control 3 (DSI stream packet)    */
 
-/* MADCTL portrait — no axis swap (MV=0), BGR color filter.
- * MY=0 MX=0 MV=0 ML=0 BGR=1 MH=0 → 0x08.
- * X-axis: 0..239 left→right.  Y-axis: 0..319 top→bottom. */
-#define ST7789_MADCTL_PORTRAIT   0x08U   /* BGR — confirmed for this panel */
-
-#define ST7789_COLMOD_16BIT      0x55U   /* RGB565 */
+#define ILI9488_COLMOD_16BIT     0x55U   /* RGB565 — DBI parallel only       */
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
