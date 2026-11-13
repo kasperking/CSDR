@@ -33,13 +33,26 @@
 
 /* ─── External ALC constants (fixed, professional-radio style) ──────────── */
 /* PA0 / ADC1_INP16: external PA feedback voltage, 0-100% of ADC range.
- * Attack τ ≈ 28 ms  (α=0.5,  one 20 ms tick).
- * Release τ ≈ 490 ms (α=0.04, one 20 ms tick).
- * Reduction is proportional: threshold..100% input → 100..min_drive output. */
-#define ALC_THRESHOLD_PCT  70U    /* above 70% input → begin reducing drive   */
+ * Sampled every 1 ms by PA_Protect_FastAlcTick (csdr_fast_alc_tick):
+ *   attack  τ ≈ 1.4 ms (α=0.5   per 1 ms sample),
+ *   release τ ≈ 500 ms (α=0.002 per 1 ms sample).
+ * Reduction is proportional: threshold..100% input → 100..min_drive output.
+ * The drive multiplier goes straight into the DSP (g_dsp.tx.ext_alc_gain,
+ * 2 ms ramp) — no csdr_apply_tx reapply.
+ * HW front-end (inverting buffer, U16 MCP6001 @ VDDA 3.3 V):
+ *   EXT_ALC ─ D5 SMAJ15CA ─ R107 100k ─┬─ R106 100k ─ IN−   (C144 4.7n ⏚)
+ *   R108 ‖ C61 1n feedback, IN+ = GND, out ─ R109 100Ω ─ PA0 (C143 10n ⏚)
+ *   Gain = −R108 / 200k  →  full scale (100 %) = −3.3 V × 200k / R108:
+ *     R108 150k → −4.4 V (0..−4 V amps, default)
+ *     R108  82k → −8.0 V,  R108 51k → −12.9 V (0..−12 V amps)
+ *   Idle output ≈ 1 % (op-amp offset × 1.75 + output swing to GND).
+ * Threshold/floor are % of that full scale, so they track an R108 change. */
+#define ALC_THRESHOLD_PCT  10U    /* above 10% (−0.44 V @R108=150k) → reduce  */
 #define ALC_MIN_DRIVE_PCT  30U    /* maximum reduction floor (30% drive left)  */
-#define ALC_ALPHA_ATK      0.5f   /* fast attack                               */
-#define ALC_ALPHA_REL      0.04f  /* slow release                              */
+#define ALC_ALPHA_ATK      0.5f   /* Power ALC envelope attack (20 ms tick)   */
+#define ALC_ALPHA_REL      0.04f  /* Power ALC envelope release (20 ms tick)  */
+#define EXT_ALC_ALPHA_ATK  0.5f   /* ext ALC attack  per 1 ms sample           */
+#define EXT_ALC_ALPHA_REL  0.002f /* ext ALC release per 1 ms sample           */
 
 /* ─── Power ALC constants (tandem-match closed-loop leveling) ───────────── */
 /* Forward power (g_analog.fwd_power_mw) vs target derived from pa_watts ×
@@ -100,6 +113,13 @@ static float   s_pwr_corr_pct  = 100.0f; /* continuous drive corrector (%)      
  *  Internal helpers
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+/* External ALC only has a source when an external amp is fitted — without
+ * Ext PA the PA0 input floats/reads noise and must not cut drive. */
+static inline bool ext_alc_active(void)
+{
+    return g_sdr.ext_alc_on && g_sdr.ext_pa_on;
+}
+
 static void update_filters(void)
 {
     float new_swr  = (float)g_analog.swr_x100;
@@ -121,14 +141,18 @@ static void update_filters(void)
      * in pa_overcurrent.c (< 140 µs response), so this filter can afford
      * to be slightly slower while still catching sustained overload. */
     s_filt_curr = s_filt_curr * 0.7f + new_curr  * 0.3f;
+}
 
-    /* External ALC: fast-attack / slow-release envelope detector.
-     * Runs unconditionally so the envelope is accurate when TX starts.
-     * When ext_alc_on=false the envelope slowly decays to zero. */
-    {
-        float new_alc = g_sdr.ext_alc_on ? (float)g_analog.alc_percent : 0.0f;
-        float alpha   = (new_alc > s_alc_env) ? ALC_ALPHA_ATK : ALC_ALPHA_REL;
-        s_alc_env     = s_alc_env + alpha * (new_alc - s_alc_env);
+/* Power ALC needs a steady envelope to compare against the watt target:
+ * CW (key-up samples skipped by PWR_ALC_CARRIER_MW), FM, DIGI (FT8/WSJT-X
+ * single tone), TUNE.  SSB/AM PEP from the 100 ms single-sample detector
+ * under-reads → the corrector would ratchet drive up into splatter. */
+static bool power_alc_mode_ok(void)
+{
+    if (g_sdr.tune_mode) return true;
+    switch (g_sdr.mode) {
+        case MODE_CW: case MODE_FM: case MODE_DIGU: case MODE_DIGL: return true;
+        default: return false;
     }
 }
 
@@ -187,7 +211,7 @@ void PA_Protect_OnTxStart(void)
 
     /* Seed ALC envelope from current PA feedback so there is no step-change
      * in drive at TX onset when ALC conditions are already non-zero. */
-    s_alc_env = (float)g_analog.alc_percent;
+    s_alc_env = ext_alc_active() ? (float)g_analog.alc_percent : 0.0f;
 
     /* Power ALC: fresh start each transmission — avoids carrying a stale
      * correction from a different band/frequency into the new TX. */
@@ -235,25 +259,7 @@ void PA_Protect_Update(void)
      * so values are accurate the instant TX starts. */
     update_filters();
 
-    /* ── External ALC: compute continuous drive multiplier ──────────────── */
-    /* Runs regardless of TX/RX state so the gain is correct the instant
-     * csdr_apply_tx() is called after a TX start. */
-    {
-        uint8_t new_alc_drive;
-        if (g_sdr.ext_alc_on && s_alc_env >= (float)ALC_THRESHOLD_PCT) {
-            float range    = (float)(100U - ALC_THRESHOLD_PCT);
-            float excess   = (s_alc_env - (float)ALC_THRESHOLD_PCT) / range;
-            if (excess > 1.0f) excess = 1.0f;
-            float drive    = 100.0f - excess * (float)(100U - ALC_MIN_DRIVE_PCT);
-            new_alc_drive  = (uint8_t)drive;
-        } else {
-            new_alc_drive = 100U;
-        }
-        if (new_alc_drive != s_alc_drive_pct) {
-            s_alc_drive_pct = new_alc_drive;
-            request_gain_reapply();   /* triggers csdr_apply_tx() gain recompute */
-        }
-    }
+    /* External ALC: moved to PA_Protect_FastAlcTick (1 ms). */
 
     /* ── COOLDOWN: checked regardless of TX state ───────────────────────── */
     if (s_state == PA_STATE_COOLDOWN) {
@@ -316,7 +322,15 @@ void PA_Protect_Update(void)
             float alpha = (meas > s_pwr_env) ? ALC_ALPHA_ATK : ALC_ALPHA_REL;
             s_pwr_env   = s_pwr_env + alpha * (meas - s_pwr_env);
 
-            if (g_analog.fwd_power_mw > PWR_ALC_CARRIER_MW) {
+            if (!power_alc_mode_ok()) {
+                /* SSB/AM: no correction (envelope still tracked for the UI).
+                 * Mode switched mid-TX → drop any correction learned in a
+                 * constant-envelope mode. */
+                if ((uint8_t)s_pwr_corr_pct != 100U) {
+                    s_pwr_corr_pct = 100.0f;
+                    request_gain_reapply();
+                }
+            } else if (g_analog.fwd_power_mw > PWR_ALC_CARRIER_MW) {
                 float err = ((float)target_mw - s_pwr_env) / (float)target_mw;
                 if (err >  1.0f) err =  1.0f;
                 if (err < -1.0f) err = -1.0f;
@@ -427,6 +441,41 @@ void PA_Protect_Update(void)
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  PA_Protect_FastAlcTick — external-amp ALC, call every 1 ms (main loop)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+void PA_Protect_FastAlcTick(void)
+{
+    if (!ext_alc_active()) {
+        s_alc_env       = 0.0f;
+        s_alc_drive_pct = 100U;
+        return;
+    }
+    /* RX: no ADC read, no reduction — envelope just decays; OnTxStart
+     * re-seeds it from the latest Analog_Update reading. */
+    if (!g_sdr.tx_mode) {
+        s_alc_env      *= (1.0f - EXT_ALC_ALPHA_REL);
+        s_alc_drive_pct = 100U;
+        return;
+    }
+
+    /* One single-shot conversion on ADC1 (~µs; same main-loop context as
+     * Analog_Update, so no ADC1 contention). */
+    float pct   = (float)Analog_ReadALC_Raw() * (100.0f / 65535.0f);
+    float alpha = (pct > s_alc_env) ? EXT_ALC_ALPHA_ATK : EXT_ALC_ALPHA_REL;
+    s_alc_env  += alpha * (pct - s_alc_env);
+
+    if (s_alc_env >= (float)ALC_THRESHOLD_PCT) {
+        float excess = (s_alc_env - (float)ALC_THRESHOLD_PCT)
+                       / (float)(100U - ALC_THRESHOLD_PCT);
+        if (excess > 1.0f) excess = 1.0f;
+        s_alc_drive_pct = (uint8_t)(100.0f - excess * (float)(100U - ALC_MIN_DRIVE_PCT));
+    } else {
+        s_alc_drive_pct = 100U;
+    }
+}
+
 /* ─── Accessors ─────────────────────────────────────────────────────────── */
 
 PA_State_t PA_Protect_GetState(void)      { return s_state;         }
@@ -454,7 +503,7 @@ uint8_t PA_Protect_GetAlcReductionPct(void)
     /* s_alc_drive_pct ∈ [ALC_MIN_DRIVE_PCT, 100]: 100 = ALC idle, 30 = full
      * reduction → reported range 0-70 %-points.  Zero when the external ALC
      * loop is disabled or not transmitting, so meters rest at no deflection. */
-    if (!g_sdr.tx_mode || !g_sdr.ext_alc_on) return 0U;
+    if (!g_sdr.tx_mode || !ext_alc_active()) return 0U;
     return (uint8_t)(100U - s_alc_drive_pct);
 }
 

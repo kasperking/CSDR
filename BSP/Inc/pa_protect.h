@@ -10,19 +10,22 @@
   *      → IIR filtering   (α=0.1 SWR+temp, α=0.3 current)
   *      → State machine    (NORMAL → FOLDBACK → LIMIT → TRIP → COOLDOWN)
   *      → Power policy     (drive_limit 100/75/50/25/0 %)
-  *      → TX drive control (multiplied into g_dsp.tx.audio_gain via csdr_apply_tx)
+  *      → TX drive control (multiplied into g_dsp.tx.drive_gain via csdr_apply_tx)
   *
   *  External ALC (PA0 / ADC1_INP16 — PA feedback voltage):
-  *      fast-attack / slow-release envelope detector
-  *      → continuous proportional reduction above 70% input
-  *      → PA_Protect_GetALCDrive() 0-100 multiplier (independent of stepped foldback)
-  *      → enabled by g_sdr.ext_alc_on; characteristics fixed (professional style):
-  *        Attack  τ ≈ 28 ms  (α=0.5,  20 ms tick)
-  *        Release τ ≈ 490 ms (α=0.04, 20 ms tick)
-  *        Threshold: 70% input  →  drive starts reducing
+  *      PA_Protect_FastAlcTick(), 1 ms: fast-attack / slow-release envelope
+  *      → continuous proportional reduction above ALC_THRESHOLD_PCT input
+  *      → PA_Protect_GetALCDrive() 0-100 multiplier, forwarded straight to
+  *        g_dsp.tx.ext_alc_gain (NOT via csdr_apply_tx)
+  *      → enabled by g_sdr.ext_alc_on AND g_sdr.ext_pa_on; fixed profile:
+  *        Attack  τ ≈ 1.4 ms (α=0.5,   1 ms sample)
+  *        Release τ ≈ 500 ms (α=0.002, 1 ms sample)
+  *        Threshold: 10% input  →  drive starts reducing
+  *                   (−0.44 V amp ALC with R108 = 150k, see pa_protect.c)
   *        Maximum reduction:    →  30% minimum drive
   *
-  *  Power ALC (tandem-match forward power — closed loop, always on):
+  *  Power ALC (tandem-match forward power — closed loop; only CW / FM /
+  *  DIGU / DIGL / TUNE — SSB/AM hold 100 %, see power_alc_mode_ok()):
   *      target_mw = pa_watts × tx_power%   (same watt figure as RF Power menu)
   *      peak-hold envelope (fast-attack/slow-release) of g_analog.fwd_power_mw
   *      → slow proportional corrector (±1 %-pt / 20 ms tick, clamped 50..150%)
@@ -108,6 +111,14 @@ void PA_Protect_Init(void);
 void PA_Protect_Update(void);
 
 /**
+  * @brief External-amp ALC fast path: sample PA0 + attack/release envelope.
+  *        Call every 1 ms from the main loop (csdr_fast_alc_tick does this
+  *        and forwards GetALCDrive() into g_dsp.tx.ext_alc_gain).
+  *        Active only when ext_alc_on && ext_pa_on; ADC read only while TX.
+  */
+void PA_Protect_FastAlcTick(void);
+
+/**
   * @brief Notify that TX is starting.
   *        Seeds IIR filters from current readings to suppress TX-attack transient.
   *        Call from csdr_apply_tx() on the TX path.
@@ -136,7 +147,7 @@ uint8_t PA_Protect_GetDriveLimit(void);
 
 /**
   * @brief Continuous ALC drive limit from external PA feedback (PA0/ADC1_INP16).
-  *        Returns 100 when g_sdr.ext_alc_on=false or ALC input < 70% threshold.
+  *        Returns 100 when g_sdr.ext_alc_on=false or ALC input < ALC_THRESHOLD_PCT (10%).
   *        Returns 30..100 proportional reduction when input exceeds threshold.
   *        Multiply independently into csdr_apply_tx() alongside GetDriveLimit().
   */

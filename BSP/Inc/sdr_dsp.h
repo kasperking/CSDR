@@ -180,13 +180,31 @@ typedef struct {
   uint32_t     cw_bfo_inc;                 /*!< CW sidetone NCO increment            */
   float        cw_sidetone_amp;            /*!< Target sidetone amplitude (0..0.7)   */
   float        cw_env_amp;                 /*!< Smoothed keying envelope (click-free)*/
-  float        audio_gain;                 /*!< TX audio gain (0..1) */
-  float        drive_gain;                 /*!< PA drive multiplier without mic/digi gain
-                                                (tx_power × foldback × ALC × trim) — carrier
-                                                amplitude for constant-envelope modes (FM) */
+  float        audio_gain;                 /*!< Mic/digi source gain ONLY (0..1), applied
+                                                BEFORE the compressor so speech processing
+                                                is independent of RF power.  1.0 for CW/TUNE. */
+  float        drive_gain;                 /*!< Drive TARGET (0..1): tx_power × foldback ×
+                                                ext ALC × power ALC × trim.  Applied AFTER
+                                                the modulator via drive_smooth, all modes. */
+  float        drive_smooth;               /*!< Per-sample ramped drive (τ≈2 ms) — removes
+                                                zipper/clicks on ALC/foldback steps; snaps
+                                                to 0 instantly when drive_gain = 0 (trip,
+                                                keying gate). */
+  float        alc_gr_min;                 /*!< Min (compressor×limiter × TX ALC) gain ratio
+                                                (≤1.0) since last DSP_TxTakeGainReduction() —
+                                                internal ALC meter source.  Main-loop only. */
+  float        alc_gain;                   /*!< TX ALC gain (≤1.0), step 5c: instant attack
+                                                to keep final IQ peak ≤ TX_ALC_REF, ~200 ms
+                                                release. */
+  float        ext_alc_gain;               /*!< External-amp ALC multiplier (0.3..1.0),
+                                                written directly by the 1 ms fast ALC tick
+                                                (csdr_app.c) — bypasses csdr_apply_tx so the
+                                                amp's ALC acts within ~1 ms + 2 ms ramp. */
+  uint32_t     clip_count;                 /*!< DAC clamp hits since DSP_TxTakeClips() —
+                                                should stay 0 with TX ALC active. */
   bool         tune_active;                /*!< TUNE button held: forces a continuous
                                                   CW-style carrier regardless of mode,
-                                                  scaled by audio_gain (see csdr_app.c) */
+                                                  scaled by drive_gain (see csdr_app.c) */
   float        tx_lp_hz;                  /*!< TX High-cut (LPF) Hz */
   float        tx_hp_hz;                  /*!< TX Low-cut (HPF) Hz  */
   FIR_Filter_t fir_audio;                 /*!< TX-private audio LPF (separate from RX) */
@@ -329,6 +347,14 @@ void DSP_Process(DSP_State_t *dsp,
  * @param  len       Số cặp I/Q cần tạo
  */
 void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len);
+/** Peak compressor+limiter gain reduction since the previous call, in
+ *  dB×10 (0 = none, positive = reduction).  Resets the peak hold.
+ *  Main-loop context only (same context as DSP_ProcessTX). */
+uint16_t DSP_TxTakeGainReduction_dB10(DSP_State_t *dsp);
+/** DAC clamp hits since the previous call (resets).  Main-loop only. */
+uint32_t DSP_TxTakeClips(DSP_State_t *dsp);
+/** RX→TX transition: drive ramp from 0, TX ALC / meter / clip state fresh. */
+void     DSP_TxResetForKeyDown(DSP_State_t *dsp);
 
 /* Hilbert FIR 90° phase shift */
 void  Hilbert_Init(Hilbert_t *h);

@@ -350,7 +350,11 @@ static bool     cat_get_rf_agc(void);
 static void     cat_set_tx_power(uint8_t pct);
 static uint8_t  cat_get_tx_power(void);
 static uint16_t cat_get_swr_x100(void);
-static uint8_t  cat_get_alc_reduction_pct(void);
+static uint8_t  cat_get_alc_meter_pct(void);
+static uint8_t  csdr_alc_meter_update(void);
+static void     csdr_alc_meter_reset(void);
+static void     csdr_fast_alc_tick(void);
+static uint8_t  s_alc_meter_pct = 0U;
 static void     cat_set_cw_wpm(uint8_t wpm);
 static uint8_t  cat_get_cw_wpm(void);
 static void     cat_set_usb_stream(uint8_t m);
@@ -857,7 +861,7 @@ void CSDR_Init(void)
     .set_tx_power    = cat_set_tx_power,
     .get_tx_power    = cat_get_tx_power,
     .get_swr_x100    = cat_get_swr_x100,
-    .get_alc_reduction_pct = cat_get_alc_reduction_pct,
+    .get_alc_meter_pct = cat_get_alc_meter_pct,
     .set_cw_wpm      = cat_set_cw_wpm,
     .get_cw_wpm      = cat_get_cw_wpm,
     .set_usb_stream  = cat_set_usb_stream,
@@ -1528,6 +1532,8 @@ void CSDR_Loop(void)
   static uint32_t t_pa_warn = 0U;
   uint32_t now = HAL_GetTick();
 
+  csdr_fast_alc_tick();   /* ext-amp ALC, 1 ms (self rate-limited) */
+
   if (now - t_analog >= 100U) {
     t_analog = now;
     Analog_Update();
@@ -1629,11 +1635,12 @@ void CSDR_Loop(void)
     /* TX meter (ALC/SWR): update at 5 Hz — fast enough to track voice peaks. */
     if (now - t_tx_meter >= 200U) {
       t_tx_meter = now;
-      SDR_UI_UpdateTXMeters((int32_t)g_analog.alc_percent,
+      SDR_UI_UpdateTXMeters((int32_t)csdr_alc_meter_update(),
                             (int32_t)(g_analog.swr_x100 / 10));
     }
   } else {
     t_tx_meter = now;  /* reset so meter fires immediately on next TX */
+    csdr_alc_meter_reset();  /* drop stale compressor peak from last TX */
   }
 
   /* PA protection warning in the INFO zone: refresh at 500 ms.
@@ -3097,7 +3104,9 @@ static void csdr_refresh_display(void)
   } else if (!menu_open && !BandSel_IsOpen() && !ModeSel_IsOpen()) {
     if (g_sdr.tx_mode) {
       RuntimeDiag_UiSectionBegin(RUNTIME_DIAG_UI_VOLUME_MODE);
-      SDR_UI_UpdateTXMeters((int32_t)g_analog.alc_percent,
+      /* Full redraw: show the last computed value — don't consume the
+       * compressor peak hold here (the 5 Hz updater owns it). */
+      SDR_UI_UpdateTXMeters((int32_t)cat_get_alc_meter_pct(),
                             (int32_t)(g_analog.swr_x100 / 10));
       RuntimeDiag_UiSectionEnd(RUNTIME_DIAG_UI_VOLUME_MODE);
     } else {
@@ -3776,8 +3785,25 @@ static void csdr_finish_rx_hw(void)
  * (without this, ext-PA RF never opens and the radio stays half-keyed and
  * muted after the app's TX ends).  All three consume shared flags
  * idempotently, so both this and the CSDR_Loop block may run. */
+/* External-amp ALC fast path — 1 ms cadence, main-loop context.
+ * PA_Protect_FastAlcTick samples PA0 and runs the attack/release envelope;
+ * the resulting multiplier goes straight into the DSP (ramped there) instead
+ * of the cat_tx_dirty → csdr_apply_tx reapply path, so the amp's ALC acts
+ * within ~1-3 ms.  Called from CSDR_Loop and CSDR_PollTxSequencing so the
+ * full-screen app loops (FT8, Cal) keep it running too. */
+static void csdr_fast_alc_tick(void)
+{
+  static uint32_t t_last = 0U;
+  uint32_t now = HAL_GetTick();
+  if (now == t_last) return;
+  t_last = now;
+  PA_Protect_FastAlcTick();
+  g_dsp.tx.ext_alc_gain = (float)PA_Protect_GetALCDrive() * (1.0f / 100.0f);
+}
+
 void CSDR_PollTxSequencing(void)
 {
+  csdr_fast_alc_tick();
   PA_Bias_Tick();   /* bias ramp phải tiếp tục khi app toàn màn hình giữ loop */
   uint32_t now = HAL_GetTick();
   if (s_rf_gate_pending) {
@@ -3879,6 +3905,10 @@ static void csdr_apply_tx(void)
     s_rx_drain_pending = false;
   } else if (tx_transition && g_sdr.tx_mode) {
     PA_Protect_OnTxStart();
+    /* Drive ramps up from 0 (2 ms soft start), TX ALC / meter state fresh. */
+    DSP_TxResetForKeyDown(&g_dsp);
+    g_dsp.tx.ext_alc_gain = 1.0f;
+    s_alc_meter_pct = 0U;
     /* QSE IQ pre-correction for the band actually carrying RF (split may TX
      * on another band than the RX one); out-of-band → current band's cal. */
     { uint8_t tb = BPF_FreqToBand(tx_carrier_hz);
@@ -3971,13 +4001,16 @@ static void csdr_apply_tx(void)
     float drive = pa_fitted
               ? (((float)pwr_pct                        * (1.0f / 100.0f))
                  * ((float)PA_Protect_GetDriveLimit()    * (1.0f / 100.0f))
-                 * ((float)PA_Protect_GetALCDrive()      * (1.0f / 100.0f))
+                 /* External ALC NOT here: the 1 ms fast tick writes it
+                  * straight to g_dsp.tx.ext_alc_gain (csdr_fast_alc_tick). */
                  * ((float)PA_Protect_GetPowerALCDrive() * (1.0f / 100.0f))
                  * ((float)(100 + tx_trim)               * (1.0f / 100.0f)))
               : 0.0f;
     if (drive < 0.0f) drive = 0.0f;
     if (drive > 1.0f) drive = 1.0f;
-    float g = drive * ((float)gain_src_pct * (1.0f / 100.0f));
+    /* audio_gain = source gain only (pre-compressor); drive is applied by the
+     * DSP after the modulator with a ~2 ms ramp (see DSP_ProcessTX step 5b). */
+    float g = (float)gain_src_pct * (1.0f / 100.0f);
     if (g > 1.0f) g = 1.0f;
     /* Ext-PA keying gate active: relays still settling — hold RF at zero.
      * CSDR_Loop re-enters this block via cat_tx_dirty when the gate expires.
@@ -4235,9 +4268,40 @@ static uint8_t cat_get_tx_power(void) { return g_sdr.tx_power; }
  * state machine acts on (returns 100 = 1.00 flat when not transmitting). */
 static uint16_t cat_get_swr_x100(void) { return PA_Protect_GetSwrX100(); }
 
-/* RM3 ALC meter — external-ALC drive reduction from pa_protect, the same
- * multiplier applied in csdr_apply_tx (0 when RX or ext_alc_on is off). */
-static uint8_t cat_get_alc_reduction_pct(void) { return PA_Protect_GetAlcReductionPct(); }
+/* Unified ALC meter (0-100 %) — single source for the TX meter bar and CAT
+ * RM3, so the display and flrig/Hamlib always agree.
+ *   internal: peak compressor×limiter gain reduction over the last meter
+ *             period, 0..10 dB → 0..100 % (DSP_TxTakeGainReduction_dB10);
+ *   external: ext-amp ALC drive cut, 0..70 %-pts → 0..100 %
+ *             (0 unless ext_alc_on AND ext_pa_on).
+ * Meter = max of the two, with a 20 %/update fall so the needle is readable.
+ * Any DAC clamp hit in the last period (should be impossible with the DSP
+ * TX ALC at step 5c) pins the meter at 100 % as an overdrive alarm. */
+
+static uint8_t csdr_alc_meter_update(void)
+{
+  uint32_t int_pct = DSP_TxTakeGainReduction_dB10(&g_dsp);   /* dB×10 → % of 10 dB */
+  if (int_pct > 100U) int_pct = 100U;
+  uint32_t ext_pct = (uint32_t)PA_Protect_GetAlcReductionPct() * 100U / 70U;
+  if (ext_pct > 100U) ext_pct = 100U;
+  uint32_t v = (int_pct > ext_pct) ? int_pct : ext_pct;
+  if (DSP_TxTakeClips(&g_dsp) != 0U) v = 100U;
+  uint32_t fall = (s_alc_meter_pct > 20U) ? (uint32_t)s_alc_meter_pct - 20U : 0U;
+  if (v < fall) v = fall;
+  s_alc_meter_pct = (uint8_t)v;
+  return s_alc_meter_pct;
+}
+
+static void csdr_alc_meter_reset(void)
+{
+  if (s_alc_meter_pct != 0U || g_dsp.tx.alc_gr_min < 1.0f || g_dsp.tx.clip_count != 0U) {
+    (void)DSP_TxTakeGainReduction_dB10(&g_dsp);
+    (void)DSP_TxTakeClips(&g_dsp);
+    s_alc_meter_pct = 0U;
+  }
+}
+
+static uint8_t cat_get_alc_meter_pct(void) { return g_sdr.tx_mode ? s_alc_meter_pct : 0U; }
 
 static void cat_set_cw_wpm(uint8_t wpm)
 {

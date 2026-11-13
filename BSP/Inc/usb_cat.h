@@ -173,8 +173,9 @@ typedef struct {
   uint8_t  (*get_tx_power)(void);
   /* TX SWR meter — RM1 command (pa_protect filtered SWR ×100; 100 = 1.00) */
   uint16_t (*get_swr_x100)(void);
-  /* TX ALC meter — RM3 command (pa_protect external-ALC reduction, 0-70 %-pts) */
-  uint8_t  (*get_alc_reduction_pct)(void);
+  /* TX ALC meter — RM3 command: unified meter 0-100 % (internal compressor
+   * gain reduction / external-amp ALC, same value as the on-screen bar) */
+  uint8_t  (*get_alc_meter_pct)(void);
   /* CW keyer speed — KS command */
   void     (*set_cw_wpm)(uint8_t wpm);     /*!< KSnnn: 5-40 WPM          */
   uint8_t  (*get_cw_wpm)(void);

@@ -1358,17 +1358,17 @@ static void cat_exec(CAT_Handle_t *cat, const char *cmd, char *resp)
      * FOLDBACK/TRIP state machine acts on — mapped to the 0-30 needle scale
      * via cat_swr_to_meter.  The getter returns 1.00 flat in RX / no PA /
      * sensor fault, so the needle rests at zero.
-     * ALC (RM3) is REAL: pa_protect's external-ALC drive reduction (0-70
-     * %-points, the multiplier applied in csdr_apply_tx) mapped linearly to
-     * the 0-20 needle scale Hamlib expects (val = raw/4 → 0..5.0); zero in
-     * RX or when ext_alc_on is off.  COMP (RM2) reads 0000. */
+     * ALC (RM3) is REAL: the unified ALC meter (0-100 %, max of internal
+     * compressor gain reduction and external-amp ALC cut — identical to the
+     * on-screen bar) mapped linearly to the 0-20 needle scale Hamlib expects
+     * (val = raw/4 → 0..5.0); zero in RX.  COMP (RM2) reads 0000. */
     else if (cmd[0] == 'R' && cmd[1] == 'M') {
         if (cmd[2] == '\0') {
             uint32_t reading = 0U;
             if (s_rm_sel == 1U && cat->cb.get_swr_x100) {
                 reading = cat_swr_to_meter(cat->cb.get_swr_x100());
-            } else if (s_rm_sel == 3U && cat->cb.get_alc_reduction_pct) {
-                reading = (uint32_t)cat->cb.get_alc_reduction_pct() * 2U / 7U;
+            } else if (s_rm_sel == 3U && cat->cb.get_alc_meter_pct) {
+                reading = (uint32_t)cat->cb.get_alc_meter_pct() / 5U;
                 if (reading > 20U) reading = 20U;
             }
             char *p = resp;

@@ -91,6 +91,11 @@ static arm_cfft_instance_f32        s_cfft_ram_inst; /* filled from SPI flash ta
 #define FM_TX_DEV_HZ     5000.0f
 #define FM_RX_DEV_FS_HZ  6000.0f
 #define FM_TX_AMP        0.7f
+/* TX ALC (DSP_ProcessTX step 5c): DAC overload guard on the final IQ pair.
+ * REF = peak ceiling (fraction of int16 full scale); REL_K = per-sample
+ * release toward unity, 1/(0.2 s × 48 kHz) → τ ≈ 200 ms. */
+#define TX_ALC_REF       0.95f
+#define TX_ALC_REL_K     1.04e-4f
 /* USER CODE END PD */
 
 /* USER CODE BEGIN PV */
@@ -845,6 +850,11 @@ void DSP_Init(DSP_State_t *dsp, uint32_t sample_rate)
   /* Full-scale audio (±1.0) → NCO increment for ±FM_TX_DEV_HZ deviation */
   dsp->tx.fm_dev_scale = FM_TX_DEV_HZ * 4294967296.0f / (float)sample_rate;
   dsp->tx.drive_gain   = 0.0f;
+  dsp->tx.drive_smooth = 0.0f;
+  dsp->tx.alc_gr_min   = 1.0f;
+  dsp->tx.alc_gain     = 1.0f;
+  dsp->tx.ext_alc_gain = 1.0f;
+  dsp->tx.clip_count   = 0U;
   dsp->tx.cw_phase_acc    = 0;
   dsp->tx.cw_bfo_inc      = (uint32_t)((int64_t)700 * (int64_t)4294967296LL / (int64_t)sample_rate);
   dsp->tx.cw_sidetone_amp = 0.35f;  /* 50% vol default → 0.35 of 0.7 max */
@@ -1700,8 +1710,20 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
   if (samples_avail > (uint16_t)len) { samples_avail = (uint16_t)len; }
   uint16_t bytes_consumed = (uint16_t)(samples_avail * 4U);
 
+  /* Drive ramp: one-pole toward drive_gain, τ ≈ 2 ms at 48 kHz
+   * (k = 1 − e^(−1/96)).  A zero target (PA trip, ext-PA keying gate,
+   * Idq cal, no PA) snaps to 0 at once — muting must never be soft. */
+  const float drive_tgt = dsp->tx.drive_gain * dsp->tx.ext_alc_gain;
+  float drive_s = (drive_tgt <= 0.0f) ? 0.0f : dsp->tx.drive_smooth;
+  float gr_min  = dsp->tx.alc_gr_min;
+  float alc_g   = dsp->tx.alc_gain;
+  uint32_t clips = 0U;
+
   for (uint32_t n = 0U; n < len; n++)
   {
+    drive_s += 0.0104f * (drive_tgt - drive_s);
+    float comp_gr = 1.0f;   /* compressor×limiter gain this sample (meter) */
+
     /* ── 1. Pull mono audio from selected TX source.
      *   MIC mode: SAI RX (WM8731 ADC mic_buf), 16-bit right-justified stereo,
      *             left channel (index 2n) = mic audio.
@@ -1733,20 +1755,11 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
     audio = IIR_DCBlock_Process(&dsp->tx.dc_block, audio);
     audio = IIR_DCBlock_Process(&dsp->tx.hp_audio, audio);  /* TX Low-cut HPF */
 
-    /* ── 3. TX audio gain.
-     * FM/AM: modulation depth (deviation / mod. index) must track mic_gain
-     * only — drive_gain (tx_power × PA foldback × ALC × trim) is applied
-     * separately to carrier amplitude further down (fm_amp / AM carrier).
-     * audio_gain = drive_gain × gain_src_pct/100 (see csdr_apply_tx), so
-     * dividing it back out here recovers the pure gain_src_pct/100 factor —
-     * otherwise lowering tx_power or PA foldback would also shrink FM
-     * deviation / AM modulation index instead of just RF carrier power. */
-    if (dsp->mode == MODE_FM || dsp->mode == MODE_AM) {
-      audio *= (dsp->tx.drive_gain > 0.0001f)
-                 ? (dsp->tx.audio_gain / dsp->tx.drive_gain) : 0.0f;
-    } else {
-      audio *= dsp->tx.audio_gain;
-    }
+    /* ── 3. TX source gain (mic_gain / digi_gain only).
+     * RF drive (tx_power × PA foldback × ALC × trim) is NOT applied here —
+     * it multiplies the modulator output at step 5b, so compression depth,
+     * FM deviation and AM modulation index are all independent of power. */
+    audio *= dsp->tx.audio_gain;
 
     /* ── 4. Audio FIR LPF BEFORE modulation.
      *       Filtering the real audio signal band-limits and ensures
@@ -1778,25 +1791,30 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
                           + (1.0f - dsp->tx.comp_decay)  * env;
 
       /* 4:1 compression above 0.70 */
+      float gr = 1.0f;
       if (dsp->tx.comp_env > 0.70f) {
         float excess     = dsp->tx.comp_env - 0.70f;
         float compressed = 0.70f + excess * 0.25f;
-        audio_lp *= compressed / dsp->tx.comp_env;
+        gr = compressed / dsp->tx.comp_env;
+        audio_lp *= gr;
       }
 
       /* Soft limiter for residual peaks: C1-continuous at knee = 0.95 */
       float a = fabsf(audio_lp);
       if (a > 0.95f) {
-        float s  = (audio_lp >= 0.0f) ? 1.0f : -1.0f;
-        audio_lp = s * (1.0f - 0.0025f / (a - 0.90f));
+        float s   = (audio_lp >= 0.0f) ? 1.0f : -1.0f;
+        float lim = 1.0f - 0.0025f / (a - 0.90f);
+        gr       *= lim / a;
+        audio_lp  = s * lim;
       }
+      comp_gr = gr;                   /* meter peak hold taken at step 5c */
     }
 
     /* ── 5. Modulate */
     float tx_i = 0.0f, tx_q = 0.0f;
     /* TUNE: force the CW carrier branch regardless of the displayed operating
-     * mode — reuses the same envelope/oscillator so PA_Protect's drive limit
-     * (audio_gain) still applies (see csdr_app.c / pa_protect.c). */
+     * mode — reuses the same envelope/oscillator; PA_Protect's drive limit
+     * still applies via drive at step 5b (see csdr_app.c / pa_protect.c). */
     SDR_Mode_t mod_sel = dsp->tx.tune_active ? MODE_CW : dsp->mode;
     switch (mod_sel) {
       case MODE_USB:
@@ -1816,19 +1834,16 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         break;
       }
       case MODE_AM:
-        /* Carrier ← drive_gain (tx_power × PA foldback × ALC × trim), same
-         * role as FM's fm_amp below, so PA protection/TRIP and tx_power act
-         * on real RF power; audio_lp (mic_gain only, stage 3) sets modulation
-         * index independent of drive. */
-        tx_i = dsp->tx.drive_gain * (0.5f + 0.5f * audio_lp);
+        /* Carrier amplitude ← drive (step 5b); audio_lp (mic_gain only,
+         * stage 3) sets modulation index independent of drive. */
+        tx_i = 0.5f + 0.5f * audio_lp;
         tx_q = 0.0f;
         break;
       case MODE_CW: {
         /* Keyed CW carrier at LO+pitch Hz (USB sideband) with click-free envelope.
          * cw_key_out is written by the main-loop keyer; volatile for ISR safety.
-         * Scaled by audio_gain so PA_Protect foldback/trip actually reduces the
-         * carrier (previously the CW path bypassed audio_gain entirely). */
-        float env_tgt = dsp->cw_key_out ? (dsp->tx.cw_sidetone_amp * dsp->tx.audio_gain) : 0.0f;
+         * PA_Protect foldback/trip and tx_power act via drive at step 5b. */
+        float env_tgt = dsp->cw_key_out ? dsp->tx.cw_sidetone_amp : 0.0f;
         /* Attack ~3 ms, release ~6 ms at 48 kHz (1 sample ≈ 0.021 ms) */
         float coeff = (env_tgt > dsp->tx.cw_env_amp) ? 0.9994f : 0.9988f;
         dsp->tx.cw_env_amp = dsp->tx.cw_env_amp * coeff + env_tgt * (1.0f - coeff);
@@ -1855,10 +1870,8 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
          * Gain split — audio_gain would be wrong for both roles here:
          *   deviation ← audio_lp (mic_gain baked in at stage 3: mic gain
          *               controls deviation, as on any FM rig);
-         *   carrier   ← drive_gain (tx_power × PA foldback × ALC × trim,
-         *               WITHOUT mic gain) so PA protection and tx_power act on
-         *               real RF power — audio_gain alone would let mic gain
-         *               couple into carrier amplitude. */
+         *   carrier   ← drive (step 5b, WITHOUT mic gain) so PA protection
+         *               and tx_power act on real RF power. */
         float x = (audio_lp - dsp->tx.fm_pre_k * dsp->tx.fm_pre_x1)
                   * dsp->tx.fm_pre_gain;
         dsp->tx.fm_pre_x1 = audio_lp;
@@ -1866,7 +1879,7 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         if (x < -1.0f) x = -1.0f;
         dsp->tx.fm_phase_acc += (uint32_t)(int32_t)(x * dsp->tx.fm_dev_scale);
         uint32_t fm_idx = dsp->tx.fm_phase_acc >> (32U - NCO_LUT_BITS);
-        float fm_amp = FM_TX_AMP * dsp->tx.drive_gain;
+        const float fm_amp = FM_TX_AMP;
         /* Q=+sin convention (positive audio → +f), consistent with the SSB
          * branch above; FFT feed negates Q for correct display. */
         tx_i = s_nco_sin_lut[(fm_idx + (NCO_LUT_SIZE / 4U)) & NCO_LUT_MASK] * fm_amp;
@@ -1877,6 +1890,32 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
         tx_i = audio_lp * 0.7f;
         tx_q = 0.0f;
         break;
+    }
+
+    /* ── 5b. RF drive — every mode, after modulation (ramped, see above). */
+    tx_i *= drive_s;
+    tx_q *= drive_s;
+
+    /* ── 5c. TX ALC — DAC overload guard on the FINAL IQ pair.
+     *        Peak = max(|I|, |Q after IQ pre-correction|) so Hilbert
+     *        overshoot and iq_q_gain > 1 are both covered.  Instant attack
+     *        (gain set so the peak lands exactly on TX_ALC_REF), release
+     *        τ ≈ 200 ms.  Only engages near full scale: low drive, CW
+     *        sidetone ≤ 0.7, etc. never touch it.  Scaling commutes with
+     *        the linear IQ correction, so qc is reused at step 6b. */
+    float qc = dsp->tx.iq_q_gain * tx_q + dsp->tx.iq_q_xi * tx_i;
+    {
+      float pk = fabsf(tx_i);
+      float aq = fabsf(qc);
+      if (aq > pk) pk = aq;
+      pk *= alc_g;
+      if (pk > TX_ALC_REF) alc_g *= TX_ALC_REF / pk;
+      else                 alc_g += TX_ALC_REL_K * (1.0f - alc_g);
+      tx_i *= alc_g;
+      tx_q *= alc_g;
+      qc   *= alc_g;
+      float tot = comp_gr * alc_g;          /* meter: compressor × ALC */
+      if (tot < gr_min) gr_min = tot;
     }
 
     /* ── 6. FFT feed for TX spectrum display.
@@ -1902,19 +1941,26 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
     }
 
     /* ── 6b. QSE IQ pre-correction — after the FFT feed so the TX spectrum
-     *        shows the ideal signal, not the cal predistortion. */
-    tx_q = dsp->tx.iq_q_gain * tx_q + dsp->tx.iq_q_xi * tx_i;
+     *        shows the ideal signal, not the cal predistortion.
+     *        qc = iq_q_gain·Q + iq_q_xi·I, already ALC-scaled at 5c. */
+    tx_q = qc;
 
-    /* ── 7. Write to SAI TX DMA: 16-bit sample right-justified in bits[15:0] */
+    /* ── 7. Write to SAI TX DMA: 16-bit sample right-justified in bits[15:0].
+     *       After 5c this clamp should never fire — count it if it does. */
     int32_t i_val = (int32_t)(tx_i * 32767.0f);
     int32_t q_val = (int32_t)(tx_q * 32767.0f);
-    if (i_val >  32767)  i_val =  32767;
-    if (i_val < -32768)  i_val = -32768;
-    if (q_val >  32767)  q_val =  32767;
-    if (q_val < -32768)  q_val = -32768;
+    if (i_val >  32767)  { i_val =  32767; clips++; }
+    if (i_val < -32768)  { i_val = -32768; clips++; }
+    if (q_val >  32767)  { q_val =  32767; clips++; }
+    if (q_val < -32768)  { q_val = -32768; clips++; }
     iq_out[n * 2U + 0U] = (int32_t)(int16_t)i_val;
     iq_out[n * 2U + 1U] = (int32_t)(int16_t)q_val;
   }
+
+  dsp->tx.drive_smooth = drive_s;
+  dsp->tx.alc_gr_min   = gr_min;
+  dsp->tx.alc_gain     = alc_g;
+  dsp->tx.clip_count  += clips;
 
   /* Single atomic decrement: subtract only what was consumed.  Any bytes
    * added by USB_Audio_WriteTX (USB IRQ) after the snapshot are preserved
@@ -1931,4 +1977,28 @@ void DSP_ProcessTX(DSP_State_t *dsp, int32_t *iq_out, uint32_t len)
     __enable_irq();
   }
   /* USER CODE END DSP_ProcessTX_0 */
+}
+
+void DSP_TxResetForKeyDown(DSP_State_t *dsp)
+{
+  dsp->tx.drive_smooth = 0.0f;   /* 2 ms soft start from silence */
+  dsp->tx.alc_gain     = 1.0f;   /* no stale ALC from the previous over */
+  dsp->tx.alc_gr_min   = 1.0f;
+  dsp->tx.clip_count   = 0U;
+}
+
+uint32_t DSP_TxTakeClips(DSP_State_t *dsp)
+{
+  uint32_t c = dsp->tx.clip_count;
+  dsp->tx.clip_count = 0U;
+  return c;
+}
+
+uint16_t DSP_TxTakeGainReduction_dB10(DSP_State_t *dsp)
+{
+  float gr = dsp->tx.alc_gr_min;
+  dsp->tx.alc_gr_min = 1.0f;
+  if (gr >= 0.999f) return 0U;
+  if (gr < 0.01f)   gr = 0.01f;            /* cap at 40 dB */
+  return (uint16_t)(-200.0f * log10f(gr)); /* −20·log10 × 10 */
 }
