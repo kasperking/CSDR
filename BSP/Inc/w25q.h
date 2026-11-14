@@ -201,8 +201,11 @@ typedef struct {
   /* ── SI5351 per-band calibration (future) — tail carved for Ext PA
    *    (array was [32], never written → old blobs read 0 in the new
    *    fields; offsets of everything after are unchanged) ─────────── */
-  uint8_t    si5351_cal[19];
-  uint8_t    atu_enabled;        /* ATU fitted + enabled: 0=off 1=on; 0 also =
+  uint8_t    si5351_cal[18];
+  uint8_t    ext_alc_range;      /* External-amp ALC input range: 0=−4 V (also
+                                    the pre-field blob value) 1=−8 V 2=−12 V.
+                                    Carved từ si5351_cal tail — no reset    */
+  uint8_t    atu_enabled;       /* ATU fitted + enabled: 0=off 1=on; 0 also =
                                     pre-ATU blob padding → tuner stays bypassed
                                     on every existing radio.  Carved from the
                                     si5351_cal tail, so adding the ATU does NOT

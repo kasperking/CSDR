@@ -20,8 +20,9 @@
   *      → enabled by g_sdr.ext_alc_on AND g_sdr.ext_pa_on; fixed profile:
   *        Attack  τ ≈ 1.4 ms (α=0.5,   1 ms sample)
   *        Release τ ≈ 500 ms (α=0.002, 1 ms sample)
-  *        Threshold: 10% input  →  drive starts reducing
-  *                   (−0.44 V amp ALC with R108 = 150k, see pa_protect.c)
+  *        Input rescaled to % of g_sdr.ext_alc_range (−4/−8/−12 V, menu
+  *        "ALC Input Range"; front-end R108 fixed 51k, see pa_protect.c)
+  *        Threshold: 10% of range  →  drive starts reducing
   *        Maximum reduction:    →  30% minimum drive
   *
   *  Power ALC (tandem-match forward power — closed loop; only CW / FM /

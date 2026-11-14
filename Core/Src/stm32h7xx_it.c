@@ -263,7 +263,7 @@ void DMA2_Stream0_IRQHandler(void)
 /**
   * @brief  EXTI15_10 — hai nguồn active-LOW falling edge dùng chung vector:
   *           PB13: PA overcurrent ALERT từ INA226 → PA_OC_AlertISR()
-  *           PB14: PCA9555 INT → Input_SetIrqPending()
+  *           PB15: PCA9555 INT → Input_SetIrqPending()
   *         Cả hai chỉ đặt cờ; không gọi I2C trong ISR.
   *         Priority 5: thấp hơn audio DMA (0) và USB (2).
   */

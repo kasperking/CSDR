@@ -77,7 +77,7 @@ static int16_t bias_temp_comp_codes(void)
 
 void PA_Bias_Init(void)
 {
-  /* DAC_CS (PB15) đã được MX_GPIO_Init đặt output HIGH; init lại ở đây cho
+  /* DAC_CS (PB14) đã được MX_GPIO_Init đặt output HIGH; init lại ở đây cho
    * module tự đứng được.  Ghi HIGH trước khi đổi mode để không glitch CS
    * xuống thấp lúc chuyển sang output. */
   __HAL_RCC_GPIOB_CLK_ENABLE();

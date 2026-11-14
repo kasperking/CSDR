@@ -45,7 +45,10 @@ void PWR_Poll(void);                     /* Gọi mỗi 100ms: kiểm tra nút t
  *  SWR / ALC / VOLTAGE MEASUREMENT
  *
  *  ADC channels (từ FSDR.ioc):
- *   ADC1_INP16 → PA0  ALC               (ALC/Mic level)
+ *   ADC1_INP16 → PA0  ALC               (CHỈ ALC của amp NGOÀI qua jack
+ *                                        EXT_ALC + op-amp đảo U16; PA nội
+ *                                        KHÔNG đưa ALC về chân này — PA nội
+ *                                        dùng Power ALC qua SWR_FOR/coupler)
  *   ADC1_INP17 → PA1  SWR_FOR           (forward power)
  *   ADC2_INP14 → PA2  SWR_REF           (reflected power)
  *   ADC1_INP15 → PA3  VOLTAGE_IN_METER  (điện áp nguồn qua divider)
@@ -62,14 +65,15 @@ typedef struct {
   /* Raw ADC (16-bit) */
   uint16_t adc_ntc;          /* NTC thermistor        */
   uint16_t adc_voltage;      /* Điện áp nguồn         */
-  uint16_t adc_alc;          /* ALC meter             */
+  uint16_t adc_alc;          /* External-amp ALC (PA0) — NOT the TX ALC meter */
   uint16_t adc_swr_for;      /* SWR forward           */
   uint16_t adc_swr_ref;      /* SWR reflected         */
 
   /* Calculated */
   int16_t  temp_c;           /* Nhiệt độ °C (×10)     */
   uint16_t voltage_mv;       /* Điện áp nguồn (mV)    */
-  uint16_t alc_percent;      /* ALC 0-100%            */
+  uint16_t alc_percent;      /* PA0 % of ADC FS (raw; pa_protect rescales to
+                                the amp's range).  Meter = csdr_alc_meter_update */
   uint16_t swr_x100;         /* SWR × 100 (e.g. 150=1.50) */
   uint16_t fwd_power_mw;     /* Forward power (mW)    */
   uint16_t ref_power_mw;     /* Reflected power (mW)  */

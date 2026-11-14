@@ -28,8 +28,8 @@
   *    35 mm chạy sang U13 ở vùng PA, và để DAC nằm cùng cạnh MCU với PA.
   *    Mọi truy cập bus đều từ main loop, không ISR → không cần lock.
   *
-  *    CS: DAC_CS = PB15 (main.h), MX_GPIO_Init đặt HIGH trước mọi sườn
-  *    clock trên bus chung.  PB15 không có pull nội lúc reset → nên có 10k
+  *    CS: DAC_CS = PB14 (main.h), MX_GPIO_Init đặt HIGH trước mọi sườn
+  *    clock trên bus chung.  PB14 không có pull nội lúc reset → nên có 10k
   *    pull-up lên 3V3 trên PCB.  LDAC nối GND (update ngay khi CS nhả).
   ******************************************************************************
   */

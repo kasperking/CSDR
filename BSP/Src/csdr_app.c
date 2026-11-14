@@ -393,7 +393,8 @@ static void csdr_save_settings(void)
   fs.usb_mode        = g_sdr.usb_mode;
   fs.usb_iq_stream   = g_sdr.usb_iq_stream;
   fs.ext_alc_on      = g_sdr.ext_alc_on;
-  fs.ext_pa_on       = g_sdr.ext_pa_on ? 1U : 0U;
+  fs.ext_alc_range   = g_sdr.ext_alc_range;
+  fs.ext_pa_on      = g_sdr.ext_pa_on ? 1U : 0U;
   fs.ext_pa_delay_p1 = (uint8_t)(g_sdr.ext_pa_delay_ms + 1U); /* ms+1: 0 = old blob */
   fs.ext_pa_drv      = g_sdr.ext_pa_max_drive;
   fs.pa_bias_src     = g_sdr.pa_bias_src;
@@ -539,6 +540,8 @@ void CSDR_Init(void)
       g_sdr.usb_mode      = (fs.usb_mode <= 1U) ? fs.usb_mode : 1U;
       g_sdr.usb_iq_stream = fs.usb_iq_stream;
       g_sdr.ext_alc_on    = fs.ext_alc_on;
+      /* Carved from si5351_cal tail: old blobs read 0 → −4 V */
+      g_sdr.ext_alc_range = (fs.ext_alc_range <= 2U) ? fs.ext_alc_range : 0U;
       /* Ext PA: fields carved from si5351_cal tail — 0 = pre-ext-pa blob */
       g_sdr.ext_pa_on       = (fs.ext_pa_on == 1U);
       g_sdr.ext_pa_delay_ms = (fs.ext_pa_delay_p1 >= 1U && fs.ext_pa_delay_p1 <= 51U)
@@ -2241,6 +2244,7 @@ static void csdr_factory_reset(void)
   g_sdr.bc_mode          = 0U;
   g_sdr.rf_agc_on        = false;
   g_sdr.ext_alc_on       = false;
+  g_sdr.ext_alc_range    = 0U;      /* −4 V */
   g_sdr.ext_pa_on        = false;
   g_sdr.ext_pa_delay_ms  = 25U;
   g_sdr.ext_pa_max_drive = 50U;
@@ -2646,6 +2650,8 @@ static void csdr_handle_keys(void)
 
   if (Key_Press(&k_menu)) {
     g_sdr.display_dirty = 0U;  /* prevent status panel overwriting menu */
+    if (!Menu_IsOpen(&g_menu))
+      Menu_SetExtAlcRange(g_sdr.ext_alc_range);   /* outside the wide list below */
     if (!Menu_IsOpen(&g_menu))
       Menu_LoadFromSDR(&g_menu,
         g_sdr.agc_speed, g_sdr.nb_on, g_sdr.nr_mode, g_sdr.rit_hz,
@@ -3209,6 +3215,7 @@ static void menu_apply_cb(void)
   g_sdr.vox_gain  = vox_gain;
   g_sdr.vox_delay = vox_delay;
   g_sdr.ext_alc_on = ext_alc;
+  g_sdr.ext_alc_range = Menu_GetExtAlcRange();   /* read live by the 1 ms tick */
   /* Ext PA: drive-cap changes must reach a live TX via the gain-reapply path */
   if (ext_pa != g_sdr.ext_pa_on || ext_pa_drv != g_sdr.ext_pa_max_drive) {
     if (g_sdr.tx_mode) g_sdr.cat_tx_dirty = true;

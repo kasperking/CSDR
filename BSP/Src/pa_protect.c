@@ -42,12 +42,20 @@
  * HW front-end (inverting buffer, U16 MCP6001 @ VDDA 3.3 V):
  *   EXT_ALC ─ D5 SMAJ15CA ─ R107 100k ─┬─ R106 100k ─ IN−   (C144 4.7n ⏚)
  *   R108 ‖ C61 1n feedback, IN+ = GND, out ─ R109 100Ω ─ PA0 (C143 10n ⏚)
- *   Gain = −R108 / 200k  →  full scale (100 %) = −3.3 V × 200k / R108:
- *     R108 150k → −4.4 V (0..−4 V amps, default)
- *     R108  82k → −8.0 V,  R108 51k → −12.9 V (0..−12 V amps)
- *   Idle output ≈ 1 % (op-amp offset × 1.75 + output swing to GND).
- * Threshold/floor are % of that full scale, so they track an R108 change. */
-#define ALC_THRESHOLD_PCT  10U    /* above 10% (−0.44 V @R108=150k) → reduce  */
+ *   Gain = −R108 / 200k.  R108 is FIXED at 51k → ADC full scale = −12.9 V,
+ *   covering every amp type; the menu "ALC Input Range" (g_sdr.ext_alc_range)
+ *   tells firmware the amp's ALC full-scale (−4 / −8 / −12 V) and the ADC
+ *   reading is rescaled to % of THAT range (ext_alc_pct_of_range) before the
+ *   threshold / proportional cut — so a −4 V amp still gets the full 30 %
+ *   floor at −4 V.  Idle output ≈ 1 % of ADC (offset × noise gain 1.26 +
+ *   output swing to GND) = 0.13 V-equivalent, below every threshold.
+ *   If R108 is ever changed, update EXT_ALC_R108_OHM. */
+#define EXT_ALC_RIN_OHM    200000.0f  /* R107 + R106                          */
+#define EXT_ALC_R108_OHM    51000.0f  /* feedback resistor (fixed)            */
+#define EXT_ALC_FS_MV      (3300.0f * EXT_ALC_RIN_OHM / EXT_ALC_R108_OHM)  /* 12941 */
+/* Keep in sync with alc_range_strs[] (menu.c) */
+static const float k_ext_alc_range_mv[3] = { 4000.0f, 8000.0f, 12000.0f };
+#define ALC_THRESHOLD_PCT  10U    /* % of selected range: −0.4/−0.8/−1.2 V    */
 #define ALC_MIN_DRIVE_PCT  30U    /* maximum reduction floor (30% drive left)  */
 #define ALC_ALPHA_ATK      0.5f   /* Power ALC envelope attack (20 ms tick)   */
 #define ALC_ALPHA_REL      0.04f  /* Power ALC envelope release (20 ms tick)  */
@@ -118,6 +126,15 @@ static float   s_pwr_corr_pct  = 100.0f; /* continuous drive corrector (%)      
 static inline bool ext_alc_active(void)
 {
     return g_sdr.ext_alc_on && g_sdr.ext_pa_on;
+}
+
+/* ADC % of full scale (−12.9 V) → % of the amp's selected ALC range.
+ * May exceed 100 when the amp drives past its nominal range; the envelope
+ * consumer clamps the excess. */
+static inline float ext_alc_pct_of_range(float adc_pct)
+{
+    uint8_t r = (g_sdr.ext_alc_range <= 2U) ? g_sdr.ext_alc_range : 0U;
+    return adc_pct * (EXT_ALC_FS_MV / k_ext_alc_range_mv[r]);
 }
 
 static void update_filters(void)
@@ -211,7 +228,8 @@ void PA_Protect_OnTxStart(void)
 
     /* Seed ALC envelope from current PA feedback so there is no step-change
      * in drive at TX onset when ALC conditions are already non-zero. */
-    s_alc_env = ext_alc_active() ? (float)g_analog.alc_percent : 0.0f;
+    s_alc_env = ext_alc_active()
+                ? ext_alc_pct_of_range((float)g_analog.alc_percent) : 0.0f;
 
     /* Power ALC: fresh start each transmission — avoids carrying a stale
      * correction from a different band/frequency into the new TX. */
@@ -462,7 +480,8 @@ void PA_Protect_FastAlcTick(void)
 
     /* One single-shot conversion on ADC1 (~µs; same main-loop context as
      * Analog_Update, so no ADC1 contention). */
-    float pct   = (float)Analog_ReadALC_Raw() * (100.0f / 65535.0f);
+    float pct   = ext_alc_pct_of_range((float)Analog_ReadALC_Raw()
+                                       * (100.0f / 65535.0f));
     float alpha = (pct > s_alc_env) ? EXT_ALC_ALPHA_ATK : EXT_ALC_ALPHA_REL;
     s_alc_env  += alpha * (pct - s_alc_env);
 

@@ -52,6 +52,7 @@ static int32_t _vox_val, _voxgain_val, _voxdelay_val;
 
 /* PA group */
 static int32_t _alc_val, _extpa_val, _extpadly_val, _extpadrv_val;
+static int32_t _alcrange_val;   /* synced via Menu_Set/GetExtAlcRange, not LoadFromSDR */
 static int32_t _biassrc_val, _bias1_val, _bias2_val, _idqtgt_val;
 
 /* ATU group — values mirror g_atu, refreshed on menu open (see Menu_Toggle)
@@ -83,6 +84,8 @@ static const char *tx_src_strs[]    = { "USB","MIC" };
 static const char *zoom_strs[] = { "+/-24k","+/-12k","+/-6k","+/-3k" };
 static const char *marker_strs[] = { "FIX", "TRACK" };
 static const char *bias_src_strs[] = { "FIXED", "DAC" };
+/* Keep in sync with k_ext_alc_range_mv[] (pa_protect.c) */
+static const char *alc_range_strs[] = { "-4V", "-8V", "-12V" };
 /* Keep in sync with g_rtty_baud_x100 / g_rtty_shift_hz (rtty_decode.c) */
 static const char *rtty_baud_strs[]  = { "45.45", "50", "75" };
 static const char *rtty_shift_strs[] = { "170", "425", "850" };
@@ -129,12 +132,55 @@ static const char *about_date_strs[] = { FW_BUILD_DATE };
 
 /* USER CODE BEGIN 0 */
 
+/* ── Display order ─────────────────────────────────────────────────────
+ * View order is decoupled from slot index: slots stay stable (MENU_IDX_*,
+ * label dispatch in csdr_app.c), this table alone decides on-screen order.
+ * Each group's items are listed in the order they should appear.  A slot
+ * missing here is still shown (appended after the listed ones) so a new
+ * item can never silently vanish — but add it here at its logical place. */
+static const uint8_t s_view_order[] = {
+  /* Root */
+  2, 0, 1, 3, 4, 53, 66, 65, 5,           /* Tuning RX Audio TX CW RTTY FT8 SWR System */
+  /* Tuning */
+  26, 27, 25, 10, 56,                     /* Band Mode Step Span Marker */
+  /* RX: filter/offset → gain → noise DSP (toggle + its level adjacent) */
+  6, 63, 19, 7, 8, 9,                     /* BW RXShift RIT AGC ATT Squelch */
+  11, 12, 13, 14, 15, 16, 17,             /* NR NRLvl NB NBLvl Notch NotchHz BeatCxl */
+  /* Audio (RX listening) */
+  20, 21, 22,                             /* Volume Bass Treble */
+  /* TX: power → audio source/gain → TX passband → VOX */
+  28, 54, 23, 24, 32, 33, 29, 30, 31,     /* RFPwr MicIn MicGain DigiDrive TXLow TXHigh VOX VOXGain VOXDelay */
+  /* CW: decode → keying → break-in → receive/monitor */
+  35, 37, 38, 43, 40, 41, 36, 39, 44, 42, /* Decode Speed Keyer PaddleRev BKIN BKDelay Pitch Sidetone Filter CWRev */
+  /* RTTY */
+  18, 60, 64,                             /* Decode Baud Shift */
+  /* System: everyday → hardware → calibration → info → destructive last */
+  55, 45, 46, 47, 48, 49, 50, 72, 51,     /* Clock Backlight USB USBStream PA ATU Calibration About FactoryReset */
+  /* System → PA */
+  34, 57, 58, 59, 80, 67, 68, 69, 70, 71, /* ExtPA KeyDly DrvMax ExtALC ALCRange Bias... */
+  /* System → ATU */
+  52, 75, 76, 77, 78,
+  /* System → Clock */
+  61, 62,
+  /* System → About */
+  73, 74, 79,
+};
+
 /* ── Rebuild view[] for current_group ── */
 static void Menu_BuildView(Menu_Handle_t *m)
 {
+  bool listed[MENU_ITEM_COUNT] = { false };
   m->view_count = 0U;
-  for (uint8_t i = 0U; i < m->item_count; i++) {
+  for (uint8_t k = 0U; k < (uint8_t)sizeof(s_view_order); k++) {
+    uint8_t i = s_view_order[k];
+    if (i >= m->item_count || listed[i]) continue;
+    listed[i] = true;
     if (m->items[i].label == NULL) continue;  /* unassigned slot (memset hole) */
+    if ((int8_t)m->items[i].parent == m->current_group)
+      m->view[m->view_count++] = i;
+  }
+  for (uint8_t i = 0U; i < m->item_count; i++) {   /* safety: unlisted slots */
+    if (listed[i] || m->items[i].label == NULL) continue;
     if ((int8_t)m->items[i].parent == m->current_group)
       m->view[m->view_count++] = i;
   }
@@ -282,7 +328,7 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[7]  = (MenuItem_t){ "AGC",     MENU_TYPE_ENUM, 0,0,0,         &_agc_val,    agc_strs,  3U, NULL,NULL,0 };
   m->items[8]  = (MenuItem_t){ "ATT(dB)", MENU_TYPE_INT,  0, 31, 1,      &_att_val,    NULL,      0U, NULL,"dB",0 };
   m->items[9]  = (MenuItem_t){ "Squelch", MENU_TYPE_INT,  0,100, 1,      &_sq_val,     NULL,      0U, NULL,NULL,0 };
-  m->items[10] = (MenuItem_t){ "Span",    MENU_TYPE_ENUM, 0,0,0,         &_zoom_val,   zoom_strs, 4U, NULL,NULL,0 };
+  m->items[10] = (MenuItem_t){ "Span",    MENU_TYPE_ENUM, 0,0,0,         &_zoom_val,   zoom_strs, 4U, NULL,NULL,2 };
   m->items[11] = (MenuItem_t){ "NR",      MENU_TYPE_ENUM, 0,0,0,         &_nr_val,     nr_strs,   3U, NULL,NULL,0 };
   m->items[12] = (MenuItem_t){ "NR Level",MENU_TYPE_INT,  0,100,5,       &_nrlvl_val,  NULL,      0U, NULL,NULL,0 };
   m->items[13] = (MenuItem_t){ "NB",      MENU_TYPE_ENUM, 0,0,0,         &_nb_val,     onoff_strs,2U, NULL,NULL,0 };
@@ -296,8 +342,7 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[19] = (MenuItem_t){ "RIT(Hz)", MENU_TYPE_INT,  -999,999,1,    &_rit_val,    NULL,      0U, NULL,NULL,0 };
   m->items[63] = (MenuItem_t){ "RX Shift",MENU_TYPE_INT,  -2000,2000,50, &_rxshift_val,NULL,      0U, NULL,"Hz",0 };
 
-  /* ── RTTY group (slot 53 root, children parent = 53; view order within
-   *    the group is ascending slot: 18 Decode, 60 Baud, 64 Shift) ───── */
+  /* ── RTTY group (slot 53 root, children parent = 53) ─────────────── */
   m->items[53] = (MenuItem_t){ "RTTY",     MENU_TYPE_GROUP,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
   m->items[18] = (MenuItem_t){ "Decode",   MENU_TYPE_ENUM, 0,0,0, &_rttydec_val,  onoff_strs,     2U, NULL,NULL,53 };
   m->items[60] = (MenuItem_t){ "Baud",     MENU_TYPE_ENUM, 0,0,0, &_rttybaud_val, rtty_baud_strs, 3U, NULL,NULL,53 };
@@ -307,9 +352,9 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[20] = (MenuItem_t){ "Volume",    MENU_TYPE_INT, 0,100,5, &_vol_val, NULL,0U,NULL,NULL,1 };
   m->items[21] = (MenuItem_t){ "Bass",      MENU_TYPE_INT, -10,10,1,&_bass_val,  NULL,0U,NULL,"dB",1 };
   m->items[22] = (MenuItem_t){ "Treble",    MENU_TYPE_INT, -10,10,1,&_treble_val,NULL,0U,NULL,"dB",1 };
-  m->items[23] = (MenuItem_t){ "Mic Gain",  MENU_TYPE_INT, 0,100,1, &_mic_val, NULL,0U,NULL,NULL,1 };
-  m->items[24] = (MenuItem_t){ "Digi Drive",MENU_TYPE_INT, 0,100,1, &_digi_val,NULL,0U,NULL,NULL,1 };
-  m->items[54] = (MenuItem_t){ "Mic In",    MENU_TYPE_ENUM,0,0,0,    &_tx_src_val, tx_src_strs, 2U, NULL,NULL,1 };
+  m->items[23] = (MenuItem_t){ "Mic Gain",  MENU_TYPE_INT, 0,100,1, &_mic_val, NULL,0U,NULL,NULL,3 };
+  m->items[24] = (MenuItem_t){ "Digi Drive",MENU_TYPE_INT, 0,100,1, &_digi_val,NULL,0U,NULL,NULL,3 };
+  m->items[54] = (MenuItem_t){ "Mic In",    MENU_TYPE_ENUM,0,0,0,    &_tx_src_val, tx_src_strs, 2U, NULL,NULL,3 };
 
   /* ── Tuning group (parent = 2) ──────────────────────────── */
   m->items[25] = (MenuItem_t){ "Step",MENU_TYPE_ENUM,0,0,0,&_step_val,step_strs,6U, NULL,NULL,2 };
@@ -337,8 +382,7 @@ void Menu_Init(Menu_Handle_t *m)
   m->items[44] = (MenuItem_t){ "Filter",   MENU_TYPE_INT,  50,500,50,&_cwfilter_val, NULL,      0U, NULL,"Hz",4 };
 
   /* ── System group (parent = 5) — high-impact / calibration-type settings
-   *    live here (PA sub-group).  View order is ascending slot:
-   *    45..48, 49, 50, Clock(55), About(72). ─────────────── */
+   *    live here (PA sub-group).  On-screen order: s_view_order[]. ─── */
   m->items[45] = (MenuItem_t){ "Backlight",   MENU_TYPE_INT,   0,100,10,&_bl_val,        NULL,          0U,NULL,NULL,5 };
   m->items[46] = (MenuItem_t){ "USB",         MENU_TYPE_ENUM,  0,0,0,   &_usb_val,       usb_strs,      2U,NULL,NULL,5 };
   m->items[47] = (MenuItem_t){ "USB Stream",  MENU_TYPE_ENUM,  0,0,0,   &_iq_stream_val, iq_stream_strs,2U,NULL,NULL,5 };
@@ -351,12 +395,14 @@ void Menu_Init(Menu_Handle_t *m)
 
   /* ── PA sub-group (parent = 48, System → PA) ────────────── */
   /* Ext-PA block: toggle + its two sub-settings + the amp's ALC input.
-   * Child slots keep old indices stable; view order within the group is
-   * ascending slot, so these render before the bias block. */
+   * Child slots keep old indices stable; on-screen order is s_view_order[]. */
   m->items[34] = (MenuItem_t){ "External PA", MENU_TYPE_ENUM, 0,0,0,     &_extpa_val,   onoff_strs,2U,NULL,NULL,48 };
   m->items[57] = (MenuItem_t){ "PA Key Delay",MENU_TYPE_INT,  0,50,5,    &_extpadly_val,NULL,      0U,NULL,"ms",48 };
   m->items[58] = (MenuItem_t){ "PA Drive Max",MENU_TYPE_INT,  5,100,5,   &_extpadrv_val,NULL,      0U,NULL,"%", 48 };
   m->items[59] = (MenuItem_t){ "External ALC",MENU_TYPE_ENUM, 0,0,0,     &_alc_val,     onoff_strs,2U,NULL,NULL,48 };
+  /* Amp ALC full-scale voltage (front-end R108 fixed at 51k → ADC FS −12.9 V);
+   * pa_protect rescales threshold/max-cut to the selected range. */
+  m->items[80] = (MenuItem_t){ "ALC Input Range",MENU_TYPE_ENUM,0,0,0,   &_alcrange_val,alc_range_strs,3U,NULL,NULL,48 };
   /* PA bias block (pa_bias.h): Bias 1/2 là mức DAC 0..200 (0.5% FS/bước
    * ≈ 26 mV tại gate) — chỉnh sống giữa TX để cân Idq theo INA226. */
   m->items[67] = (MenuItem_t){ "Bias Source", MENU_TYPE_ENUM, 0,0,0,     &_biassrc_val, bias_src_strs,2U,NULL,NULL,48 };
@@ -369,8 +415,7 @@ void Menu_Init(Menu_Handle_t *m)
 
   /* ── ATU sub-group (parent = 49, System → ATU) ──────────────
    * Slot 52 was freed by moving the About children up, so "Antenna Tuner"
-   * sorts ahead of the 75+ block and heads the group — view order inside a
-   * group is ascending slot.  The two ACTION items are dispatched by label
+   * heads the group (s_view_order[]).  The two ACTION items are dispatched by label
    * in csdr_handle_keys, like SWR Scan / FT8 / Bias Calibration. */
   m->items[52] = (MenuItem_t){ "Antenna Tuner",   MENU_TYPE_ENUM, 0,0,0, &_atuon_val,  onoff_strs,2U,apply_atu_on,    NULL,49 };
   m->items[75] = (MenuItem_t){ "Auto on TUNE Key",MENU_TYPE_ENUM, 0,0,0, &_atuauto_val,onoff_strs,2U,apply_atu_auto,  NULL,49 };
@@ -389,8 +434,7 @@ void Menu_Init(Menu_Handle_t *m)
    * opens the full-screen Terms_ShowDisclaimer() viewer (see terms.c). */
   m->items[79] = (MenuItem_t){ "Terms & Disclaimer",MENU_TYPE_ACTION,0,0,0,NULL,NULL,0U,NULL,NULL,72 };
 
-  /* ── Root actions (parent = -1) — highest slots so they render after all
-   *    root groups (view order is ascending slot; RTTY group sits at 53) ── */
+  /* ── Root actions (parent = -1) — position set by s_view_order[] ── */
   m->items[65] = (MenuItem_t){ "SWR Scan",  MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
   m->items[66] = (MenuItem_t){ "FT8",       MENU_TYPE_ACTION,0,0,0, NULL,NULL,0U,NULL,NULL,-1 };
 
@@ -621,6 +665,18 @@ void Menu_Render(Menu_Handle_t *m)
 }
 
 /* ════ Load / Save SDR state ════ */
+/* External ALC input range — kept out of the wide LoadFromSDR/SaveToSDR
+ * parameter lists (same idea as the ATU block). */
+void Menu_SetExtAlcRange(uint8_t range)
+{
+  _alcrange_val = (range <= 2U) ? (int32_t)range : 0;
+}
+
+uint8_t Menu_GetExtAlcRange(void)
+{
+  return (_alcrange_val >= 0 && _alcrange_val <= 2) ? (uint8_t)_alcrange_val : 0U;
+}
+
 void Menu_LoadFromSDR(Menu_Handle_t *m,
                        uint8_t agc_speed, bool nb, uint8_t nr_mode, int16_t rit,
                        uint8_t vol, uint8_t mic_gain, uint8_t digi_gain,

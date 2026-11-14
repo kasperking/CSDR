@@ -14,18 +14,25 @@
   *
   *  Cấu trúc menu (2 cấp):
   *
-  *  Root
-  *   ├─ [RX]     → BW / AGC / ATT / Squelch / Span / NR / NR Level / NB / NB Level / Notch / Notch Hz / Beat Cxl / RIT / RX Shift
-  *   ├─ [Audio]  → Volume / Bass / Treble / Mic Gain / Digi Drive / Mic In
-  *   ├─ [Tuning] → Step / Band / Mode / Marker
-  *   ├─ [TX]     → RF Power / VOX / VOX Gain / VOX Delay / TX Low / TX High
-  *   ├─ [CW]     → CW Decode / Pitch / Speed / Keyer / Sidetone / BK-IN / BK Delay / CW Rev / Paddle Rev / Filter
-  *   ├─ [System] → Backlight / USB / USB Stream / PA / Calibration / Factory Reset / Clock / About
-  *   │                ├─ [PA]    → External PA / PA Key Delay / PA Drive Max / External ALC
-  *   │                │            / Bias Source / Bias 1 / Bias 2 / Idq Target / Bias Calibration
-  *   │                └─ [About] → Version / Build Date / Terms & Disclaimer
+  *  Root  (thứ tự hiển thị = bảng s_view_order[] trong menu.c, KHÔNG theo slot)
+  *   ├─ [Tuning] → Band / Mode / Step / Span / Marker
+  *   ├─ [RX]     → BW / RX Shift / RIT / AGC / ATT / Squelch
+  *   │             / NR / NR Level / NB / NB Level / Notch / Notch Hz / Beat Cxl
+  *   ├─ [Audio]  → Volume / Bass / Treble
+  *   ├─ [TX]     → RF Power / Mic In / Mic Gain / Digi Drive / TX Low / TX High
+  *   │             / VOX / VOX Gain / VOX Delay
+  *   ├─ [CW]     → CW Decode / Speed / Keyer / Paddle Rev / BK-IN / BK Delay
+  *   │             / Pitch / Sidetone / Filter / CW Rev
+  *   ├─ [RTTY]   → Decode / Baud / Shift
+  *   ├─ FT8       (root action — full-screen app; FT8 decode runs only inside it)
   *   ├─ SWR Scan  (root action)
-  *   └─ FT8       (root action — full-screen app; FT8 decode runs only inside it)
+  *   └─ [System] → Clock / Backlight / USB / USB Stream / PA / ATU / Calibration
+  *                 / About / Factory Reset
+  *                    ├─ [Clock] → Set Time / Time Zone
+  *                    ├─ [PA]    → External PA / PA Key Delay / PA Drive Max / External ALC
+  *                    │            / ALC Input Range / Bias Source / Bias 1 / Bias 2 / Idq Target / Bias Calibration
+  *                    ├─ [ATU]   → Antenna Tuner / Auto on TUNE Key / Bypass / Tune Now / Clear ATU Memory
+  *                    └─ [About] → Version / Build Date / Terms & Disclaimer
   *
   *  Renderer: overlay trên vùng Spectrum (Y=ZONE_SPEC_Y)
   *  Scanline-based: mỗi item = 16px cao, width MENU_W, x=MENU_X
@@ -48,7 +55,7 @@ extern "C" {
 
 /* Exported defines ----------------------------------------------------------*/
 
-#define MENU_ITEM_COUNT      80U   /* slots 0..79, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
+#define MENU_ITEM_COUNT      81U   /* slots 0..80, ALL must be assigned in Menu_Init (a hole = ghost item, hard fault) */
 #define MENU_VISIBLE_ROWS     6U   /* Items shown at once; 6×16=96px  */
 #define MENU_ITEM_H          16U   /* Height per item (px)  */
 #define MENU_X               10U   /* Left edge             */
@@ -135,6 +142,11 @@ void Menu_EncoderEdit(Menu_Handle_t *m, int32_t delta);
 void Menu_Render(Menu_Handle_t *m);
 
 static inline bool Menu_IsOpen(const Menu_Handle_t *m) { return m->open; }
+
+/** External-amp ALC input range (0=−4 V 1=−8 V 2=−12 V) — sync helpers kept
+ *  outside Menu_LoadFromSDR/SaveToSDR. */
+void    Menu_SetExtAlcRange(uint8_t range);
+uint8_t Menu_GetExtAlcRange(void);
 
 /* ── Apply callback type ─────────────────────────────── */
 typedef void (*MenuApplyFn)(void);

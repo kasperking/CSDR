@@ -117,7 +117,7 @@ void Error_Handler(void);
 #define ENC_CH1_GPIO_Port GPIOD
 #define ENC_CH2_Pin GPIO_PIN_13
 #define ENC_CH2_GPIO_Port GPIOD
-#define DAC_CS_Pin GPIO_PIN_15
+#define DAC_CS_Pin GPIO_PIN_14
 #define DAC_CS_GPIO_Port GPIOB
 #define ENC_SW_Pin GPIO_PIN_6
 #define ENC_SW_GPIO_Port GPIOC

@@ -12,7 +12,7 @@
   *    device              data/clock pins     commit / select
   *    74AHC595  (BPF)     SER   / SRCLK       BPF_RCLK  (PC4) pulse HIGH->LOW
   *    PE4312    (RX ATT)  DATA* / CLK         ATT_LATCH (PB0) pulse HIGH->LOW
-  *    MCP4822   (PA bias) SDI   / SCK         DAC_CS    (PB15) active-LOW
+  *    MCP4822   (PA bias) SDI   / SCK         DAC_CS    (PB14) active-LOW
   *      * DATA goes through the 10k series resistor on the ATT side.
   *
   *  All three shift on the RISING clock edge with the clock idling LOW
@@ -30,7 +30,7 @@
   *      no lock.
   *    - Every frame ends with CTL_SCK LOW.
   *    - DAC_CS must be HIGH before any clock edge.  MX_GPIO_Init parks it
-  *      HIGH before BPF_LPF_Init/PE4302_Init run; PB15 has no reset pull,
+  *      HIGH before BPF_LPF_Init/PE4302_Init run; PB14 has no reset pull,
   *      so a 10k pull-up to 3V3 on the PCB is recommended as well.
   *
   *  Pins are GPIO_SPEED_FREQ_LOW on purpose: the bus runs ~80 mm to the

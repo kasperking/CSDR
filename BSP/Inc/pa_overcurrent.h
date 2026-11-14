@@ -47,7 +47,7 @@ extern "C" {
 
 /* ─── ALERT GPIO ─────────────────────────────────────────────────────────────
  * PB13 → EXTI line 13 → nhóm EXTI15_10_IRQn (STM32 gộp lines 10-15 chung 1
- * vector, chia sẻ với PCA9555_INT trên PB14).
+ * vector, chia sẻ với PCA9555_INT trên PB15).
  * IOC: PB13.Signal=GPXTI13, GPIO_MODE_IT_FALLING, GPIO_PULLUP.              */
 #define PA_OC_ALERT_GPIO_PORT   GPIOB
 #define PA_OC_ALERT_GPIO_PIN    GPIO_PIN_13

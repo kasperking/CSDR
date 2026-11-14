@@ -38,8 +38,8 @@ extern "C" {
 /* I2C address: A0=A1=A2=GND → 7-bit 0x20 → 8-bit HAL 0x40 */
 #define INPUT_PCA9555_ADDR   0x40U
 
-/* INT pin: PB14, active-LOW, falling edge → EXTI15_10_IRQn (shared with PA_OC_ALERT PB13) */
-#define PCA9555_INT_PIN      GPIO_PIN_14
+/* INT pin: PB15, active-LOW, falling edge → EXTI15_10_IRQn (shared with PA_OC_ALERT PB13) */
+#define PCA9555_INT_PIN      GPIO_PIN_15
 #define PCA9555_INT_PORT     GPIOB
 
 /* PCA9555 bit assignments — Port 0 (bits 6:0).
@@ -57,7 +57,7 @@ extern "C" {
 /* ── INT-driven scan ────────────────────────────────────────────────────── */
 
 /**
-  * @brief  Called from EXTI15_10_IRQHandler when PB14 (PCA9555 INT) fires.
+  * @brief  Called from EXTI15_10_IRQHandler when PB15 (PCA9555 INT) fires.
   *         Sets a volatile flag; Input_Scan() reads PCA9555 only when set.
   */
 void Input_SetIrqPending(void);

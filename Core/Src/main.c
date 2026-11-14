@@ -1104,7 +1104,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level — LPF_A2 HIGH (Y7, see above); DAC_CS
     (MCP4822) parked HIGH before any shared-bus clock edge so the DAC never
-    sees the BPF/ATT traffic as a frame. PB15 has no reset pull. */
+    sees the BPF/ATT traffic as a frame. PB14 has no reset pull. */
   HAL_GPIO_WritePin(GPIOB, LPF_A2_Pin|DAC_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
@@ -1175,7 +1175,7 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_SetPriority(PA_OC_ALERT_EXTI_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(PA_OC_ALERT_EXTI_IRQn);
 
-  /* PCA9555_INT (PB14): GPIO expander INT, active-LOW, falling edge, pull-up.
+  /* PCA9555_INT (PB15): GPIO expander INT, active-LOW, falling edge, pull-up.
    * Shares EXTI15_10_IRQn with PA_OC_ALERT (PB13) at same priority. */
   GPIO_InitStruct.Pin  = PCA9555_INT_PIN;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;

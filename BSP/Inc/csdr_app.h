@@ -139,6 +139,7 @@ typedef struct {
   bool        rf_agc_on;     /*!< Automatic PE4302 RF attenuator control (overload prevention) */
   /* External PA ALC feedback (PA0 / ADC1_INP16) */
   bool        ext_alc_on;   /*!< Enable external ALC drive reduction from PA feedback voltage  */
+  uint8_t     ext_alc_range;/*!< Amp ALC full-scale: 0=−4 V 1=−8 V 2=−12 V (pa_protect.c)   */
   /* External PA (keyed from T_R_SW via optocoupler) */
   bool        ext_pa_on;        /*!< Ext PA fitted: arms TX keying gate + drive cap            */
   uint8_t     ext_pa_delay_ms;  /*!< RF hold-off after T/R asserts, 0-50 ms (amp relay settle) */
